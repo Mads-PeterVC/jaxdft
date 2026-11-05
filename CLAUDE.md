@@ -245,7 +245,8 @@ Later milestones are defined when we get there.
   so docs stay in sync with code.
 - Plots use a shared style module. Prefer interactive charts when they allow for deeper analysis, using e.g. altair.
 - Give every chart cell `#| column: page-inset` so figures use the wider page
-  layout and do not need horizontal scrolling.
+  layout and do not need horizontal scrolling. Charts narrower than the column
+  are centred by `docs/styles.css`; `fig-align` does not apply to altair output.
 
 ### Concept posts
 `docs/concepts/` holds pedagogical explainers of background ideas

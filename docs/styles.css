@@ -1,1 +1,8 @@
 /* css styles */
+
+/* Centre altair charts in their output column. Quarto's fig-align only applies to
+   figure wrappers (images), not to the div that vega-embed renders into. */
+.cell-output-display > div[id^="altair-viz"] {
+  display: flex;
+  justify-content: center;
+}
