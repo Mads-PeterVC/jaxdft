@@ -76,6 +76,7 @@ shown at every fifth k-point. Hover a point for values; drag or scroll to pan
 and zoom.
 
 ```{python}
+#| column: page-inset
 #| echo: false
 E_MAX = 8.0  # E0, top of the plotted window
 x = np.asarray(path.distance)

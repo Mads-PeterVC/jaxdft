@@ -127,6 +127,7 @@ scales: its 1s, 2s and 2p binding energies are 1839, 149.7 and about 99.6 eV
 ```{python}
 #| code-fold: true
 #| code-summary: "Orbital plot"
+#| column: page-inset
 rows = []
 mask = r <= 6
 for name, (e, u) in orbitals.items():
@@ -203,6 +204,7 @@ $N_\text{PW} \approx \Omega\, q_\text{max}^3 / 6\pi^2$.
 ```{python}
 #| code-fold: true
 #| code-summary: "Interactive cutoff chart"
+#| column: page-inset
 OMEGA_SI = silicon().lattice_constant ** 3 / 4      # primitive-cell volume, Bohr³
 log_ecuts = np.round(np.arange(0.0, 4.01, 0.25), 2)
 r_show = np.linspace(0.002, 3.0, 300)
@@ -411,6 +413,7 @@ pseudo-orbital needs (right).
 ```{python}
 #| code-fold: true
 #| code-summary: "Interactive core-radius chart"
+#| column: page-inset
 last_node_3s = r[np.flatnonzero(np.diff(np.sign(u3s[r < 3])))[-1]]
 rcs = np.round(np.arange(np.ceil((last_node_3s + 0.25) * 10) / 10, 2.61, 0.1), 2)
 r_plot = (r <= 4)
@@ -565,6 +568,7 @@ assert abs(slope["not norm-conserving"] - slope["all-electron"]) / abs(hsc) > 0.
 ```{python}
 #| code-fold: true
 #| code-summary: "Logarithmic-derivative chart"
+#| column: page-inset
 # arctan D jumps by π at each pole of D; unwrap it into a continuous phase.
 ld = pd.concat([pd.DataFrame({"energy (Ha)": energies, "arctan D": np.unwrap(np.arctan(v), period=np.pi), "curve": k})
                 for k, v in D.items()])
@@ -593,6 +597,7 @@ never shown: the 4s level. In the pseudo-atom this is the *second* s level.
 ```{python}
 #| code-fold: true
 #| code-summary: "Softness versus transferability"
+#| column: page-inset
 eps4s = eps_s[3]
 trade = []
 for rc in rcs:
@@ -646,6 +651,7 @@ resulting potential is different:
 ```{python}
 #| code-fold: true
 #| code-summary: "s and p pseudopotentials"
+#| column: page-inset
 m = (r <= 3)
 pots = pd.concat([pd.DataFrame({"r (Bohr)": r[m][::6], "V (Ha)": v[m][::6], "curve": k}) for k, v in
                   {"all-electron V": V_ae, "pseudopotential, l = 0": V_ps_s, "pseudopotential, l = 1": V_ps_p}.items()])
@@ -722,6 +728,7 @@ def v_nucleus(q):
 ```{python}
 #| code-fold: true
 #| code-summary: "Form-factor chart"
+#| column: page-inset
 qq = np.linspace(0.3, 12, 400)
 ff = pd.concat([
     pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(v_nucleus(qq)), "curve": "nucleus, −14/r"}),

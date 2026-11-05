@@ -244,6 +244,8 @@ Later milestones are defined when we get there.
 - Never hardcode numerical results in documents. Compute them from the library
   so docs stay in sync with code.
 - Plots use a shared style module. Prefer interactive charts when they allow for deeper analysis, using e.g. altair.
+- Give every chart cell `#| column: page-inset` so figures use the wider page
+  layout and do not need horizontal scrolling.
 
 ### Concept posts
 `docs/concepts/` holds pedagogical explainers of background ideas

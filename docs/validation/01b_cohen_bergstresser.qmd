@@ -87,6 +87,7 @@ are in the [theory post](../theory/01b_cohen_bergstresser.qmd).
 ## Band structure
 
 ```{python}
+#| column: page-inset
 #| echo: false
 path = kpath(si.lattice, special_points_fcc(), [["L", "G", "X", "U"], ["K", "G"]], n_points=200)
 basis = PlaneWaveBasis.build(si.lattice, path.kpoints, TEST_ECUT)
@@ -171,6 +172,7 @@ than independent evidence.
 ## Convergence, and the paper's own basis
 
 ```{python}
+#| column: page-inset
 #| echo: false
 cutoffs = [2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0]
 conv = {E: splittings(E)[0] for E in cutoffs}
