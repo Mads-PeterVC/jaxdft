@@ -61,3 +61,59 @@ added when there is something to run.
 - A `units` module with tested conversions arrives with the first
   boundary conversion. Milestone 1a works entirely in atomic units and in
   units of $\tfrac12(2\pi/a)^2$.
+
+## 2026-11-05: Milestone 1a design decisions from theory review
+
+The [theory post](../theory/01a_empty_lattice.qmd) was reviewed before any
+implementation. Every quantitative claim was re-derived independently, and no
+physics errors were found. The review changed four engineering decisions.
+I reproduced its measurements with a throwaway NumPy enumeration before
+accepting them.
+
+**Per-k padded Miller-index lists, not a shared candidate set.** `vmap` needs
+a common shape, not a common set of G vectors. The first draft proposed one
+set containing every $\mathcal{B}_\mathbf{k}$ (radius $G_\text{max} + |\mathrm{W}|$)
+plus a per-k mask. For fcc with $a = 10.26$ Bohr over the six high-symmetry
+points, that set was 1.73× the largest per-k basis at 5 Ha and 1.17× at 80 Ha.
+Dense `eigh` costs the cube of that: 5.1× and 1.6×. The per-k sizes
+themselves differ by about 2%. The batch layout is therefore
+`(n_k, N_pad, 3)` integer Miller indices plus an `(n_k, N_pad)` boolean mask.
+`N_pad` is a Python int fixed on the host before tracing. These numbers are a
+one-off snapshot for the decision record; the validation document computes
+them from the library.
+
+**Padding is exactly decoupled, and the sentinel is modest.** Padded components
+must have zero rows and columns, not just a large diagonal. Otherwise
+$\tilde V(\mathbf{G}-\mathbf{G}')$ in 1b, evaluated at a padding entry's
+arbitrary Miller index, would leak into the physical block. The sentinel
+diagonal is a small multiple of $E_\text{cut}$. The reviewer measured that LAPACK's
+physical eigenvalues are insensitive to the sentinel (1.9e-13 Ha for sentinels
+from 4e1 to 1e12). A huge sentinel would still spread the spectrum over many
+orders of magnitude, which slows down the iterative solvers planned later.
+The test is solver-independent: the same k-point with two values of `N_pad`
+must give the same bands.
+
+**Provable enumeration bound.** The integer search box is
+$|m_i| \le \lceil (G_\text{max}+|\mathbf{k}|)|\mathbf{a}_i|/2\pi \rceil$, from
+$\mathbf{G}\cdot\mathbf{a}_i = 2\pi m_i$ and Cauchy–Schwarz. A guessed cube is
+unsafe in skewed cells.
+
+**Cutoff ties.** Test cutoffs are placed strictly between shells, with a
+relative margin of at least 1e-8. The reviewer suggested instead making the
+reference enumeration use the code's own arithmetic, so ties round the same
+way. I did not adopt that, because it makes the reference less independent of
+the code it checks.
+
+**Basis-size bound.** The reviewer flagged that a test asserting monotone
+convergence of $N_\text{PW}$ to its asymptote would be flaky, and proposed a
+bound $C\,E_\text{cut}^{-1/2}$ with $C$ measured once. I used a rigorous bound
+instead, from tiling with Brillouin zones of circumradius $r_\text{BZ}$, which
+needs no fitted constant. A first version used the reciprocal parallelepiped's
+diameter (2.03 Bohr⁻¹ at $a = 10.26$). It held, but was nearly vacuous: the
+upper bound was 4.4 at 5 Ha. The Wigner–Seitz circumradius $|\mathrm{W}|$
+(0.68 Bohr⁻¹) is three times tighter. It is still loose and catches only
+gross errors; the exact count is tested by enumeration.
+
+**References.** Cutoff conventions as documented for DFTK (`Ecut`), ABINIT
+(`ecut`) and Quantum ESPRESSO (`ecutwfc`, `ecutrho`). No source code was
+consulted.

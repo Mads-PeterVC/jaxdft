@@ -1,0 +1,24 @@
+---
+title: "Research log"
+---
+
+Physical results, unexpected behaviour and its interpretation, comparisons
+with literature, and choices of approximation. Entries are dated H2 sections;
+existing entries are never edited.
+
+## 2026-11-05: Validation strategy for the first milestones
+
+The first two milestones are deliberately free of self-consistency. Milestone
+1a, the empty lattice, has an exact answer: the folded free-electron
+parabolas $\tfrac12|\mathbf{k}+\mathbf{G}|^2$. With the k-dependent
+kinetic-energy cutoff proposed in the
+[theory post](../theory/01a_empty_lattice.qmd), every eigenvalue below the
+cutoff is exact and none is missing. That allows a strong test: a wrong
+reciprocal lattice, a missing plane wave or a padding component leaking into
+the spectrum shows up as an error of order one in units of
+$\tfrac12(2\pi/a)^2$, against a tolerance of $10^{-10}$ Ha.
+
+The empty lattice cannot detect errors that only matter when plane waves
+couple, such as the sign convention of the structure factor or the
+indexing of $V(\mathbf{G}-\mathbf{G}')$. That is Milestone 1b's job, validated
+against published Cohen–Bergstresser silicon bands.

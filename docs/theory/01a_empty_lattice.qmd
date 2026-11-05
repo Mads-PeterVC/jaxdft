@@ -1,0 +1,503 @@
+---
+title: "Milestone 1a: the empty lattice"
+description: "Plane-wave basis, reciprocal lattice, cutoff and folded free-electron bands for fcc."
+date: 2026-11-05
+---
+
+::: {.callout-note}
+## Status: reviewed
+Reviewed on 2026-11-05. The review found no physics errors. It corrected
+several statements, added details that had been hidden, and settled the open
+questions. Those questions are recorded as decisions at the end of this post.
+:::
+
+## Scope
+
+Milestone 1a computes the band structure of a free electron in a periodic
+face-centred cubic (fcc) cell, the *empty lattice*. There is no potential, so
+the exact answer is known in closed form. That makes it the first rung of the
+validation ladder, and it tests the parts of the machinery that every later
+milestone uses:
+
+- the direct and reciprocal lattice,
+- the plane-wave basis and its kinetic-energy cutoff,
+- k-points and k-point paths, as a batch dimension,
+- the Hamiltonian as a matrix-free operator, and the dense matrix built from it,
+- diagonalisation.
+
+Out of scope: any non-constant potential (that is 1b), FFT grids, densities,
+occupations, total energies, and symmetry reduction of k-points.
+
+All quantities are in atomic units (Hartree, Bohr, $\hbar = m_e = e = 1$).
+
+## Direct lattice
+
+A crystal is periodic under translations by the lattice vectors
+$\mathbf{R} = n_1\mathbf{a}_1 + n_2\mathbf{a}_2 + n_3\mathbf{a}_3$ with
+$n_i \in \mathbb{Z}$. We collect the primitive vectors as the **rows** of a
+$3\times 3$ matrix $A$, so the Cartesian position of the point with integer or
+fractional coordinates $\mathbf{n}$ (a row vector) is $\mathbf{r} = \mathbf{n}A$.
+This matches ASE (`cell`), pymatgen (`Lattice.matrix`) and spglib. DFTK stores
+lattice vectors as columns. Comparisons with DFTK therefore transpose once at
+the boundary, and that transpose gets a round-trip test.
+
+For fcc with conventional cubic lattice constant $a$ we use
+
+$$
+A = \frac{a}{2}
+\begin{pmatrix}
+0 & 1 & 1\\
+1 & 0 & 1\\
+1 & 1 & 0
+\end{pmatrix},
+\qquad
+\Omega = |\det A| = \frac{a^3}{4},
+$$
+
+where $\Omega$ is the volume of the primitive cell. The rest of the machinery
+takes a general $A$; fcc is the test case.
+
+## Reciprocal lattice
+
+The reciprocal primitive vectors $\mathbf{b}_j$ satisfy
+$\mathbf{a}_i\cdot\mathbf{b}_j = 2\pi\delta_{ij}$. With both sets stored as rows,
+
+$$
+A B^{\mathsf T} = 2\pi I
+\quad\Longrightarrow\quad
+B = 2\pi\,(A^{-1})^{\mathsf T}.
+$$
+
+Reciprocal lattice vectors are $\mathbf{G} = \mathbf{m}B$ with Miller indices
+$\mathbf{m} \in \mathbb{Z}^3$, and $e^{i\mathbf{G}\cdot\mathbf{R}} = 1$ for all
+lattice vectors. For fcc,
+
+$$
+B = \frac{2\pi}{a}
+\begin{pmatrix}
+-1 & 1 & 1\\
+1 & -1 & 1\\
+1 & 1 & -1
+\end{pmatrix},
+$$
+
+a body-centred cubic lattice. In units of $2\pi/a$, its points are the integer
+triples $(h,k,l)$ that are either all even or all odd. Each component of
+$\mathbf{m}B$ has the parity of $m_1+m_2+m_3$.
+
+## Bloch states in a plane-wave basis
+
+The Hamiltonian commutes with the lattice translations. By Bloch's theorem
+its eigenstates can therefore be chosen as
+$\psi_{n\mathbf{k}}(\mathbf{r}) = e^{i\mathbf{k}\cdot\mathbf{r}}\,u_{n\mathbf{k}}(\mathbf{r})$,
+with $u_{n\mathbf{k}}$ lattice-periodic and $\mathbf{k}$ in the first Brillouin zone.
+A lattice-periodic function has a Fourier series over the reciprocal lattice,
+so expanding $u_{n\mathbf{k}}$ gives
+
+$$
+\psi_{n\mathbf{k}}(\mathbf{r}) = \frac{1}{\sqrt{\Omega}}
+\sum_{\mathbf{G}} c_{n\mathbf{k}}(\mathbf{G})\, e^{i(\mathbf{k}+\mathbf{G})\cdot\mathbf{r}} .
+$$
+
+That only the wavevectors $\mathbf{k}+\mathbf{G}$ appear follows from
+periodicity; it is not a choice. The plane waves
+$\langle\mathbf{r}|\mathbf{k}+\mathbf{G}\rangle = \Omega^{-1/2} e^{i(\mathbf{k}+\mathbf{G})\cdot\mathbf{r}}$
+are orthonormal over the cell, and a lattice-periodic operator has no matrix
+elements between plane waves belonging to different $\mathbf{k}$ in the first
+zone. The Schrödinger equation therefore splits into one independent matrix
+eigenproblem per $\mathbf{k}$:
+
+$$
+\sum_{\mathbf{G}'} H_{\mathbf{G}\mathbf{G}'}(\mathbf{k})\, c_{n\mathbf{k}}(\mathbf{G}')
+= \varepsilon_{n\mathbf{k}}\, c_{n\mathbf{k}}(\mathbf{G}),
+\qquad
+H_{\mathbf{G}\mathbf{G}'}(\mathbf{k}) = \langle \mathbf{k}+\mathbf{G}|\hat H|\mathbf{k}+\mathbf{G}'\rangle .
+$$
+
+This independence is why k-points are a batch dimension: one function is
+mapped over all of them.
+
+Coefficients are normalised so that $\sum_\mathbf{G} |c_{n\mathbf{k}}(\mathbf{G})|^2 = 1$,
+which with the $\Omega^{-1/2}$ prefactor makes $\psi_{n\mathbf{k}}$ normalised
+over the cell.
+
+### Matrix elements of a local potential
+
+This milestone has no potential. The normalisation chosen above still fixes
+the convention 1b must use, so we state it here. For a lattice-periodic local
+potential $V(\mathbf{r})$,
+
+$$
+V_{\mathbf{G}\mathbf{G}'} = \langle \mathbf{k}+\mathbf{G}|V|\mathbf{k}+\mathbf{G}'\rangle
+= \frac{1}{\Omega}\int_\Omega V(\mathbf{r})\, e^{-i(\mathbf{G}-\mathbf{G}')\cdot\mathbf{r}}\,d\mathbf{r}
+\equiv \tilde V(\mathbf{G}-\mathbf{G}'),
+$$
+
+independent of $\mathbf{k}$, with $V(\mathbf{r}) = \sum_\mathbf{G} \tilde V(\mathbf{G})\,e^{i\mathbf{G}\cdot\mathbf{r}}$.
+The $1/\Omega$ is where plane-wave codes most often lose or gain a factor of
+the cell volume. A constant potential $V_0$ has $\tilde V(\mathbf{0}) = V_0$ and
+shifts every eigenvalue by $V_0$.
+
+## The kinetic operator
+
+With $\hat T = -\tfrac12\nabla^2$, each plane wave is an eigenfunction:
+
+$$
+\hat T\,|\mathbf{k}+\mathbf{G}\rangle = \tfrac12|\mathbf{k}+\mathbf{G}|^2\,|\mathbf{k}+\mathbf{G}\rangle,
+\qquad
+T_{\mathbf{G}\mathbf{G}'}(\mathbf{k}) = \tfrac12|\mathbf{k}+\mathbf{G}|^2\,\delta_{\mathbf{G}\mathbf{G}'} .
+$$
+
+As an operator on coefficient vectors this is an element-wise multiplication,
+$(\hat T c)(\mathbf{G}) = \tfrac12|\mathbf{k}+\mathbf{G}|^2 c(\mathbf{G})$. That is the
+form we implement (`apply_H`), and the dense matrix is built by applying the
+operator to the identity.
+
+For the empty lattice both forms are diagonal, so `eigh` only sorts, and the
+operator–dense comparison is a diagonal multiply. These tests fix the
+interface before 1b adds a non-diagonal potential, but they do **not**
+exercise the non-trivial path. A constant $V_0$ does not change that, since
+it is still diagonal. The non-trivial path is covered separately, by pushing
+an arbitrary Hermitian operator through the same dense-build, apply and
+diagonalise interface (see the tests below).
+
+## Kinetic-energy cutoff
+
+The basis at each $\mathbf{k}$ must be finite. We use the standard
+plane-wave cutoff:
+
+$$
+\mathcal{B}_\mathbf{k}(E_\text{cut}) = \left\{\mathbf{G} : \tfrac12|\mathbf{k}+\mathbf{G}|^2 \le E_\text{cut}\right\},
+$$
+
+with $E_\text{cut}$ in Hartree. Two equivalent pictures are used in the code.
+In $\mathbf{G}$-space it is a sphere of radius $G_\text{max} = \sqrt{2E_\text{cut}}$
+centred on $-\mathbf{k}$; this sets the enumeration bounds. In terms of the
+wavevector $\mathbf{q} = \mathbf{k}+\mathbf{G}$ it is the sphere
+$|\mathbf{q}| \le G_\text{max}$ centred on the origin; this sets the energy.
+
+This is the convention used by DFTK (`Ecut`, Ha), ABINIT (`ecut`, Ha) and
+Quantum ESPRESSO (`ecutwfc`, the same cutoff in Rydberg). It has these
+properties:
+
+1. **Nesting and monotonicity.** If $E_\text{cut} < E'_\text{cut}$ then
+   $\mathcal{B}_\mathbf{k}(E_\text{cut}) \subseteq \mathcal{B}_\mathbf{k}(E'_\text{cut})$.
+   By the Courant–Fischer min-max theorem, the $n$-th eigenvalue is then
+   non-increasing with cutoff, for every $n$. This per-eigenvalue statement
+   is stronger than, and different from, the total-energy monotonicity in
+   `CLAUDE.md`. That one follows from minimising the total energy over a
+   nested sequence of spaces, not from the eigenvalues.
+2. **Exactness below the cutoff, for the empty lattice.** Every plane wave
+   with kinetic energy $\le E_\text{cut}$ is in the basis, and $\hat T$ is
+   diagonal. So every eigenvalue $\le E_\text{cut}$ is exact, and none is
+   missing.
+3. **A bounded spectrum.** Every diagonal kinetic entry is at most
+   $E_\text{cut}$ by construction, so $\|T\| \le E_\text{cut}$ at every $\mathbf{k}$.
+
+A $\mathbf{k}$-independent sphere $|\mathbf{G}| \le G_\text{max}$ is also nested at
+fixed $\mathbf{k}$, so it keeps property 1. It loses the other two. Its
+eigenvalues are exact and complete only up to $\tfrac12(G_\text{max} - |\mathbf{k}|)^2$,
+its kinetic norm grows to $\tfrac12(G_\text{max}+|\mathbf{k}|)^2$, and it describes
+states at large $|\mathbf{k}|$ worse than states near $\Gamma$, because their
+sphere sits off-centre.
+
+**The cost of the chosen convention.** Because $\mathcal{B}_\mathbf{k}$ changes as
+$\mathbf{k}$ moves, the basis changes discontinuously along a path whenever a
+plane wave enters or leaves the sphere. In 1a this is invisible, since every
+eigenvalue below the cutoff is exact. Once a potential couples plane waves
+(1b), band energies along a path will show small jumps, of the size of the
+variational error, at those points. This is a known artefact of the
+convention, not a bug, and it shrinks as $E_\text{cut}$ grows.
+
+### Enumerating the basis
+
+A plane wave can silently go missing only through the bounds on the integer
+search, so those bounds are part of correctness. Since
+$\mathbf{G}\cdot\mathbf{a}_i = 2\pi m_i$, and since $\mathbf{G} \in \mathcal{B}_\mathbf{k}$
+implies $|\mathbf{G}| \le G_\text{max} + |\mathbf{k}|$, Cauchy–Schwarz gives
+
+$$
+|m_i| = \frac{|\mathbf{G}\cdot\mathbf{a}_i|}{2\pi} \le \frac{(G_\text{max} + |\mathbf{k}|)\,|\mathbf{a}_i|}{2\pi}.
+$$
+
+Searching the box $|m_i| \le \lceil (G_\text{max} + |\mathbf{k}|)\,|\mathbf{a}_i|/2\pi \rceil$
+is therefore provably complete for any cell, however skewed. A symmetric cube
+guessed from $G_\text{max}$ alone is not.
+
+**Ties at the cutoff.** The comparison $\tfrac12|\mathbf{k}+\mathbf{m}B|^2 \le E_\text{cut}$
+is an exact floating-point test. Two algebraically equivalent ways of computing
+the left side differ in the last bits (about $4\times10^{-16}$ relative). At the
+high-symmetry points the shells are up to 24-fold degenerate, so a cutoff placed
+exactly on a shell flips the whole shell in or out on round-off. Tests therefore
+place $E_\text{cut}$ strictly between shells, with a relative margin of at
+least $10^{-8}$ to the nearest shell. The reference enumeration in the tests
+then stays an independent calculation, and still agrees exactly. A cutoff on a
+shell is legitimate input to the code, but its basis is only defined up to
+round-off.
+
+### Basis size
+
+The basis size is approximately the volume of the sphere divided by the
+Brillouin-zone volume $(2\pi)^3/\Omega$:
+
+$$
+N_\text{PW} \approx N_\text{asym} = \frac{\Omega}{6\pi^2}\,(2E_\text{cut})^{3/2}.
+$$
+
+The error is not monotone in $E_\text{cut}$ and changes sign, because shells
+enter the sphere discretely. It is bounded, though. Centre a copy of the first
+Brillouin zone (the Wigner–Seitz cell of the reciprocal lattice) on every
+included $\mathbf{q}$, and let $r_\text{BZ}$ be its circumradius, the largest
+$|\mathbf{k}|$ in the zone ($|\mathrm{W}|$ for fcc). These cells tile space
+without overlap. They lie inside the sphere of radius $G_\text{max}+r_\text{BZ}$,
+and they cover the sphere of radius $G_\text{max}-r_\text{BZ}$, since every point
+of it lies in some cell whose centre is within $r_\text{BZ}$. Hence
+
+$$
+\left(1 - \frac{r_\text{BZ}}{G_\text{max}}\right)^3 \le \frac{N_\text{PW}}{N_\text{asym}} \le \left(1 + \frac{r_\text{BZ}}{G_\text{max}}\right)^3 ,
+$$
+
+a relative error of $O(E_\text{cut}^{-1/2})$. The bound is rigorous and needs no
+fitted constant. It is also loose: the actual deviations are a few percent,
+much smaller than the bound allows. As a test it catches only gross errors,
+such as a wrong cell volume or half the basis missing. The exact count is
+pinned by the brute-force enumeration.
+
+The density in later milestones is $|\psi|^2$, which contains wavevectors up
+to $2G_\text{max}$. Its grid therefore needs a cutoff of $4E_\text{cut}$
+(Quantum ESPRESSO's default `ecutrho`). This first matters in the SCF
+milestone.
+
+### Batching over k-points
+
+`vmap` needs a common array *shape* across k-points, not a common *set* of
+$\mathbf{G}$. Each k-point gets its own list of Miller indices for
+$\mathcal{B}_\mathbf{k}$, padded to a common length
+$N_\text{pad} \ge \max_\mathbf{k} N_\text{PW}(\mathbf{k})$, with a mask marking the
+real entries. The batch has shape $(n_k, N_\text{pad}, 3)$. $N_\text{pad}$ is a
+host-side integer fixed before tracing.
+
+The alternative was one shared candidate set containing every
+$\mathcal{B}_\mathbf{k}$, i.e. all $|\mathbf{G}| \le G_\text{max} + \max_\mathbf{k}|\mathbf{k}|$,
+masked per k. It has the same masking machinery but is larger by roughly
+$(1 + \max|\mathbf{k}|/G_\text{max})^3$. For fcc, $\max|\mathbf{k}|$ over the first
+zone is the circumradius $|\mathrm{W}| = \tfrac{\sqrt5}{2}\,(2\pi/a)$. By
+contrast, $N_\text{PW}(\mathbf{k})$ varies across k by only a few percent. The
+shared set costs most at the small cutoffs used in tests, and dense
+diagonalisation pays for it cubed. Its one advantage, a single index map onto
+an FFT grid, is not needed: a per-k index array vmaps equally well. The
+validation document reports both sizes, computed from the library.
+
+**Padding must be exactly decoupled.** This is a physics requirement, not an
+implementation detail. For padded components the operator must act as
+$(Hc)_p = s\,c_p$, with every row and column coupling a padded component to a
+real one equal to zero, where $s$ is a sentinel energy. A large diagonal alone
+is not enough. In 1b, $\tilde V(\mathbf{G}-\mathbf{G}')$ evaluated at a padding
+entry's (arbitrary) Miller index would couple padding into the physical block
+and give eigenvalues that are wrong but plausible.
+
+For a decoupled block-diagonal matrix the dense eigensolver's error on the
+physical eigenvalues is governed by the norm of the physical block, not by
+$s$. Even so, $s$ is chosen as a small multiple of $E_\text{cut}$, above every
+physical eigenvalue, because the iterative solvers planned later converge more
+slowly when the spectrum is spread over many orders of magnitude.
+
+**Number of bands.** Under `vmap` the requested number of bands must satisfy
+$n_\text{bands} \le \min_\mathbf{k} N_\text{PW}(\mathbf{k})$, so that no padding
+eigenvalue is ever returned. Exactness is a statement about eigenvalues
+$\le E_\text{cut}$, a k-dependent count. It does **not** say that the first
+$n_\text{bands}$ bands are exact. Tests compare only eigenvalues below the
+cutoff at each $\mathbf{k}$.
+
+## The folded free-electron bands
+
+The free-electron dispersion $\varepsilon(\mathbf{q}) = \tfrac12|\mathbf{q}|^2$ is
+a single parabola in the extended zone. Writing $\mathbf{q} = \mathbf{k}+\mathbf{G}$
+with $\mathbf{k}$ in the first Brillouin zone folds it into bands:
+
+$$
+\varepsilon_{n\mathbf{k}} = \text{the } n\text{-th smallest value of } \tfrac12|\mathbf{k}+\mathbf{G}|^2 \text{ over all } \mathbf{G}.
+$$
+
+This is the analytic reference. Two remarks:
+
+- **Band index means energy order.** Bands are labelled by sorting
+  eigenvalues at each $\mathbf{k}$, not by following a particular $\mathbf{G}$.
+  Where two parabolas cross, the sorted bands touch and swap character.
+- **Eigenvectors are not compared.** In a degenerate level the eigenvectors are
+  defined only up to a unitary rotation within the level. Tests compare
+  eigenvalues, and, where eigenvectors matter, quantities invariant within a
+  degenerate subspace (projectors, residual norms).
+
+### High-symmetry points
+
+We use the conventional fcc labels. In Cartesian units of $2\pi/a$, with the
+fractional coordinates $\mathbf{f}$ (where $\mathbf{k} = \mathbf{f}B$) used
+by the implementation:
+
+| Point | Cartesian ($2\pi/a$) | Fractional $\mathbf{f}$ |
+|:-----:|:--------------------:|:-----------------------:|
+| $\Gamma$ | $(0, 0, 0)$ | $(0, 0, 0)$ |
+| X | $(0, 1, 0)$ | $(\tfrac12, 0, \tfrac12)$ |
+| L | $(\tfrac12, \tfrac12, \tfrac12)$ | $(\tfrac12, \tfrac12, \tfrac12)$ |
+| W | $(1, \tfrac12, 0)$ | $(\tfrac14, \tfrac12, \tfrac34)$ |
+| K | $(\tfrac34, \tfrac34, 0)$ | $(\tfrac38, \tfrac38, \tfrac34)$ |
+| U | $(1, \tfrac14, \tfrac14)$ | $(\tfrac14, \tfrac58, \tfrac58)$ |
+
+Energies are naturally measured in units of
+$E_0 = \tfrac12(2\pi/a)^2$, in which
+$\varepsilon = |\mathbf{k}+\mathbf{G}|^2$ with both vectors in units of
+$2\pi/a$. The lowest levels and their degeneracies follow by enumerating
+the all-even and all-odd triples:
+
+| Point | Lowest levels in units of $E_0$ (degeneracy) |
+|:-----:|:---------------------------------------------|
+| $\Gamma$ | 0 (1), 3 (8), 4 (6), 8 (12), 11 (24), 12 (8) |
+| X | 1 (2), 2 (4), 5 (8), 6 (8), 9 (10), 10 (8) |
+| L | ¾ (2), 2¾ (6), 4¾ (6), 6¾ (8), 8¾ (12), 10¾ (6) |
+| W | 1¼ (4), 3¼ (4), 5¼ (8), 7¼ (12), 9¼ (4), 11¼ (12) |
+| K, U | 1⅛ (3), 2⅛ (2), 3⅛ (1), 4⅛ (4), 5⅛ (2), 6⅛ (8) |
+
+For example, at $\Gamma$ the first excited level comes from the eight
+$\mathbf{G} = \tfrac{2\pi}{a}(\pm1,\pm1,\pm1)$ with $|\mathbf{G}|^2 = 3$. At X the
+ground level is doubly degenerate because $\mathbf{G} = 0$ and
+$\mathbf{G} = \tfrac{2\pi}{a}(0,-2,0)$ give $|\mathbf{k}+\mathbf{G}|^2 = 1$:
+X lies on the zone face, halfway between $\Gamma$ and its image.
+
+This table is the most falsifiable content in the post, and it is a
+scientific test. It is checked at the six points as isolated k-points,
+including W, which the band-structure path below never visits. W is the
+only point whose lowest level is fourfold, and it sets $\max|\mathbf{k}|$.
+Computed eigenvalues are grouped into levels with a tolerance of
+$10^{-6}$ Ha. That is far above the $10^{-10}$ Ha eigenvalue error and far
+below the smallest level spacing in the table, which is
+$E_0 = 2\pi^2/a^2 \approx 0.19$ Ha for $a = 10.26$ Bohr.
+
+**K and U are the same point.** $\mathrm{U} - \tfrac{2\pi}{a}(1,1,1) = -\tfrac{2\pi}{a}(0,\tfrac34,\tfrac34)$,
+and $(1,1,1)$ is an all-odd reciprocal lattice vector. Inversion followed by
+a cyclic permutation of the axes maps this to $\tfrac{2\pi}{a}(\tfrac34,\tfrac34,0) = \mathrm{K}$.
+Both operations are in $O_h$, so the spectra at U and K are identical. That
+is why the conventional path can jump from U to K: the band energies are
+continuous across the jump. Their slopes are not, since the path direction
+changes, so the plot shows a kink there.
+
+### Band-structure path
+
+We use the path $\mathrm{L}\to\Gamma\to\mathrm{X}\to\mathrm{U}\,|\,\mathrm{K}\to\Gamma$.
+It is the conventional path for diamond-structure semiconductors, so
+Milestone 1b can reuse it and compare directly with published silicon band
+structures. A path is a sequence of straight segments in Cartesian
+$\mathbf{k}$, sampled at points spaced roughly uniformly in $|\Delta\mathbf{k}|$.
+The x-axis of a band plot is the cumulative path length, which does not
+advance across the U|K jump.
+
+Plots use $E_0$ as the energy unit, so the analytic levels sit at the small
+rationals in the table, independently of $a$. The validation document also
+reports values in Hartree, the unit reference codes report in.
+
+## Invariants and analytic checks
+
+These follow from the physics above and must hold for any valid input. They
+become unit, property and scientific tests.
+
+**Lattice**
+
+- $A B^{\mathsf T} = 2\pi I$ for any non-singular $A$.
+- $\Omega = |\det A|$, and the Brillouin-zone volume is $(2\pi)^3/\Omega$.
+- $e^{i\mathbf{G}\cdot\mathbf{R}} = 1$ for all generated $\mathbf{G}$ and lattice
+  vectors $\mathbf{R}$.
+
+**Basis**
+
+- Every $\mathbf{G}$ in $\mathcal{B}_\mathbf{k}$ satisfies the cutoff, and every
+  $\mathbf{m}$ satisfying it is included. Checked against a brute-force
+  enumeration over a box twice the proven bound, asserting that nothing outside
+  the bound qualifies. Cutoffs are placed between shells, as described above.
+- Nesting: $\mathcal{B}_\mathbf{k}(E) \subseteq \mathcal{B}_\mathbf{k}(E')$ for $E < E'$.
+- $N_\text{PW}/N_\text{asym}$ lies within the rigorous bound above.
+- $\mathcal{B}_{\mathbf{k}+\mathbf{G}_0} = \mathcal{B}_\mathbf{k} - \mathbf{G}_0$, so in particular
+  $N_\text{PW}(\mathbf{k}+\mathbf{G}_0) = N_\text{PW}(\mathbf{k})$.
+- $N_\text{PW}(S\mathbf{k}) = N_\text{PW}(\mathbf{k})$ for $S \in O_h$, in the fcc
+  cell. This and the previous check fail loudly if the integer search box is
+  too small in a skewed cell.
+
+**Hamiltonian and spectrum**
+
+- `apply_H` agrees with multiplication by the dense matrix, for random
+  coefficient vectors.
+- The dense matrix is Hermitian, and for the empty lattice real and diagonal.
+- The dense-build, apply and diagonalise interface, given an arbitrary
+  Hermitian operator, returns that operator's eigenvalues. This exercises the
+  path that the diagonal empty-lattice Hamiltonian does not.
+- Eigenvalues are real and sorted, eigenvectors orthonormal, and residuals
+  satisfy $\|Hc - \varepsilon c\| \le \tau\,\|H\|$, a relative tolerance.
+- Every computed eigenvalue $\le E_\text{cut}$ equals the analytic folded band,
+  and the count of eigenvalues $\le E_\text{cut}$ equals the analytic count.
+- A constant potential $V_0$ shifts every eigenvalue by exactly $V_0$.
+- Padding is decoupled. The same k-point, computed with two different
+  $N_\text{pad}$, gives the same requested bands to tolerance. This check is
+  independent of the solver.
+- Periodicity: the spectrum at $\mathbf{k}+\mathbf{G}_0$ equals the spectrum at $\mathbf{k}$.
+- Point symmetry: the spectrum is invariant under the 48 operations of $O_h$
+  applied to $\mathbf{k}$. Inversion is one of them, so time reversal
+  ($\mathbf{k}\to-\mathbf{k}$) gives no independent check for fcc. It would for a
+  point group without inversion.
+- Scaling: $a^2\,\varepsilon_{n\mathbf{k}}$ is independent of $a$ at fixed fractional
+  $\mathbf{k}$, provided $E_\text{cut}$ is scaled as $a^{-2}$ along with the lattice.
+  At fixed $E_\text{cut}$ the basis changes with $a$. The comparison is then valid
+  only for bands below the smaller of the two scaled cutoffs.
+- Variational: each eigenvalue is non-increasing with $E_\text{cut}$. For the
+  empty lattice this is trivially constant once a level is inside the sphere.
+  It becomes non-trivial in 1b.
+- The degeneracies at $\Gamma$, X, L, W, K and U match the table above.
+
+**Batching and precision**
+
+- The band structure over a path is computed by a single vmapped function,
+  and matches a per-k computation.
+- All physical arrays are float64 or complex128.
+
+### Tolerances
+
+For the empty lattice the dense matrix is diagonal, so the eigenvalues should
+be exact up to rounding in the diagonalisation. A backward-stable symmetric
+eigensolver gives errors of order $\epsilon_\text{mach}\,\|H\|$. For a
+decoupled padded matrix, the norm that matters is that of the physical block,
+which is at most $E_\text{cut}$ by property 3 of the cutoff. With
+$\epsilon_\text{mach} \approx 2.2\times10^{-16}$ and $E_\text{cut}$ at most a few
+hundred Hartree in the tests, this is about $10^{-13}$ Ha.
+
+The eigenvalue tolerance is an absolute $10^{-10}$ Ha. That leaves three orders
+of margin, and any physical error (a wrong lattice vector, a missing plane
+wave, leaking padding) fails by many orders of magnitude. Residuals use the
+relative tolerance $\tau = 10^{-12}$ against $\|H\|$. Degenerate levels are
+grouped at $10^{-6}$ Ha, as justified above.
+
+## What 1b will add
+
+Milestone 1b adds a fixed local potential, which couples plane waves through
+$\tilde V(\mathbf{G}-\mathbf{G}')$, with the normalisation fixed above. The
+Cohen–Bergstresser form factors are nonzero only on a few shells of
+$|\mathbf{G}|^2$, so the dense matrix can still be built directly. The kinetic
+operator, basis, padding, k-paths and diagonaliser from 1a should carry over
+unchanged. If they don't, the 1a design was wrong. 1b is also where the
+basis-change jumps along a path and the decoupling of padding first become
+observable.
+
+## Decisions from review
+
+1. **Cutoff convention.** Use the k-dependent sphere
+   $\tfrac12|\mathbf{k}+\mathbf{G}|^2 \le E_\text{cut}$ in Hartree. It gives
+   completeness below the cutoff and $\|T\| \le E_\text{cut}$, and it matches
+   DFTK, QE and ABINIT. The fixed-$|\mathbf{G}|$ sphere is also nested; that was
+   misstated in the first draft. Accepted cost: basis jumps along paths.
+2. **Row convention.** Rows, matching ASE, pymatgen and spglib. Transpose
+   once at the DFTK boundary, with a round-trip test.
+3. **k-path.** L–Γ–X–U|K–Γ for the plot. All six high-symmetry points,
+   including W, are tested as isolated k-points.
+4. **Plot units.** $E_0 = \tfrac12(2\pi/a)^2$ on the axes, with Hartree values
+   also reported in the validation document.
+5. **Padding.** Per-k Miller-index lists padded to a common length, with
+   rows and columns of padding exactly decoupled and a sentinel energy that is
+   a small multiple of $E_\text{cut}$. Decoupling is tested by varying
+   $N_\text{pad}$.
