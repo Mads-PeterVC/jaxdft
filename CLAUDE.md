@@ -42,6 +42,7 @@ jaxdft/
 ├── reference/         # scripts and stored outputs from reference codes
 ├── docs/              # Quarto website
 │   ├── theory/        # one theory post per milestone
+│   ├── concepts/      # pedagogical explainers (see Documentation)
 │   ├── validation/    # comparisons against references, with interpretation
 │   ├── engineering/   # engineering_log.qmd, performance.qmd
 │   └── research/      # research_log.qmd
@@ -243,6 +244,22 @@ Later milestones are defined when we get there.
 - Never hardcode numerical results in documents. Compute them from the library
   so docs stay in sync with code.
 - Plots use a shared style module. Prefer interactive charts when they allow for deeper analysis, using e.g. altair.
+
+### Concept posts
+`docs/concepts/` holds pedagogical explainers of background ideas
+(pseudopotentials, matrix-free operators, ...). They differ from theory and
+validation documents:
+- They may implement physics themselves in NumPy/SciPy. Visible code is a
+  second representation of the maths and is part of the point. The rule above
+  that documents never reimplement physics does not apply to them.
+- That code is untested and is not a reference or specification for anything.
+  jaxdft, its tests, and the theory and validation documents remain the
+  authority; when they disagree with a concept post, the post is wrong.
+- jaxdft never imports from or is shaped by concept posts. Nothing goes into
+  the package only to serve a concept post.
+- Posts still assert the claims they make about their own computations, so a
+  broken explainer breaks the render.
+- Interactive charts only where they answer a question a reader would ask.
 
 ### Logs
 - `docs/engineering/engineering_log.qmd`: design decisions, refactors,
