@@ -639,3 +639,51 @@ annotations (`code-annotations: hover`, set site-wide), which keeps the code
 short and puts the explanation in prose. Ruff leaves the `# <n>` markers on
 their lines. One validation cell gained a small `parity_sign` helper in place of
 a nested conditional inside an f-string.
+
+## 2026-11-05: Pseudopotential post revised after review
+
+Claude Science reviewed the pseudopotential concept post
+(`docs/concepts/reviews/review_pseudopotentials.md`). Every number it quoted
+reproduced when re-run from the post's code. Changes:
+
+- **Cutoff criterion.** The post measured cost by the norm missing above
+  E_cut. Energy convergence weights each q by an extra q²/2 and needs 2–7×
+  more for the pseudo-orbitals, and about 20–60× more for the all-electron
+  ones. Both criteria are now plotted, and the prose quotes the
+  kinetic-energy numbers. The model pseudo-3s at r_c = 1.6 Bohr needs about
+  27 Ha, which matches the range real silicon pseudopotentials use.
+- **Transform.** The kinetic-energy criterion needs q far beyond the old grid
+  (160 Bohr⁻¹), which the all-electron orbitals ran into. All transformed
+  orbitals are s orbitals, so the Hankel transform is a sine transform, and
+  `scipy.fft.dst(type=1)` gives it exactly for the radial grid function, up to
+  π/h. This also removed the grid dependence the review found in the 1s
+  number. The all-electron kinetic-energy cutoffs are still near the grid's
+  resolution (the bare Coulomb 1s comes out 9% below the analytic value), so
+  they are quoted to one figure, and that check is asserted.
+- **Non-monotonic cutoff.** With the kinetic-energy criterion, the cutoff
+  rises slightly between r_c = 1.3 and 1.4 Bohr. The missing fraction is a
+  tail sum, so this is a property of the pseudo-orbitals, not of the
+  threshold search. A jump in u‴ at r_c (which Kerker does not match) is a
+  plausible cause, but the evidence was mixed, so the post states the bump
+  without a mechanism. The monotonic assert became "no step up larger than
+  10%".
+- **Trade-off chart.** The two charts against r_c became one curve of 4s error
+  against cutoff, parameterised by r_c. The dominated region below the best
+  r_c is asserted.
+- **Real cutoffs.** Added a table of PseudoDojo standard-table hints
+  (ONCVPSP-PBE-PDv0.4, `standard.djson`, `hints.{low,normal,high}.ecut`, in Ha
+  per the PseudoDojo FAQ). These are quoted citations, not computed results.
+- **Text.**
+  - Added screening/unscreening and norm conservation's role for the density.
+  - Corrected the semilocal matrix element to a single radial integral per
+    pair of plane waves.
+  - Added the ghost-state caveat [Gonze, Stumpf and Scheffler 1991].
+  - Described ultrasoft and PAW separately.
+  - Added the other limits of the Lindhard comparison, and the model core
+    being deeper than real Si.
+  - Added the limits of the frozen core, the potential's kink at r_c, and the
+    parameter count of the Kerker form.
+  - Removed a stray BEL byte (`\a` from `\approx`, mangled on the way in). A
+    scan of all tracked files found no other control characters.
+- `ecut_for` now raises when the threshold is never reached, instead of
+  returning the first grid point.
