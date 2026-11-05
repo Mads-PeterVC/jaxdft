@@ -79,3 +79,87 @@ cubic cost of dense `eigh` would predict. That is fine for validation;
 production cutoffs will need the iterative solvers planned for later
 milestones. Basis construction is a one-off host-side enumeration and is not
 yet a concern.
+
+## Milestone 1b: Cohen–Bergstresser silicon
+
+The same path with the local pseudopotential added: Si at $a$ = 5.43 Å, `Kinetic`
+plus the matrix-free `LocalPotential`, 10 bands, dense `eigh`. Times include the
+host-side `bind` (validation and coupling-vector enumeration) on every call.
+
+```{python}
+#| echo: false
+from jaxdft import Kinetic, LocalPotential, diamond
+from jaxdft.pseudo.cohen_bergstresser import silicon
+
+si = diamond(5.43, "Si", unit="Angstrom")
+terms = (Kinetic(), LocalPotential({"Si": silicon()}))
+rows = []
+for ecut, n_k in [(6.0, 50), (6.0, 200), (10.0, 50)]:
+    path = kpath(si.lattice, special_points_fcc(), [["L", "G", "X", "U"], ["K", "G"]], n_points=n_k)
+    basis = PlaneWaveBasis.build(si.lattice, path.kpoints, ecut)
+    run = lambda: band_structure(si, basis, 10, terms=terms)
+    first = timed(run)
+    steady = statistics.median(timed(run) for _ in range(3))
+    rows.append(
+        {
+            "E_cut (Ha)": f"{ecut:g}",
+            "k-points": n_k,
+            "N_pad": basis.n_pad,
+            "first call (s)": f"{first:.2f}",
+            "steady state (s)": f"{steady:.3f}",
+            "per k-point (ms)": f"{1e3 * steady / n_k:.2f}",
+        }
+    )
+pd.DataFrame(rows).style.hide(axis="index")
+```
+
+Where the time goes, for a single k-point at Γ (median of five calls, each
+step jitted separately):
+
+```{python}
+#| echo: false
+import jax
+import jax.numpy as jnp
+
+from jaxdft import apply_H, hamiltonian
+from jaxdft.calculations.bands import bind_terms
+
+
+def median_time(fn, *args, repeats=5):
+    jax.block_until_ready(fn(*args))  # compile
+    samples = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        jax.block_until_ready(fn(*args))
+        samples.append(time.perf_counter() - t0)
+    return statistics.median(samples)
+
+
+profile_rows = []
+for label, these_terms in [("Kinetic only (1a)", (Kinetic(),)), ("Kinetic + LocalPotential (1b)", terms)]:
+    b = PlaneWaveBasis.build(si.lattice, jnp.zeros((1, 3)), 10.0)
+    bound = bind_terms(si, these_terms)
+    n = b.n_pad
+    build = jax.jit(lambda s, bk, t: apply_H(hamiltonian(s, bk, t), jnp.eye(n, dtype=jnp.complex128)))
+    apply_block = jax.jit(lambda s, bk, t, x: apply_H(hamiltonian(s, bk, t), x))
+    H = build(si, b[0], bound)
+    psi = jnp.ones((n, 10), dtype=jnp.complex128)
+    profile_rows.append(
+        {
+            "terms": label,
+            "N_pad": n,
+            "dense build (ms)": f"{1e3 * median_time(build, si, b[0], bound):.1f}",
+            "eigh (ms)": f"{1e3 * median_time(jax.jit(jnp.linalg.eigh), H):.1f}",
+            "apply to 10 bands (ms)": f"{1e3 * median_time(apply_block, si, b[0], bound, psi):.2f}",
+        }
+    )
+pd.DataFrame(profile_rows).style.hide(axis="index")
+```
+
+Dense diagonalisation dominates. With the potential, `eigh` works on a full
+matrix rather than a diagonal one, which is why 1b is several times slower
+than 1a at the same $N_\text{pad}$. Building the dense matrix from the
+gather operator is a smaller cost. Applying the operator to a block of bands,
+which is all an iterative solver needs, is cheaper still by orders of
+magnitude. The matrix-free operator pays off once an iterative solver replaces
+the dense one.

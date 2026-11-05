@@ -6,7 +6,7 @@ bibliography: ../references.bib
 ---
 
 ::: {.callout-note}
-## Status: reviewed
+## Status: reviewed and implemented
 Reviewed on 2026-11-05. The review is kept at `reviews/review_01b_cohen_bergstresser.md`.
 It found the conventions and normalisation correct and sharpened several
 tests. The decisions are recorded at the end of this post.

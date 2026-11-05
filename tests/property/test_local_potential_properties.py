@@ -154,6 +154,26 @@ def test_dense_physical_block_matches_numpy_hamiltonian(si, vloc, k):
 
 
 @settings(max_examples=10)
+@given(A=cells(), k=kfracs())
+def test_matrix_elements_are_v_of_g_minus_g_prime(A, k):
+    """<k+G|V|k+G'> = V(G - G'), checked entry by entry for a structure where V is complex.
+    With V real (the symmetric diamond origin) the transpose convention V(G' - G) gives the
+    same matrix, and in general it gives conj(H): identical eigenvalues, so no spectrum test
+    can see it, but it is the crystal inverted through the origin. Added after mutation
+    testing showed the direction m - d versus m + d was otherwise untested."""
+    vg = LocalPotential({"X": GaussianPseudo()})
+    # Fixed positions with no inversion centre and unequal weights, so V is complex.
+    s = Structure(Lattice(A), [[0.1, 0.2, 0.3], [-0.05, 0.4, 0.15]], ["X", "X"], weights=[1.0, 0.6])
+    b = PlaneWaveBasis.build(s.lattice, k[None], 1.0)[0]
+    mask = np.asarray(b.mask)
+    m = np.asarray(b.miller)[mask]
+    H = np.asarray(dense_matrix(hamiltonian(s, b, (vg,))))[np.ix_(mask, mask)]
+    expected = np.asarray(vg.coefficients(s, jnp.asarray(m[:, None, :] - m[None, :, :])))
+    assert np.abs(expected.imag).max() > 1e-6  # the test needs a complex V
+    np.testing.assert_allclose(H, expected, atol=1e-13)
+
+
+@settings(max_examples=10)
 @given(k=kfracs(), seed=st.integers(0, 2**32 - 1), extra=st.integers(1, 12))
 def test_operator_dense_hermitian_and_padding_decoupled(si, vloc, k, seed, extra):
     b0 = PlaneWaveBasis.build(si.lattice, k[None], SMALL_ECUT)

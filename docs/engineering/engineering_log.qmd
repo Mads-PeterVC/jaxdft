@@ -470,3 +470,69 @@ The mechanical 1a test updates (approved in the API rounds): `Lattice.fcc(a)`
 becomes `fcc_lattice(a, unit="Bohr")`, `band_structure(lattice, ...)` becomes
 `band_structure(empty(lattice), ...)`, and test-only terms take
 `prepare(structure, basis_k)`. No test logic changed.
+
+## 2026-11-05: Milestone 1b implementation
+
+**The `bind` hook (agreed during implementation).** The coupling vectors of
+the matrix-free local potential depend on the cell, and their number fixes an
+array shape. Inside `jit` the cell is traced, so they cannot be computed in
+`prepare`. The agreed `validate` hook returned nothing, so it could not carry
+them. After a question to the project lead, terms gained an optional
+`bind(structure) -> term`, which `band_structure` calls on the host before
+tracing. `LocalPotential.bind` validates and returns a copy carrying the
+coupling vectors as integer leaves. Called outside `jit` (for example through
+`hamiltonian(...)` directly), `prepare` binds on the fly. It raises a clear
+error if it is reached under tracing without having been bound.
+
+**Which couplings are kept.** `bind` keeps every Miller vector within the
+largest support at which some species' form factor is non-zero. It does *not*
+drop vectors whose structure factor happens to vanish for the current
+positions, such as shell 4 in diamond. Doing so would freeze the current
+positions into the operator and silently break derivatives with respect to
+positions. For CB Si the result is 44 vectors, independent of the cutoff.
+
+**Neighbour search.** Miller indices are encoded as int64 keys with radius
+2¹⁹. That is safely below overflow: (2²⁰+1)³ ≈ 1.2e18 < 9.2e18. Padded entries
+get the maximum int64 as their key, so they can never match. A neighbour is
+found by `searchsorted` on the sorted keys, which is jittable and vmappable.
+
+**Safe norm.** |G| is computed with a guarded square root, so autodiff
+through G = 0 gives a finite gradient rather than NaN. This matters for cell
+derivatives later.
+
+**Mutation testing.** Planted bugs that were caught:
+
+- the structure-factor sign
+- 1/(2Ω) normalisation
+- Rydberg used as Hartree
+- Ω_at = Ω
+- the guard disabled
+- weights ignored
+
+Two survived:
+
+- *Coupling direction m+d instead of m−d.* This builds conj(H), whose
+  eigenvalues are identical, so no spectrum test can see it. With the
+  symmetric origin, Ṽ is real and the mutant is exactly the correct code. It
+  is still a real defect: it is the crystal inverted through the origin, and
+  would flip forces later. I added `test_matrix_elements_are_v_of_g_minus_g_prime`,
+  an entry-by-entry check of ⟨G|V|G′⟩ = Ṽ(G−G′) for an asymmetric
+  structure with complex Ṽ. It kills the mutant. This adds a test; no
+  existing test was changed.
+- *Padding keys not excluded.* Benign as the code stands: real entries come
+  first, the sort is stable, and so a match always lands on the real G = 0
+  entry. The explicit exclusion stays as a guard that does not depend on that
+  ordering.
+
+**Test correction (raised and agreed).** The property test of
+`from_cartesian` unit consistency compared cells with a purely relative
+tolerance. Hypothesis found a cell with subnormal entries (1e-310) that the
+conversion arithmetic flushes to zero. The agreed fix is an absolute floor of
+1e-14·max|A|. The case is pinned as an `@example`.
+
+**Validation document.** The first band plot placed the published Δ₁ marker
+relative to the *last* Γ tick. That was my bug: a dict keyed by tick label, and
+the path visits Γ twice. The validation document now asserts the tick order
+and indexes ticks by position. It also asserts all its interpretive claims
+(Table I within tolerance, convergence below 1 meV at 6 Ha, parities), so a
+regression breaks the render.
