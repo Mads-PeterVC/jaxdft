@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from jaxdft import KPath, Lattice, assert_double_precision, kpath, special_points_fcc
+from jaxdft import KPath, Lattice, assert_double_precision, kpath, special_points_fcc, fcc_lattice
 from support.free_electron import SPECIAL_POINTS_FCC
 
 SI_PATH = [["L", "G", "X", "U"], ["K", "G"]]
@@ -18,7 +18,7 @@ def test_special_points_fcc():
 
 @pytest.fixture
 def path():
-    return kpath(Lattice.fcc(10.26), special_points_fcc(), SI_PATH, n_points=101)
+    return kpath(fcc_lattice(10.26, unit="Bohr"), special_points_fcc(), SI_PATH, n_points=101)
 
 
 def _index_of(path, f):
@@ -45,7 +45,7 @@ def test_kpath_visits_corners_in_order(path):
 
 
 def test_kpath_distance(path):
-    lat = Lattice.fcc(10.26)
+    lat = fcc_lattice(10.26, unit="Bohr")
     pts = special_points_fcc()
     B = np.asarray(lat.reciprocal)
 

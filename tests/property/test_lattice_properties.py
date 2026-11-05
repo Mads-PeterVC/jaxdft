@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from hypothesis import given, settings
 
-from jaxdft import Lattice, assert_double_precision
+from jaxdft import Lattice, assert_double_precision, fcc_lattice
 from support.free_electron import fcc_vectors, reciprocal
 from support.strategies import cells
 
@@ -39,7 +39,7 @@ def test_plane_waves_are_lattice_periodic(A):
 
 def test_fcc_constructor():
     a = 10.26
-    lat = Lattice.fcc(a)
+    lat = fcc_lattice(a, unit="Bohr")
     np.testing.assert_allclose(lat.vectors, fcc_vectors(a), rtol=1e-15)
     np.testing.assert_allclose(lat.volume, a**3 / 4, rtol=1e-14)
     expected_B = 2 * np.pi / a * np.array([[-1, 1, 1], [1, -1, 1], [1, 1, -1]])
@@ -56,7 +56,7 @@ def test_lattice_is_double_precision_even_from_float32_input():
 def test_lattice_is_a_pytree_through_jit_and_grad():
     """Cell derivatives must be possible later: grad of a function of a Lattice
     returns a Lattice, and d|det A|/dA = |det A| A^{-T}."""
-    lat = Lattice.fcc(10.26)
+    lat = fcc_lattice(10.26, unit="Bohr")
     assert jax.jit(lambda L: L.volume)(lat) == lat.volume
     g = jax.grad(lambda L: L.volume)(lat)
     assert isinstance(g, Lattice)

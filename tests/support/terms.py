@@ -36,7 +36,7 @@ class ConstantShift:
 
     value: float
 
-    def prepare(self, lattice, basis_k):
+    def prepare(self, structure, basis_k):
         return _ScalarApply(jnp.asarray(self.value, dtype=jnp.float64))
 
 
@@ -64,7 +64,7 @@ class MillerCoupling:
     width: float = field(default=1.0, metadata=dict(static=True))
     phase: tuple = field(default=(0.3, -0.7, 1.1), metadata=dict(static=True))
 
-    def prepare(self, lattice, basis_k):
+    def prepare(self, structure, basis_k):
         m = basis_k.miller
         d = (m[:, None, :] - m[None, :, :]).astype(jnp.float64)
         phase = jnp.asarray(self.phase, dtype=jnp.float64)

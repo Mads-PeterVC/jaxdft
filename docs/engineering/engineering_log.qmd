@@ -401,3 +401,72 @@ within a fixed basis.
 Table I's Si row, in eV as printed, with experiment and calculation separate,
 a tolerance class per entry, and source metadata. A README says it was
 transcribed by hand from the scan.
+
+## 2026-11-05: Milestone 1b acceptance tests and the signature details they fix
+
+The tests follow the API agreed in the question rounds. Writing them fixed the
+following details, listed here so none slips in unannounced.
+
+- **Top-level re-exports** add `Structure`, `LocalPotential`, `diamond`,
+  `empty` and `fcc_lattice`. Pseudopotentials, `units` and `analysis` are
+  imported from their modules.
+- **`Structure`.**
+  - Signature: `Structure(lattice, positions, species, weights=None)`, with
+    `.n_atoms`, `.cartesian_positions` (derived) and `species` as a tuple.
+  - `from_cartesian(cell, positions, species, unit, weights=None)`, where an
+    unknown unit raises `ValueError`.
+  - `empty(lattice).lattice is lattice`.
+- **Builders.** `fcc_lattice(a, unit)` and `diamond(a, species, unit)`.
+  The unit is a required argument.
+- **Units.** `BOHR_IN_ANGSTROM`, `HARTREE_IN_EV`, `RYDBERG_IN_HARTREE`, and
+  `convert(value, from_unit, to_unit)`. Unit names are case-sensitive:
+  `"Bohr"`, `"Angstrom"`, `"Hartree"`, `"Rydberg"`, `"eV"`. Mixed dimensions
+  raise.
+- **Cohen–Bergstresser.**
+  - `silicon()` exposes `lattice_constant_angstrom`, `form_factors_ry`
+    (keys 3, 8, 11), `lattice_constant` (Bohr) and `shell_q`, the physical
+    shell radii in Bohr⁻¹.
+  - `local(q)` returns the tabulated v̂ on shells 3, 8 and 11. Everywhere
+    else it returns 0, so traced code and autodiff through `jnp.where` stay
+    NaN-free.
+  - `validate(q_values)` raises on any q within the support that is off the
+    table.
+  - **Shell 4 counts as off-table.** CB never fitted it. It drops out of
+    perfect diamond only because S = 0 there. So unequal weights, or a single
+    atom, which make S ≠ 0 at shell 4, are refused.
+- **`LocalPotential`.**
+  - `coefficients(structure, miller)` returns Ṽ(mB) in complex128. It is
+    public, used for the real-space phase-sign check and the docs.
+  - `validate(structure)` raises `ValueError` for a species without a
+    pseudopotential and `NotImplementedError` for unbounded support. It
+    forwards to the pseudopotential only the q at which that species'
+    structure factor is non-zero. So a perfect 8-atom conventional cell is
+    accepted, and the same cell with one weight changed is refused.
+  - Matrix-free bound: the prepared term holds at most 256·N_pad elements.
+- **Analysis.**
+  - `group_levels(eigenvalues, atol)` returns `[(level, degeneracy)]`.
+  - `inversion_parities(bands, k_index, atol=1e-8)` returns
+    `[(level, degeneracy, parity)]`. It raises unless 2k is a reciprocal
+    lattice vector.
+  - `valence_band_maximum(bands, n_valence)`.
+  - `band_minimum_on_segment(structure, k_start, k_end, band, ecut, terms)`
+    returns `(t, energy)`, with t ∈ [0, 1] and a 0-based band index.
+
+**Tests that go beyond the theory post's list.** Each tests the theory more
+sharply:
+
+- *Supercell folding.* The 8-atom conventional cell at Γ must reproduce the
+  primitive spectra at Γ and the three X points exactly. This exercises the
+  general 1/Ω per-atom structure factor with 8 atoms, which a hard-coded
+  two-atom CB normalisation would fail.
+- *1/Ω normalisation alone.* A single atom at the origin must give
+  v̂(|G|)/Ω, checked with a test-only Gaussian pseudopotential.
+- *Independent NumPy model.* `tests/support/cohen_bergstresser.py` implements
+  the model in the paper's own form. The package's Hamiltonian matrix and
+  eigenvalues must match it to 1e-13 and 1e-10 Ha. This NumPy model was itself
+  checked against Table I before any package code existed.
+
+The mechanical 1a test updates (approved in the API rounds): `Lattice.fcc(a)`
+becomes `fcc_lattice(a, unit="Bohr")`, `band_structure(lattice, ...)` becomes
+`band_structure(empty(lattice), ...)`, and test-only terms take
+`prepare(structure, basis_k)`. No test logic changed.
