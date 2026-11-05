@@ -565,3 +565,59 @@ creep back. A planted literal confirmed that the guard catches it.
 **Rejected alternatives.** Dropping the per-test counts would run every test at
 the same count, making expensive tests dominate the default run. A pytest
 plugin that rewrites settings would be harder to follow, for no gain.
+
+## 2026-11-05: Concepts section and the rule for its code
+
+**Decision.** A new docs section, `docs/concepts/`, holds teaching explainers.
+The first is on pseudopotentials, and the second will cover the matrix-free
+Hamiltonian. Unlike theory and validation documents, these posts implement the
+physics themselves in NumPy/SciPy, with the code shown. The user's reasoning:
+code is a second representation of the maths, and the package should stay
+clean for its purpose rather than grow functions that only serve teaching.
+`CLAUDE.md` records the rule:
+
+- The code in concept posts is not tested and is not a reference.
+- jaxdft never depends on it or is shaped by it.
+- The posts still assert the claims they make about their own computations.
+
+**Pseudopotential post: two things the computation corrected.**
+
+- **The pseudopotential's repulsive core.** My first draft said the
+  pseudopotential becomes repulsive at the centre for large core radii. The
+  computed potentials show the opposite. The centre is repulsive only in a
+  middle window of r_c, from about 1.1 to 2.1 Bohr. Below that window, near the
+  outermost 3s node, it plunges, and above it, it relaxes into a shallow well.
+- **Transferability against r_c.** The first draft also assumed that
+  transferability worsens monotonically with r_c. The error in the 4s level has
+  a minimum near 1.2 Bohr instead.
+
+The text now states both results from the data, and the document asserts them.
+
+**Numerics.** The logarithmic derivative first came from Numerov integration,
+while the eigenvalues came from the three-point finite-difference matrix. For
+the all-electron atom the two discretisations disagree at the steep core, by
+about 0.02 in D at the reference energy. That broke the comparison, although
+the pseudo channels agreed. The outward integration now uses the same
+three-point recurrence as the eigensolver, so at an eigenvalue it reproduces the
+eigenvector exactly. With that change, the Hamann–Schlüter–Chiang identity
+holds to about 1e-6.
+
+**Sources checked.**
+
+- The HGH Si LDA parameters (r_loc = 0.44, C1 = −7.33610297) and the local
+  form-factor formula: HGH 1998, eq. 5 and Table I, cross-checked against
+  CP2K's `GTH_POTENTIALS` entry `Si GTH-PADE-q4`.
+- The Si core levels: X-ray Data Booklet, Table 1-1.
+- The GTH 1996 Si parameters differ from HGH 1998: four C terms against one.
+  The post uses HGH.
+- An overlay of the Lindhard-screened HGH local part on the Cohen–Bergstresser
+  form factors was dropped as misleading. The empirical local potential absorbs
+  the s and p nonlocal repulsion. The post now shows the mismatch as a table
+  and explains it.
+
+**Test defect fixed (raised and agreed).** Hypothesis drew a 6-Bohr cell with
+k = 0 for `test_matrix_elements_are_v_of_g_minus_g_prime`. At 1 Ha that basis
+is only G = 0, so V is real and the test's precondition failed before anything
+about the code was tested. The precondition is now `assume(...)`, and that
+cell is pinned as an `@example`. The coupling-direction check itself is
+unchanged.

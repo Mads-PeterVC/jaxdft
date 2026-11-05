@@ -1,0 +1,814 @@
+---
+title: "Pseudopotentials"
+description: "Why plane-wave codes replace the nucleus and its core electrons, and how a norm-conserving pseudopotential is built, worked through on a model atom."
+date: 2026-11-05
+bibliography: ../references.bib
+execute:
+  echo: true
+---
+
+::: {.callout-note}
+## About this post
+This is a concept post. The code below implements the physics directly in
+NumPy/SciPy so the mathematics can be read a second way, and it is not part of
+jaxdft or its tests. Where this post and jaxdft's theory or validation
+documents differ, those documents are the authority.
+:::
+
+A plane-wave code expands every wavefunction in $e^{i(\mathbf k+\mathbf G)\cdot
+\mathbf r}$ up to a kinetic-energy cutoff $E_\text{cut}$. Plane waves are
+uniform in space: they resolve a sharp feature near a nucleus exactly as well
+as they resolve the empty space between atoms. A real atom has very sharp
+features near the nucleus. This post works out how bad that is, and how a
+pseudopotential fixes it.
+
+Throughout we use a **model atom** so that everything is computable in a few
+lines. It is silicon-like ($Z = 14$, with 1s, 2s, 2p core and 3s, 3p valence
+levels) but it is a model, not real silicon. Each electron moves in one fixed,
+screened Coulomb potential
+
+$$
+V(r) = -\frac{1 + (Z-1)\,e^{-r/a}\,(1 + b r)}{r}, \qquad a = 0.4,\; b = 1.0 \text{ (Bohr}^{-1}\text{)},
+$$
+
+which is $-Z/r$ at the nucleus (the electron sees the bare nucleus) and
+$-1/r$ far away (it sees a nucleus screened by the other 13 electrons). A real
+atomic calculation would determine the screening self-consistently with
+density functional theory; here it is simply fixed, which removes everything
+that is not about pseudopotentials.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Imports and chart helpers"
+import altair as alt
+import numpy as np
+import pandas as pd
+from scipy.integrate import simpson
+from scipy.linalg import eigh_tridiagonal
+from scipy.optimize import brentq
+from scipy.special import spherical_jn
+
+from jaxdft.plotting import style
+from jaxdft.pseudo.cohen_bergstresser import silicon
+
+style.enable()
+S = style.SERIES
+
+
+def hover_lines(df, x, y, color, *, x_title, y_title, y_domain=None, width=style.WIDTH, height=style.HEIGHT,
+                sort=None, extra_tooltip=()):
+    """Lines with a nearest-point hover rule and tooltip."""
+    hover = alt.selection_point(fields=[x], nearest=True, on="pointerover", empty=False)
+    yscale = alt.Scale(domain=y_domain) if y_domain else alt.Scale()
+    enc_color = alt.Color(f"{color}:N", title=None, sort=sort)
+    base = alt.Chart(df).encode(alt.X(f"{x}:Q", title=x_title))
+    lines = base.mark_line(clip=True).encode(alt.Y(f"{y}:Q", title=y_title, scale=yscale), enc_color)
+    points = base.mark_point(size=60, clip=True).encode(
+        alt.Y(f"{y}:Q", scale=yscale), enc_color,
+        opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+        tooltip=[alt.Tooltip(f"{color}:N", title="curve"), alt.Tooltip(f"{x}:Q", format=".3g"),
+                 alt.Tooltip(f"{y}:Q", format=".4g"), *extra_tooltip],
+    ).add_params(hover)
+    rule = base.mark_rule(color=style.GRID).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
+    return (lines + points + rule).properties(width=width, height=height)
+```
+
+## Solving the model atom
+
+The radial Schrödinger equation for $u(r) = r\,R(r)$, in Hartree atomic units,
+is
+
+$$
+-\tfrac12 u''(r) + \Big[V(r) + \frac{l(l+1)}{2r^2}\Big] u(r) = \varepsilon\, u(r), \qquad u(0) = 0 .
+$$
+
+On a uniform grid $r_i = i h$ the second derivative becomes the three-point
+stencil $u'' \approx (u_{i-1} - 2u_i + u_{i+1})/h^2$, so the equation becomes a
+symmetric tridiagonal eigenvalue problem. That is all the solver is:
+
+```{python}
+Z, A_SCR, B_SCR = 14, 0.4, 1.0
+h = 0.002                      # Bohr; the 1s orbital is ~1/14 Bohr across
+r = h * np.arange(1, 20001)    # 0 < r <= 40 Bohr
+V_ae = -(1 + (Z - 1) * np.exp(-r / A_SCR) * (1 + B_SCR * r)) / r
+
+
+def radial_levels(V, l, n_levels):
+    """Lowest radial eigenpairs on the grid, with u normalised so that ∫u² dr = 1."""
+    diagonal = 1 / h**2 + V + l * (l + 1) / (2 * r**2)
+    off_diagonal = np.full(len(r) - 1, -0.5 / h**2)
+    eps, u = eigh_tridiagonal(diagonal, off_diagonal, select="i", select_range=(0, n_levels - 1))
+    u = u / np.sqrt(h)
+    outer = np.argmax(np.abs(u) * (r > 0.5)[:, None], axis=0)
+    u = u * np.sign(u[outer, np.arange(n_levels)])          # outer lobe positive
+    return eps, u.T
+
+
+eps_s, u_s = radial_levels(V_ae, l=0, n_levels=4)   # 1s 2s 3s 4s
+eps_p, u_p = radial_levels(V_ae, l=1, n_levels=3)   # 2p 3p 4p
+orbitals = {"1s": (eps_s[0], u_s[0]), "2s": (eps_s[1], u_s[1]), "2p": (eps_p[0], u_p[0]),
+            "3s": (eps_s[2], u_s[2]), "3p": (eps_p[1], u_p[1])}
+
+# The finite-difference error is largest for the most compact orbital. Check it on
+# the bare Coulomb problem, where the exact 1s energy is -Z²/2.
+eps_hydrogenic, _ = radial_levels(-Z / r, l=0, n_levels=1)
+assert abs(eps_hydrogenic[0] + Z**2 / 2) / (Z**2 / 2) < 1e-3
+assert eps_s[0] < eps_s[1] < eps_p[0] < eps_s[2] < eps_p[1] < 0   # 1s < 2s < 2p < 3s < 3p
+pd.DataFrame({"orbital": list(orbitals), "energy (Ha)": [e for e, _ in orbitals.values()]}).round(4)
+```
+
+The two valence levels sit near −0.6 and −0.3 Ha. The core levels are one to
+two orders of magnitude deeper. Real silicon shows the same separation of
+scales: its 1s, 2s and 2p binding energies are 1839, 149.7 and about 99.6 eV
+[@xdb], against valence bands about 12 eV wide.
+
+## Why the nucleus is a problem for plane waves
+
+```{python}
+#| code-fold: true
+#| code-summary: "Orbital plot"
+rows = []
+mask = r <= 6
+for name, (e, u) in orbitals.items():
+    rows.append(pd.DataFrame({"r (Bohr)": r[mask][::5], "u(r)": u[mask][::5], "orbital": name}))
+df_orb = pd.concat(rows)
+hover_lines(df_orb, "r (Bohr)", "u(r)", "orbital", x_title="r (Bohr)", y_title="u(r) = r R(r)",
+            sort=list(orbitals)).properties(title="Radial functions of the model atom")
+```
+
+Two things in this plot matter.
+
+1. **The core orbitals are tiny.** The 1s orbital lives within about 0.2 Bohr of
+   the nucleus.
+2. **The valence orbitals have nodes near the nucleus.** The 3s orbital crosses
+   zero twice inside 1 Bohr, and the 3p orbital once. These wiggles are not
+   arbitrary. Eigenfunctions of the same Hamiltonian are orthogonal, so 3s must
+   be orthogonal to 1s and 2s, and the only way to achieve that is to oscillate
+   where they live.
+
+To a plane-wave basis, a feature of size $\ell$ needs wavevectors up to about
+$q \sim 1/\ell$, so $E_\text{cut} = q^2/2$ grows as $1/\ell^2$. The Fourier
+transform of a radial orbital of angular momentum $l$ is a Hankel transform,
+
+$$
+\tilde u(q) = \int_0^\infty u(r)\, r\, j_l(qr)\, dr, \qquad
+\int_0^\infty u^2\,dr = \frac{2}{\pi}\int_0^\infty \tilde u(q)^2 q^2\, dq ,
+$$
+
+and keeping only plane waves with $q^2/2 \le E_\text{cut}$ keeps the part of
+the orbital with $q \le \sqrt{2E_\text{cut}}$.
+
+```{python}
+q = np.linspace(1e-4, 160, 2400)        # Bohr⁻¹; E_cut = q²/2 up to 12800 Ha
+r_ft = r[r <= 20]
+
+
+def hankel(u, l):
+    """ũ(q) = ∫ u(r) r j_l(qr) dr."""
+    return simpson(u[: len(r_ft)] * r_ft * spherical_jn(l, np.outer(q, r_ft)), x=r_ft, axis=1)
+
+
+def captured_fraction(u_q):
+    """Fraction of ∫u² dr carried by plane waves with q ≤ q_max, for each q_max in `q`."""
+    density = (2 / np.pi) * u_q**2 * q**2
+    cumulative = np.concatenate([[0.0], np.cumsum(0.5 * (density[1:] + density[:-1]) * np.diff(q))])
+    return cumulative / cumulative[-1]
+
+
+def reconstruct(u_q, l, q_max, r_out):
+    """u(r) rebuilt from plane waves with q ≤ q_max only."""
+    keep = q <= q_max
+    return r_out * (2 / np.pi) * simpson(u_q[keep] * q[keep] ** 2 * spherical_jn(l, np.outer(r_out, q[keep])),
+                                         x=q[keep], axis=1)
+
+
+u_q = {"1s": hankel(orbitals["1s"][1], 0), "3s": hankel(orbitals["3s"][1], 0)}
+# Parseval: the transform keeps the whole norm (q up to 160 Bohr⁻¹ is enough even for 1s).
+for name, uq in u_q.items():
+    full = (2 / np.pi) * simpson(uq**2 * q**2, x=q)
+    assert abs(full - 1) < 1e-3, (name, full)
+
+
+def ecut_for(fraction_curve, missing):
+    """Smallest E_cut (Ha) at which the missing norm drops below `missing`."""
+    return float(q[np.argmax(1 - fraction_curve < missing)] ** 2 / 2)
+```
+
+Drag the slider to raise the cutoff. The left panel rebuilds the 1s and 3s
+orbitals from the plane waves that fit below it. The right panel shows how much
+of each orbital's norm those plane waves carry, together with the plane-wave
+count this cutoff implies for the two-atom primitive cell of silicon,
+$N_\text{PW} \approx \Omega\, q_\text{max}^3 / 6\pi^2$.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Interactive cutoff chart"
+OMEGA_SI = silicon().lattice_constant ** 3 / 4      # primitive-cell volume, Bohr³
+log_ecuts = np.round(np.arange(0.0, 4.01, 0.25), 2)
+r_show = np.linspace(0.002, 3.0, 300)
+
+rows = []
+for le in log_ecuts:
+    qm = np.sqrt(2 * 10**le)
+    for name in ("1s", "3s"):
+        rows.append(pd.DataFrame({"log10_ecut": le, "r": r_show, "u": reconstruct(u_q[name], 0, qm, r_show),
+                                  "orbital": name, "version": "plane waves below E_cut"}))
+recon = pd.concat(rows)
+exact = pd.concat([pd.DataFrame({"r": r_show, "u": np.interp(r_show, r, orbitals[n][1]), "orbital": n,
+                                 "version": "exact"}) for n in ("1s", "3s")])
+
+frac = pd.concat([pd.DataFrame({"ecut": q**2 / 2, "missing": np.clip(1 - captured_fraction(u_q[n]), 1e-12, 1),
+                                "orbital": n}) for n in ("1s", "3s")])
+frac = frac[(frac.ecut >= 0.5) & (frac.ecut <= 1e4)].iloc[::4]
+labels = pd.DataFrame({"log10_ecut": log_ecuts, "ecut": 10.0**log_ecuts,
+                       "n_pw": OMEGA_SI * (2 * 10.0**log_ecuts) ** 1.5 / (6 * np.pi**2)})
+
+slider = alt.param(name="log10_ecut", value=1.0,
+                   bind=alt.binding_range(min=0, max=4, step=0.25, name="log₁₀ E_cut (Ha) "))
+colors = alt.Scale(domain=["1s", "3s"], range=[S[0], S[1]])
+dashes = alt.Scale(domain=["exact", "plane waves below E_cut"], range=[[4, 3], [1, 0]])
+uscale = alt.Scale(domain=[-1.5, 4.2])
+left = (
+    alt.Chart(exact).mark_line(clip=True, strokeWidth=1.5).encode(
+        x=alt.X("r:Q", title="r (Bohr)"), y=alt.Y("u:Q", title="u(r)", scale=uscale),
+        color=alt.Color("orbital:N", scale=colors, title="orbital"),
+        strokeDash=alt.StrokeDash("version:N", scale=dashes, title=None))
+    + alt.Chart(recon).mark_line(clip=True).encode(
+        x="r:Q", y=alt.Y("u:Q", scale=uscale), color=alt.Color("orbital:N", scale=colors),
+        strokeDash=alt.StrokeDash("version:N", scale=dashes),
+        tooltip=["orbital:N", alt.Tooltip("r:Q", format=".3f"), alt.Tooltip("u:Q", format=".3f")])
+    .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+).add_params(slider).properties(width=360, height=300, title="Orbitals rebuilt from plane waves")
+
+right = (
+    alt.Chart(frac).mark_line(clip=True).encode(
+        x=alt.X("ecut:Q", title="E_cut (Ha)", scale=alt.Scale(type="log")),
+        y=alt.Y("missing:Q", title="norm not captured", scale=alt.Scale(type="log", domain=[1e-8, 1])),
+        color=alt.Color("orbital:N", scale=colors),
+        tooltip=["orbital:N", alt.Tooltip("ecut:Q", format=".4g"), alt.Tooltip("missing:Q", format=".2e")])
+    + alt.Chart(labels).mark_rule(color=style.TEXT_SECONDARY).encode(x="ecut:Q")
+      .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+    + alt.Chart(labels).mark_text(align="left", dx=6, y=12, color=style.TEXT_PRIMARY)
+      .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+      .transform_calculate(label="'E_cut = ' + format(datum.ecut, ',.3~g') + ' Ha, N_PW ≈ ' + format(datum.n_pw, ',.0f')")
+      .encode(x="ecut:Q", text="label:N")
+).properties(width=300, height=300, title="Missing norm vs cutoff")
+alt.hconcat(left, right)
+```
+
+```{python}
+#| echo: false
+need = {n: ecut_for(captured_fraction(u_q[n]), 1e-4) for n in ("1s", "3s")}
+n_pw_need = {n: OMEGA_SI * (2 * e) ** 1.5 / (6 * np.pi**2) for n, e in need.items()}
+assert need["1s"] > 100 * 10 and need["1s"] / need["3s"] > 3
+```
+
+To miss less than 10⁻⁴ of the norm, the 1s orbital needs
+$E_\text{cut} \approx$ `{python} f"{need['1s']:,.0f}"` Ha, about
+`{python} f"{n_pw_need['1s']:,.0f}"` plane waves in the silicon primitive
+cell. The 3s orbital needs `{python} f"{need['3s']:,.0f}"` Ha even though it is
+a valence orbital, because its inner wiggles are core-sized. For comparison,
+Cohen–Bergstresser silicon converges below 1 meV at 6 Ha. Both orbitals are
+expensive for the same reason: the steep potential near the nucleus.
+
+## Removing the core
+
+Two observations make the problem go away.
+
+**The core is inert.** Bonding happens at energies of a few eV, while the core
+levels sit hundreds to thousands of eV deeper. Forming a crystal barely
+changes them. The *frozen-core approximation* fixes the core orbitals at their
+free-atom shape and treats only the valence electrons. In silicon this leaves
+4 electrons per atom instead of 14, and none of them in the expensive 1s
+orbital.
+
+**The valence wiggles carry no chemistry.** The 3s orbital's nodes are there to
+keep it orthogonal to the core, and orthogonality to an unchanging core is
+always satisfied in the same way. What matters for bonding is the orbital
+*outside* the core region, together with its energy.
+
+Phillips and Kleinman made this precise [@phillips_kleinman1959]. Write the
+valence orbital as a smooth function plus whatever multiple of the core
+orbitals restores orthogonality. The smooth part then obeys a Schrödinger
+equation with an extra *repulsive* term that is localised in the core. That
+repulsion largely cancels the strong attraction of the nucleus. The smooth
+function therefore sees a weak effective potential: a **pseudopotential**. This
+cancellation is why the Cohen–Bergstresser form factors are only a few tenths
+of a Rydberg, even though the nucleus has charge 14.
+
+## Building a norm-conserving pseudopotential
+
+Modern constructions skip the orthogonalisation and design the smooth orbital
+directly. We follow Kerker's construction [@kerker1980], which is short enough
+to write out in full. Pick a **core radius** $r_c$ and one valence state
+($l$, $\varepsilon$, $u$). Then require:
+
+1. Outside $r_c$, the pseudo-orbital equals the all-electron orbital.
+2. Inside $r_c$, it is nodeless and smooth: $u_\text{ps}(r) = r^{l+1} e^{p(r)}$
+   with $p(r) = \alpha r^4 + \beta r^3 + \gamma r^2 + \delta$. The factor
+   $r^{l+1}$ gives the correct behaviour at the origin, and with no linear term
+   in $p$ the potential stays finite there.
+3. At $r_c$, $u_\text{ps}$ matches $u$ in value and in its first and second
+   derivatives. This makes the potential continuous.
+4. **Norm conservation:** $\int_0^{r_c} u_\text{ps}^2\, dr = \int_0^{r_c} u^2\, dr$.
+   The pseudo-orbital holds the same charge inside the core region as the real
+   one [@hamann_schluter_chiang1979]. The next section shows why this matters.
+
+Conditions 3 and 4 give four equations for the four coefficients. Given
+$u_\text{ps}$, the potential follows by running the Schrödinger equation
+backwards. Substituting $u_\text{ps} = r^{l+1} e^{p}$ gives
+
+$$
+V_\text{ps}(r) = \varepsilon + \frac{(l+1)\,p'(r)}{r} + \tfrac12\big[p''(r) + p'(r)^2\big] \quad (r < r_c),
+\qquad V_\text{ps}(r) = V(r) \quad (r \ge r_c).
+$$
+
+```{python}
+def kerker(u, eps, l, rc, conserve_norm=True):
+    """Kerker pseudo-orbital and pseudopotential for one (l, ε, u) channel.
+
+    Returns (u_ps, V_ps) on the grid. With conserve_norm=False the norm
+    condition is replaced by α = 0, for comparison.
+    """
+    i = int(round(rc / h)) - 1
+    rc = r[i]
+    du = (u[i + 1] - u[i - 1]) / (2 * h)
+    # p and its first two derivatives at r_c, from u and from the radial equation itself.
+    p0 = np.log(u[i] / rc ** (l + 1))
+    p1 = du / u[i] - (l + 1) / rc
+    p2 = 2 * (V_ae[i] - eps) - 2 * (l + 1) * p1 / rc - p1**2
+    inner = r[: i + 1]
+
+    def coefficients(fixed):
+        # Value, slope and curvature at r_c are linear in (α, β, γ, δ). One more
+        # unknown is fixed: γ when conserving norm (then found by root-finding), else α = 0.
+        if conserve_norm:
+            gamma = fixed
+            M = np.array([[rc**4, rc**3, 1], [4 * rc**3, 3 * rc**2, 0], [12 * rc**2, 6 * rc, 0]])
+            alpha, beta, delta = np.linalg.solve(M, [p0 - gamma * rc**2, p1 - 2 * gamma * rc, p2 - 2 * gamma])
+        else:
+            alpha = 0.0
+            M = np.array([[rc**3, rc**2, 1], [3 * rc**2, 2 * rc, 0], [6 * rc, 2, 0]])
+            beta, gamma, delta = np.linalg.solve(M, [p0, p1, p2])
+        return alpha, beta, gamma, delta
+
+    def p_and_derivatives(c):
+        a, b, g, d = c
+        return (a * inner**4 + b * inner**3 + g * inner**2 + d,
+                4 * a * inner**3 + 3 * b * inner**2 + 2 * g * inner,
+                12 * a * inner**2 + 6 * b * inner + 2 * g)
+
+    if conserve_norm:
+        norm_target = simpson(u[: i + 1] ** 2, x=inner)
+
+        def excess_norm(gamma):
+            p, _, _ = p_and_derivatives(coefficients(gamma))
+            return simpson(inner ** (2 * l + 2) * np.exp(2 * p), x=inner) - norm_target
+
+        grid = np.linspace(-20, 20, 401)
+        values = np.array([excess_norm(g) for g in grid])
+        k = np.flatnonzero(np.sign(values[:-1]) != np.sign(values[1:]))[0]
+        c = coefficients(brentq(excess_norm, grid[k], grid[k + 1], xtol=1e-14))
+    else:
+        c = coefficients(None)
+
+    p, dp, d2p = p_and_derivatives(c)
+    u_ps, V_ps = u.copy(), V_ae.copy()
+    u_ps[: i + 1] = inner ** (l + 1) * np.exp(p)
+    V_ps[: i + 1] = eps + (l + 1) * dp / inner + 0.5 * (d2p + dp**2)
+    return u_ps, V_ps
+```
+
+Each check below tests one property the construction promises. The
+pseudo-atom's *lowest* s level reproduces the all-electron 3s energy, because
+the nodeless pseudo-orbital is now the ground state. The same holds for p, and
+the norm inside $r_c$ agrees.
+
+```{python}
+RC = 1.6   # Bohr
+eps3s, u3s = orbitals["3s"]
+eps3p, u3p = orbitals["3p"]
+u_ps_s, V_ps_s = kerker(u3s, eps3s, 0, RC)
+u_ps_p, V_ps_p = kerker(u3p, eps3p, 1, RC)
+
+eps_ps_s, _ = radial_levels(V_ps_s, l=0, n_levels=2)
+eps_ps_p, _ = radial_levels(V_ps_p, l=1, n_levels=1)
+inside = r <= RC
+assert abs(eps_ps_s[0] - eps3s) < 1e-5 and abs(eps_ps_p[0] - eps3p) < 1e-5
+assert abs(simpson(u_ps_s[inside] ** 2, x=r[inside]) - simpson(u3s[inside] ** 2, x=r[inside])) < 1e-10
+assert np.all(u_ps_s[inside] > 0)                                    # nodeless
+assert np.allclose(u_ps_s[~inside], u3s[~inside])                    # identical outside r_c
+pd.DataFrame({"": ["3s", "3p"], "all-electron ε (Ha)": [eps3s, eps3p],
+              "pseudo-atom ground state ε (Ha)": [eps_ps_s[0], eps_ps_p[0]]}).round(6)
+```
+
+### What the core radius trades off
+
+$r_c$ is the one real design choice. Move the slider to see its effect on the
+s channel: the orbital (left), the potential (middle), and the cutoff the
+pseudo-orbital needs (right).
+
+```{python}
+#| code-fold: true
+#| code-summary: "Interactive core-radius chart"
+last_node_3s = r[np.flatnonzero(np.diff(np.sign(u3s[r < 3])))[-1]]
+rcs = np.round(np.arange(np.ceil((last_node_3s + 0.25) * 10) / 10, 2.61, 0.1), 2)
+r_plot = (r <= 4)
+stride = 8
+u_rows, v_rows, f_rows, need_rows = [], [], [], []
+u_q_ae3s = hankel(u3s, 0)
+frac_ae = captured_fraction(u_q_ae3s)
+for rc in rcs:
+    ups, vps = kerker(u3s, eps3s, 0, rc)
+    u_rows.append(pd.DataFrame({"rc": rc, "r": r[r_plot][::stride], "u": ups[r_plot][::stride], "curve": "pseudo 3s"}))
+    v_rows.append(pd.DataFrame({"rc": rc, "r": r[r_plot][::stride], "V": vps[r_plot][::stride], "curve": "pseudopotential"}))
+    fr = captured_fraction(hankel(ups, 0))
+    sel = (q**2 / 2 >= 0.5) & (q**2 / 2 <= 3e3)
+    f_rows.append(pd.DataFrame({"rc": rc, "ecut": (q**2 / 2)[sel][::3], "missing": np.clip(1 - fr, 1e-12, 1)[sel][::3],
+                                "curve": "pseudo 3s"}))
+    need_rows.append({"rc": rc, "ecut": ecut_for(fr, 1e-4)})
+u_df, v_df, f_df, need_df = pd.concat(u_rows), pd.concat(v_rows), pd.concat(f_rows), pd.DataFrame(need_rows)
+sel = (q**2 / 2 >= 0.5) & (q**2 / 2 <= 3e3)
+ae_u = pd.DataFrame({"r": r[r_plot][::stride], "u": u3s[r_plot][::stride], "curve": "all-electron 3s"})
+ae_v = pd.DataFrame({"r": r[r_plot][::stride], "V": V_ae[r_plot][::stride], "curve": "all-electron V"})
+ae_f = pd.DataFrame({"ecut": (q**2 / 2)[sel][::3], "missing": np.clip(1 - frac_ae, 1e-12, 1)[sel][::3],
+                     "curve": "all-electron 3s"})
+
+rc_param = alt.param(name="rc", value=1.6, bind=alt.binding_range(min=float(rcs[0]), max=float(rcs[-1]), step=0.1,
+                                                                  name="core radius r_c (Bohr) "))
+flt = "abs(datum.rc - rc) < 1e-6"
+cscale = alt.Scale(domain=["all-electron 3s", "pseudo 3s", "all-electron V", "pseudopotential"],
+                   range=[S[1], S[0], S[1], S[0]])
+rc_rule = alt.Chart(need_df).mark_rule(color=style.TEXT_SECONDARY, strokeDash=[3, 3]).encode(x="rc:Q").transform_filter(flt)
+tip = lambda *f: [alt.Tooltip(x, format=".3g") if x.endswith(":Q") else x for x in f]
+
+p_u = (alt.Chart(ae_u).mark_line(clip=True).encode(alt.X("r:Q", title="r (Bohr)"), alt.Y("u:Q", title="u(r)"),
+                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "r:Q", "u:Q"))
+       + alt.Chart(u_df).mark_line(clip=True).encode(x="r:Q", y="u:Q", color=alt.Color("curve:N", scale=cscale), tooltip=tip("curve:N", "r:Q", "u:Q"))
+         .transform_filter(flt)
+       + rc_rule).add_params(rc_param).properties(width=250, height=260, title="Orbital")
+p_v = (alt.Chart(ae_v).mark_line(clip=True).encode(alt.X("r:Q", title="r (Bohr)"),
+                                           alt.Y("V:Q", title="V(r) (Ha)", scale=alt.Scale(domain=[-8, 4])),
+                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "r:Q", "V:Q"))
+       + alt.Chart(v_df).mark_line(clip=True).encode(x="r:Q", y="V:Q", color=alt.Color("curve:N", scale=cscale), tooltip=tip("curve:N", "r:Q", "V:Q"))
+         .transform_filter(flt)
+       + rc_rule).properties(width=250, height=260, title="Potential (s channel)")
+p_f = (alt.Chart(ae_f).mark_line(clip=True).encode(alt.X("ecut:Q", title="E_cut (Ha)", scale=alt.Scale(type="log")),
+                                           alt.Y("missing:Q", title="norm not captured",
+                                                 scale=alt.Scale(type="log", domain=[1e-8, 1])),
+                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "ecut:Q", "missing:Q"))
+       + alt.Chart(f_df).mark_line(clip=True).encode(x="ecut:Q", y="missing:Q", color=alt.Color("curve:N", scale=cscale),
+                                            tooltip=tip("curve:N", "ecut:Q", "missing:Q")).transform_filter(flt)
+       ).properties(width=250, height=260, title="Missing norm vs cutoff")
+alt.hconcat(p_u, p_v, p_f).resolve_scale(color="shared")
+```
+
+```{python}
+#| echo: false
+v_centre = {rc: kerker(u3s, eps3s, 0, rc)[1][0] for rc in rcs}
+repulsive = [rc for rc, v in v_centre.items() if v > 0]
+assert min(repulsive) > rcs[0] and max(repulsive) < rcs[-1]          # repulsive only in a middle window
+assert v_centre[1.6] > 1 and v_centre[rcs[0]] < -10
+outer_peak_3s = r[np.argmax(np.where(r > last_node_3s, u3s, 0))]
+ecut_ps_16 = float(need_df.set_index("rc").loc[1.6, "ecut"])
+```
+
+Increasing $r_c$ makes the pseudo-orbital smoother and the pseudopotential
+shallower, so the cutoff needed falls steeply. At $r_c = 1.6$ Bohr the
+pseudo-3s needs about `{python} f"{ecut_ps_16:.0f}"` Ha, against
+`{python} f"{need['3s']:,.0f}"` Ha for the all-electron 3s.
+
+For $r_c$ between about `{python} f"{min(repulsive):.1f}"` and
+`{python} f"{max(repulsive):.1f}"` Bohr, the pseudopotential is *repulsive* at
+the centre of the atom, exactly where the true potential is $-14/r$. This is
+the Phillips–Kleinman cancellation made visible: the attraction of the nucleus
+and the repulsion that stands in for orthogonality to the core almost cancel.
+Beyond that window the potential becomes a gentle well. Below it, close to the
+3s node, it plunges again. At $r_c$ = `{python} f"{rcs[0]:.1f}"` Bohr it reaches
+`{python} f"{v_centre[rcs[0]]:.0f}"` Ha at the origin, a sign of the trouble
+described below.
+
+The price of a large $r_c$ is paid elsewhere. The larger the region we
+replace, the less the pseudopotential knows about the true atom, and the worse
+it does in situations it was not built for. The slider also has a lower limit:
+$r_c$ must lie outside the outermost node of the 3s orbital (at
+`{python} f"{last_node_3s:.2f}"` Bohr), or no nodeless pseudo-orbital can match
+it.
+
+### Norm conservation and transferability
+
+A pseudopotential is built from one atomic state at one energy. In a crystal,
+the valence electrons have a range of energies and a different environment. A
+pseudopotential that works there is called **transferable**.
+
+The quantity that controls scattering off the core is the logarithmic
+derivative $D_l(\varepsilon) = u'(R)/u(R)$ at a radius $R$ outside $r_c$, where
+$u$ is the regular solution at energy $\varepsilon$, bound or not. Two
+potentials with the same $D_l(\varepsilon)$ at $R$ are indistinguishable to
+anything outside $R$, at that energy. Our construction matches $D_l$ exactly
+at the reference energy by design.
+
+Hamann, Schlüter and Chiang showed that the *slope* in energy is fixed by the
+norm inside $R$ [@hamann_schluter_chiang1979]:
+
+$$
+\frac{\partial D_l}{\partial \varepsilon}\bigg|_R = -\frac{2}{u(R)^2}\int_0^R u(r)^2\,dr .
+$$
+
+So a norm-conserving pseudopotential matches $D_l$ to first order around the
+reference energy, not just at it. To check this, the chart compares our
+pseudopotential with a version built from the same form with the norm
+condition dropped ($\alpha = 0$ instead).
+
+```{python}
+def log_derivative(V, l, energies, R):
+    """D_l(ε) = u'(R)/u(R) for the regular solution at each energy.
+
+    Integrates outward with the same three-point difference equation the
+    eigensolver uses, so at an eigenvalue it reproduces that eigenvector exactly.
+    """
+    n = int(round(R / h))
+    E = np.asarray(energies, dtype=float)
+    W = V[: n + 1] + l * (l + 1) / (2 * r[: n + 1] ** 2)
+    u_prev, u = np.zeros_like(E), np.full_like(E, 1e-6)   # u(0) = 0, u(h) arbitrary
+    history = [u]
+    for j in range(n):
+        u_prev, u = u, 2 * u - u_prev + 2 * h**2 * (W[j] - E) * u
+        history.append(u)
+    u_grid = np.array(history)          # u_grid[j] = u(r_j), r_j = (j + 1) h
+    i = n - 1                           # grid index of R
+    return (u_grid[i + 1] - u_grid[i - 1]) / (2 * h * u_grid[i])
+
+
+R_D = 2.0
+energies = np.linspace(-1.2, 0.6, 361)
+u_nn, V_nn = kerker(u3s, eps3s, 0, RC, conserve_norm=False)
+D = {"all-electron": log_derivative(V_ae, 0, energies, R_D),
+     "norm-conserving": log_derivative(V_ps_s, 0, energies, R_D),
+     "not norm-conserving": log_derivative(V_nn, 0, energies, R_D)}
+
+# Exact agreement at ε_ref for both; matching slope only with norm conservation.
+de = 1e-4
+slope = {k: (log_derivative(V, 0, [eps3s + de], R_D)[0] - log_derivative(V, 0, [eps3s - de], R_D)[0]) / (2 * de)
+         for k, V in {"all-electron": V_ae, "norm-conserving": V_ps_s, "not norm-conserving": V_nn}.items()}
+at_ref = {k: log_derivative(V, 0, [eps3s], R_D)[0] for k, V in
+          {"all-electron": V_ae, "norm-conserving": V_ps_s, "not norm-conserving": V_nn}.items()}
+iR = int(round(R_D / h)) - 1
+hsc = -2 / u3s[iR] ** 2 * simpson(u3s[: iR + 1] ** 2, x=r[: iR + 1])
+assert abs(at_ref["norm-conserving"] - at_ref["all-electron"]) < 1e-4
+assert abs(at_ref["not norm-conserving"] - at_ref["all-electron"]) < 1e-4
+assert abs(slope["all-electron"] - hsc) / abs(hsc) < 1e-3          # the HSC identity itself
+assert abs(slope["norm-conserving"] - slope["all-electron"]) / abs(hsc) < 1e-3
+assert abs(slope["not norm-conserving"] - slope["all-electron"]) / abs(hsc) > 0.05
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Logarithmic-derivative chart"
+# arctan D jumps by π at each pole of D; unwrap it into a continuous phase.
+ld = pd.concat([pd.DataFrame({"energy (Ha)": energies, "arctan D": np.unwrap(np.arctan(v), period=np.pi), "curve": k})
+                for k, v in D.items()])
+ld_order = list(D)
+chart = hover_lines(ld, "energy (Ha)", "arctan D", "curve", x_title="energy ε (Ha)",
+                    y_title="arctan D₀(ε) at R = 2 Bohr (unwrapped)", sort=ld_order)
+ref = alt.Chart(pd.DataFrame({"x": [eps3s], "label": ["3s reference energy"]})).mark_rule(
+    color=style.TEXT_SECONDARY, strokeDash=[3, 3]).encode(x="x:Q", tooltip=["label:N"])
+(chart + ref).properties(title="Scattering of an s wave off the core")
+```
+
+(We plot $\arctan D$ because $D$ itself has a pole wherever $u(R) = 0$. Each
+pole makes $\arctan D$ jump by $\pi$, and those jumps are removed so the curve
+is continuous.) The
+norm-conserving curve stays on the all-electron curve over a wide energy
+window. The other one touches it only at the reference energy, where it was
+forced to. The slopes at the reference energy are
+`{python} f"{slope['all-electron']:.3f}"` (all-electron),
+`{python} f"{slope['norm-conserving']:.3f}"` (norm-conserving) and
+`{python} f"{slope['not norm-conserving']:.3f}"` (not norm-conserving), in
+Bohr⁻¹ Ha⁻¹.
+
+The same trade-off appears when we ask the pseudo-atom about a state it was
+never shown: the 4s level. In the pseudo-atom this is the *second* s level.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Softness versus transferability"
+eps4s = eps_s[3]
+trade = []
+for rc in rcs:
+    _, vps = kerker(u3s, eps3s, 0, rc)
+    e_ps, _ = radial_levels(vps, l=0, n_levels=2)
+    trade.append({"rc": rc, "4s energy error (meV)": abs(e_ps[1] - eps4s) * 27211.386245981,
+                  "E_cut for 10⁻⁴ missing norm (Ha)": need_df.set_index("rc").loc[rc, "ecut"]})
+trade = pd.DataFrame(trade)
+assert trade["E_cut for 10⁻⁴ missing norm (Ha)"].is_monotonic_decreasing
+base = alt.Chart(trade).encode(alt.X("rc:Q", title="core radius r_c (Bohr)"))
+soft = (base.mark_line(clip=True, color=S[0]).encode(alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q", scale=alt.Scale(type="log")))
+        + base.mark_point(color=S[0]).encode(alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q"),
+                                             tooltip=["rc:Q", alt.Tooltip("E_cut for 10⁻⁴ missing norm (Ha):Q", format=".3g")])
+        ).properties(width=300, height=240, title="Cost: cutoff needed")
+transf = (base.mark_line(clip=True, color=S[1]).encode(alt.Y("4s energy error (meV):Q", scale=alt.Scale(type="log")))
+          + base.mark_point(color=S[1]).encode(alt.Y("4s energy error (meV):Q"),
+                                               tooltip=["rc:Q", alt.Tooltip("4s energy error (meV):Q", format=".3g")])
+          ).properties(width=300, height=240, title="Accuracy: error in the unseen 4s level")
+alt.hconcat(soft, transf)
+```
+
+```{python}
+#| echo: false
+best = trade.loc[trade["4s energy error (meV)"].idxmin()]
+assert best.rc < 1.6 and trade.set_index("rc").loc[2.6, "4s energy error (meV)"] > 5 * best["4s energy error (meV)"]
+```
+
+The cutoff falls steadily as $r_c$ grows. The 4s error is not simply
+monotonic. It is smallest near $r_c pprox$ `{python} f"{best.rc:.1f}"` Bohr
+(`{python} f"{best['4s energy error (meV)']:.1f}"` meV) and grows steadily
+beyond that, reaching `{python} f"{trade['4s energy error (meV)'].iloc[-1]:.0f}"`
+meV at $r_c = 2.6$ Bohr. It also rises again as $r_c$ approaches the
+outermost node. There the nodeless pseudo-orbital has to bend sharply to match
+a small, steep all-electron orbital, and the potential that results is
+strongly structured. A common rule of thumb follows: put $r_c$ beyond the
+outermost node, near the orbital's outermost maximum (here
+`{python} f"{outer_peak_3s:.2f}"` Bohr), then move it outward for softness for
+as long as transferability tests allow.
+
+Production pseudopotentials push this trade-off further. Troullier–Martins
+uses more polynomial terms to make the orbital smoother for a given $r_c$
+[@troullier_martins1991]. ONCV matches more than one energy per channel
+[@hamann2013]. All of them still face it: a small $r_c$ is accurate but
+expensive, and a large $r_c$ is cheap but less transferable.
+
+## Why pseudopotentials are nonlocal
+
+Repeat the construction for the 3p state with the same $r_c$, and the
+resulting potential is different:
+
+```{python}
+#| code-fold: true
+#| code-summary: "s and p pseudopotentials"
+m = (r <= 3)
+pots = pd.concat([pd.DataFrame({"r (Bohr)": r[m][::6], "V (Ha)": v[m][::6], "curve": k}) for k, v in
+                  {"all-electron V": V_ae, "pseudopotential, l = 0": V_ps_s, "pseudopotential, l = 1": V_ps_p}.items()])
+assert np.max(np.abs(V_ps_s - V_ps_p)[r < RC]) > 0.1 and np.allclose(V_ps_s[r >= RC], V_ps_p[r >= RC])
+hover_lines(pots, "r (Bohr)", "V (Ha)", "curve", x_title="r (Bohr)", y_title="V(r) (Ha)", y_domain=[-8, 4],
+            sort=["all-electron V", "pseudopotential, l = 0", "pseudopotential, l = 1"]
+            ).properties(title=f"Pseudopotentials at r_c = {RC} Bohr")
+```
+
+That is unavoidable. The core that s electrons must stay orthogonal to (1s, 2s)
+is not the same as the one p electrons must avoid (2p), so the repulsion that
+replaces orthogonality depends on $l$. A potential that depends on the angular
+momentum of the state it acts on is no longer a simple function $V(r)$
+multiplying $\psi(\mathbf r)$. It is an operator that first projects onto each
+$l$:
+
+$$
+\hat V_\text{ps} = V_\text{loc}(r) + \sum_{l} \sum_{m} |lm\rangle\, \Delta V_l(r)\, \langle lm|,
+\qquad \Delta V_l = V_l - V_\text{loc}.
+$$
+
+This *semilocal* form is local in $r$ but nonlocal in angle. In a plane-wave
+basis every matrix element of the angular projection couples every pair of
+plane waves through a double radial integral. That is expensive.
+
+Kleinman and Bylander replaced each $\Delta V_l$ with a separable operator
+$|\beta_l\rangle E_l \langle \beta_l|$, built so that it acts exactly like the
+semilocal one on the reference orbital [@kleinman_bylander1982]. Its plane-wave
+matrix elements factorise into $\beta_l(\mathbf k+\mathbf G)\,
+E_l\, \beta_l(\mathbf k+\mathbf G')^*$. Applying it to a wavefunction then costs one
+projection (a dot product with $\beta$) per projector, instead of a full
+matrix. GTH and HGH pseudopotentials [@gth1996; @hgh1998] are written directly
+in this separable form, with Gaussian projectors given by a handful of
+parameters.
+
+This is the structure jaxdft follows. Its pseudopotential protocol exposes the
+local part as a form factor `local(q)` (see `CLAUDE.md`). The nonlocal
+projectors will become a separate Hamiltonian term in the milestone that first
+needs them. Cohen–Bergstresser is purely local: it was fitted to band energies,
+so the angular-momentum dependence is averaged into three numbers.
+
+## In reciprocal space
+
+A plane-wave code never evaluates $V(r)$. It needs the **form factor**, the
+atom's Fourier transform $\hat v(q) = \int v(r)\, e^{-i\mathbf q\cdot\mathbf r}\,
+d^3r = 4\pi\int_0^\infty v(r)\, r^2 j_0(qr)\, dr$. The crystal potential is then
+assembled with the structure factor,
+$\tilde V(\mathbf G) = \Omega^{-1}\sum_j e^{-i\mathbf G\cdot\boldsymbol\tau_j}
+\hat v(|\mathbf G|)$, as in the 1b theory post.
+
+As an example of a real norm-conserving potential, here is the local part of
+the HGH LDA silicon pseudopotential [@hgh1998]. It has $Z_\text{ion} = 4$,
+$r_\text{loc} = 0.44$ Bohr and $C_1 = -7.33610297$ Ha, and its form factor is
+analytic:
+
+$$
+\hat v_\text{loc}(q) = -\frac{4\pi Z_\text{ion}}{q^2}\, e^{-(q r_\text{loc})^2/2}
++ \sqrt{8\pi^3}\, r_\text{loc}^3\, C_1\, e^{-(q r_\text{loc})^2/2} .
+$$
+
+```{python}
+Z_ION, R_LOC, C1 = 4, 0.44, -7.33610297      # HGH (1998) Table I, Si, LDA
+
+
+def v_hgh_local(q):
+    g = np.exp(-0.5 * (q * R_LOC) ** 2)
+    return -4 * np.pi * Z_ION / q**2 * g + np.sqrt(8 * np.pi**3) * R_LOC**3 * C1 * g
+
+
+def v_nucleus(q):
+    return -4 * np.pi * Z / q**2               # bare -Z/r, the all-electron problem
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Form-factor chart"
+qq = np.linspace(0.3, 12, 400)
+ff = pd.concat([
+    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(v_nucleus(qq)), "curve": "nucleus, −14/r"}),
+    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(v_hgh_local(qq)), "curve": "HGH Si local part"}),
+    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(4 * np.pi * Z_ION / qq**2), "curve": "ionic tail, −4/r"}),
+])
+ff = ff[ff["|v̂(q)| (Ha·Bohr³)"] > 1e-6]
+hover_lines(ff, "q", "|v̂(q)| (Ha·Bohr³)", "curve", x_title="q (Bohr⁻¹)", y_title="|v̂(q)| (Ha·Bohr³)",
+            sort=["nucleus, −14/r", "HGH Si local part", "ionic tail, −4/r"]
+            ).encode(y=alt.Y("|v̂(q)| (Ha·Bohr³):Q", scale=alt.Scale(type="log"))
+            ).properties(title="Form factors: the nucleus against a pseudopotential")
+```
+
+Three features matter here.
+
+- **Softness.** The nucleus decays only as $1/q^2$, which is the reciprocal-space
+  picture of the cusp at $r = 0$. The pseudopotential decays like a Gaussian, so
+  beyond a few Bohr⁻¹ it is negligible. That is the cutoff saving, seen in
+  reciprocal space.
+- **The long-range tail.** Outside the core every ionic pseudopotential looks
+  like $-Z_\text{ion}/r$, so its form factor diverges as
+  $-4\pi Z_\text{ion}/q^2$ at small $q$. At $\mathbf G = 0$ this divergence
+  cancels against the electron–electron (Hartree) and ion–ion (Ewald) terms of a
+  neutral cell. Handling that cancellation is part of the next milestone.
+- **Bare and screened potentials.** A pseudopotential like HGH describes the
+  *bare* ion, before any valence electrons screen it. In the next milestone,
+  self-consistency adds the screening, through the Hartree and
+  exchange–correlation potentials of the valence density. The
+  Cohen–Bergstresser form factors are already screened: they were fitted to a
+  crystal's band energies.
+
+It is tempting to check the last point by screening the HGH local part with a
+simple dielectric function, such as Lindhard's for silicon's valence density,
+and comparing with Cohen–Bergstresser. That comparison fails, and the reason
+is instructive:
+
+```{python}
+#| code-fold: true
+#| code-summary: "A comparison that does not work"
+cb = silicon()
+a_cb = cb.lattice_constant
+n_val = 32 / a_cb**3                                   # 8 atoms × 4 electrons per conventional cell
+k_f = (3 * np.pi**2 * n_val) ** (1 / 3)
+
+
+def lindhard_epsilon(q):
+    x = q / (2 * k_f)
+    F = 0.5 + (1 - x**2) / (4 * x) * np.log(np.abs((1 + x) / (1 - x)))
+    return 1 + (4 * k_f / np.pi) / q**2 * F
+
+
+shells = [3, 8, 11]
+qs = 2 * np.pi / a_cb * np.sqrt(shells)
+compare = pd.DataFrame({
+    "|G|² (2π/a)²": shells,
+    "Cohen–Bergstresser v̂ (Ha·Bohr³)": [float(cb.local(np.array(x))) for x in qs],
+    "HGH local, bare": v_hgh_local(qs),
+    "HGH local, Lindhard-screened": v_hgh_local(qs) / lindhard_epsilon(qs),
+})
+assert (compare["HGH local, Lindhard-screened"] < 0).all() and (compare["Cohen–Bergstresser v̂ (Ha·Bohr³)"].iloc[1:] > 0).all()
+compare.round(2)
+```
+
+The Cohen–Bergstresser form factors turn positive on the 8 and 11 shells. The
+screened local part stays negative. The missing piece is the nonlocal part.
+HGH silicon puts a large repulsion into its s and p projectors, as the
+positive $h$ coefficients in its table show. An empirical *local*
+pseudopotential has to average that repulsion into $\hat v(q)$ itself.
+Comparing local parts across pseudopotential families is therefore not
+meaningful. Only the complete operator is.
+
+## The pseudopotential families, briefly
+
+- **Empirical** (Cohen–Bergstresser [@cb1966]): a few form factors fitted to
+  experiment. Screened, local, and tied to one crystal. Fine for band
+  structures, but there is no total energy.
+- **Norm-conserving** (HSC [@hamann_schluter_chiang1979], Kerker
+  [@kerker1980], Troullier–Martins [@troullier_martins1991], GTH/HGH
+  [@gth1996; @hgh1998], ONCV [@hamann2013]): built from an atomic DFT
+  calculation, then unscreened to the bare ion. Transferable, and usable for
+  total energies and forces. They are hard for 2p and 3d elements, where the
+  nodeless valence orbitals are compact and no $r_c$ is both soft and accurate.
+- **Ultrasoft** [@vanderbilt1990] and **PAW** [@blochl1994]: drop norm
+  conservation and restore the missing charge with augmentation functions. They
+  are much softer, at the cost of a generalised eigenvalue problem and more
+  bookkeeping.
+
+Which family the next milestone uses is decided in its own theory post. The
+separable Gaussian form of GTH/HGH, with analytic form factors and no file to
+parse, makes it a natural first candidate.
