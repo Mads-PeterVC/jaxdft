@@ -6,10 +6,10 @@ bibliography: ../references.bib
 ---
 
 ::: {.callout-note}
-## Status: draft, for review
-This post defines the physics and conventions for Milestone 1b. Nothing is
-implemented until it has been reviewed. Open questions are collected at the
-end.
+## Status: reviewed
+Reviewed on 2026-11-05. The review is kept at `reviews/review_01b_cohen_bergstresser.md`.
+It found the conventions and normalisation correct and sharpened several
+tests. The decisions are recorded at the end of this post.
 :::
 
 ## Scope
@@ -53,8 +53,11 @@ inversion centre of the crystal. This is the origin Cohen and Bergstresser
 use, and it makes the structure factor real. Any other origin gives the same
 band structure (see the invariants below).
 
-Atomic positions are fractional at every public interface, like k-points. A
-useful identity: for $\mathbf{G} = \mathbf{m}B$ and $\boldsymbol{\tau} = \mathbf{f}A$,
+Atomic positions are fractional at every public interface, like k-points,
+and they are **stored** fractional. A constructor that accepts Cartesian
+positions converts them once and never stores Cartesian. This is an invariant
+of the structure object, not a convention, because the following identity
+holds only for fractional positions: for $\mathbf{G} = \mathbf{m}B$ and $\boldsymbol{\tau} = \mathbf{f}A$,
 
 $$
 \mathbf{G}\cdot\boldsymbol{\tau} = \mathbf{m}\,B A^{\mathsf T}\mathbf{f}^{\mathsf T} = 2\pi\,\mathbf{m}\cdot\mathbf{f},
@@ -165,17 +168,31 @@ Each conversion gets a round-trip test, as `CLAUDE.md` requires. The
 parameter file stores the values in the units of the publication, so it can
 be checked against the paper by eye.
 
-### Consequence: the form factors are tied to one lattice constant
+### Consequence: the form factors are tied to one cell
 
-The form factors exist only on the three shells at $a = 5.43$ Å. Strain the
-cell and the $|\mathbf{G}|$ move off the tabulated values, where $V^S$ is
-undefined. Interpolating would change the model. The CB potential is therefore
-a model at **fixed cell**. Derivatives with respect to positions and weights
-make sense; derivatives with respect to the cell do not. The implementation
-should refuse a cell whose shells do not match the table (within a stated
-tolerance), rather than silently returning zeros. Continuous form factors,
-from the norm-conserving pseudopotentials of the SCF milestone, remove this
-restriction.
+The CB potential is a model at **fixed cell**, for two independent reasons:
+
+1. $\hat v(q)$ is sampled at only three *physical* wavevectors,
+   $q = \sqrt3, \sqrt8, \sqrt{11}\times 2\pi/a_\text{CB}$ with $a_\text{CB}$ = 5.43 Å.
+   Interpolating between them would change the model.
+2. $V^S = \hat v/\Omega_\text{at}$ carries an explicit $1/\Omega$, so even at
+   fixed $q$ the tabulated number is tied to the cell volume.
+
+A naive guard would get this wrong. Under isotropic scaling, the
+*dimensionless* shell indices stay exactly 3, 8 and 11 in units of
+$(2\pi/a)^2$ for any $a$. A lookup keyed on those indices would accept any
+lattice constant silently and return a plausible but meaningless model. That is
+worse than an error. The guard therefore compares physical $|\mathbf{G}|^2$,
+in Bohr⁻², against $\{3, 8, 11\}\times(2\pi/a_\text{CB})^2$, with relative
+tolerance $10^{-8}$, and raises if a non-zero $|\mathbf{G}|^2$ lies within the
+coupling range but on none of the tabulated shells. This also catches
+anisotropic strain, which splits the shells.
+
+Derivatives with respect to positions and weights make sense; derivatives
+with respect to the cell do not. The second reason above is the one that
+would still bite if someone later "fixed" the first by interpolating $\hat v$.
+Continuous form factors, from the norm-conserving pseudopotentials of the SCF
+milestone, remove the restriction properly.
 
 ## The Hamiltonian matrix
 
@@ -188,20 +205,36 @@ $$
 The potential term is independent of $\mathbf{k}$, and in terms of Miller
 indices it depends only on $\mathbf{m}-\mathbf{m}'$. It is Hermitian because
 $V(\mathbf{r})$ is real: $\tilde V(-\mathbf{G}) = \overline{\tilde V(\mathbf{G})}$.
-For the symmetric origin it is also real.
+For the symmetric origin it is also real. That is a **test, not an
+optimisation**. A general origin, or unequal weights, makes $\tilde V$
+complex, and the translation-invariance check below needs the complex path.
+The term works in complex128 throughout.
 
-In 1b the term is built as a dense matrix from the Miller-index differences
-of the basis, $\tilde V((\mathbf{m}_i - \mathbf{m}_j)B)$. This costs
-$O(N_\text{pad}^2)$ memory, which is fine at these cutoffs. Applying $V$ by
-FFT (multiplication in real space) comes with the SCF milestone. The term
-protocol lets that replace the dense version without the Hamiltonian, solver
-or band-structure code changing. The two must then agree, which is a test
-for that milestone.
+**Matrix-free application.** $\tilde V(\mathbf{G})$ is non-zero on only
+$8 + 12 + 24 = 44$ vectors (the shells 3, 8 and 11; shells 4 and 12 have
+$S = 0$). So each row of $V$ has at most 44 non-zeros, independently of the
+cutoff. The term's `prepare` therefore builds, per k-point, a neighbour table:
+for each basis entry $i$ and each of the 44 coupling vectors $\mathbf{d}$, the
+index $j$ of $\mathbf{m}_i - \mathbf{d}$ in the basis (or a marker for
+"absent"), and the value $\tilde V(\mathbf{d})$. Applying $V$ is then a gather
+and a sum, $O(44\,N_\text{pad})$ per band, with $O(44\,N_\text{pad})$ memory.
+A stored dense $V$ would take $O(N_\text{pad}^2)$ per k-point, multiplied by
+$n_k$ under `vmap`. That is what `CLAUDE.md`'s matrix-free mandate rules out, and
+the difference reaches gigabytes at moderate cutoffs on a dense k-path. The
+lookup has to be jittable, because `prepare` runs inside the vmapped band
+calculation: a search on sorted integer keys, not a host-side dictionary.
 
-Padding entries carry arbitrary Miller indices. A dense $\tilde V$ evaluated
-on them couples padding to physical entries, which is the leak described in
-the 1a post. The 1a operator removes it centrally. 1b is the first time this
-happens with a physical term.
+The dense matrix is still built, from the operator as in 1a, for the
+operator–dense agreement test and the dense eigensolver. Applying $V$ by FFT
+(multiplication in real space) comes with the SCF milestone. The term
+protocol lets it replace the gather without the Hamiltonian, solver or
+band-structure code changing. The two must then agree, which is a test for
+that milestone.
+
+Padding entries carry arbitrary Miller indices (0 in the 1a implementation),
+so a neighbour lookup can couple padding to physical entries. That is the leak
+described in the 1a post. The 1a operator removes it centrally. 1b is the first
+time this happens with a physical term.
 
 ## Convergence with cutoff
 
@@ -215,9 +248,11 @@ non-trivial:
   In 1a this was trivially constant. Here it is a genuine test of the
   variational structure.
 - **Convergence.** Eigenvalues converge from above as $E_\text{cut}$ grows.
-  A throwaway check while preparing this post showed the low bands converged
-  to well below 0.01 eV by about 10 Ha. The validation document will establish
-  the actual convergence, computed from the library.
+  Both a throwaway check while preparing this post and the review found all
+  seven Table I splittings converged to about 1 meV at 6 Ha. That is
+  therefore the **test cutoff**, which keeps the suite cheap on a laptop. The
+  validation document computes the convergence from the library up to about
+  12 Ha.
 - **Basis jumps along a path.** As predicted in 1a, the basis changes
   discontinuously as $\mathbf{k}$ moves, so bands along a path have small
   steps, of the size of the variational error. They must shrink with
@@ -231,10 +266,15 @@ states "convergence within 0.1 eV" [@cb1966, p. 791]. In our cutoff
 convention these limits are $E_\text{cut} = 7E_0$ and $21E_0$ (about 1.3 and
 3.9 Ha at $a$ = 5.43 Å). The published eigenvalues are therefore not the
 converged eigenvalues of the model, and differences of up to 0.1 eV from our
-converged values are expected and do not indicate an error. The validation
-document can make this concrete: diagonalising exactly in the $E_1$ basis,
-without the Löwdin correction, shows how far the paper's raw basis is from
-convergence.
+converged values are expected and do not indicate an error.
+
+The exactly treated $E_1$ basis is small: about 15 plane waves at Γ. The
+review diagonalised it exactly, without the Löwdin correction, and found
+errors of up to about 0.4 eV, with the indirect gap off by roughly a factor of
+two. The exact $E_2$ basis is close to converged. So the Löwdin correction did
+real work. The close agreement we expect with Table I is evidence that CB's
+second-order treatment was good, not that their explicit basis was adequate.
+The validation document computes this comparison from the library.
 
 ## What the band structure should look like
 
@@ -245,10 +285,29 @@ gap to look at. Expected features:
 - **Γ:** the lowest levels have degeneracies 1, 3, 3, 1 (labelled Γ₁, Γ₂₅′,
   Γ₁₅, Γ₂′). The valence-band maximum is the triply degenerate Γ₂₅′. In
   silicon the first conduction level at Γ is the triplet Γ₁₅, below Γ₂′.
-- **X:** every level is at least doubly degenerate. This is forced by the
-  non-symmorphic symmetry of the diamond space group, not by accident, and it
-  is checked at X.
-- **L:** degeneracies 1, 1, 2, 1, 2 for the lowest levels (L₂′, L₁, L₃′, L₁, L₃).
+- **X and the X–W line:** every level has even degeneracy at X, and the bands
+  stay paired along the whole line from X to W,
+  $\mathbf{k} = \tfrac{2\pi}{a}(0, 1, z)$ with $0 \le z \le \tfrac12$. The pairing
+  combines a non-symmorphic operation, a screw or glide whose square is a
+  non-lattice translation and so contributes a phase of −1 on the zone face,
+  with **time reversal**. Neither alone forces it. It therefore lifts as soon
+  as a later milestone breaks time reversal (spin–orbit coupling, a magnetic
+  field). The pairing is **not** a property of the whole square face. The
+  review suggested it was, but at a generic face point,
+  $\tfrac{2\pi}{a}(0.13, 1, 0.21)$, the levels split by several mHa in a
+  throwaway check. The tests sample the X–W line, plus a generic face point
+  that must *not* pair.
+- **L:** degeneracies 1, 1, 2, 1, 2 for the lowest levels, labelled L₂′, L₁,
+  L₃′, L₁, L₃. This ordering looks wrong to a reader who half-remembers "L₁
+  lowest", and it is right. The labels are settled by inversion parity, not
+  by recall. Because the origin is an inversion centre, every level at Γ, X
+  and L has a definite parity. At L the lowest level is odd and the next is
+  even, and the primes mark odd levels at L. At Γ the prime marks *even*
+  levels: Γ₂₅′ is even and Γ₁₅ is odd. The parities are:
+  - Γ: Γ₁ (+), Γ₂₅′ (+), Γ₁₅ (−), Γ₂′ (−);
+  - L: L₂′ (−), L₁ (+), L₃′ (−), L₁ (+), L₃ (+).
+
+  The review computed these and a throwaway check confirmed them.
 - **Gap:** indirect, with the conduction-band minimum on the Γ–X line close to X.
   A recent reproduction of the CB silicon model, in the body of [@epnet2026],
   reports the minimum at $0.85\,\mathrm{X}$ and an indirect gap of 0.82 eV. A throwaway NumPy
@@ -277,9 +336,45 @@ paper gives both, the experimental value is listed first:
 | L₃′ – L₃ | 5.3 | 5.2 |
 | X₄ – X₁ | 4.1 | 4.0 |
 
-"Γ₂₅′ – X₁ (Δ₁)" is the indirect gap, to the conduction-band minimum on the Δ
-(Γ–X) line, not the energy at X itself. The calculated values are the
-acceptance data. They will be transcribed into `reference/` with a note on
+**"Γ₂₅′ – X₁ (Δ₁)" is the indirect gap**, to the conduction-band minimum on
+the Δ (Γ–X) line, not the energy at X itself. The paper uses the label X₁
+for both. They differ by about 0.13 eV in this model, which is less than the
+tolerance below. A test comparing the level *at X* with 0.8 eV would pass on
+the wrong quantity. So:
+
+- the acceptance test locates the minimum of band 5 along Δ (dense sampling,
+  then refinement) and compares *that* with 0.8 eV;
+- it asserts the minimum is strictly interior to Γ–X and lies below the
+  conduction level at X by much more than the numerical error. That is a
+  structural check needing no reference value;
+- $E(\mathrm{X}_1)$ at X itself is recorded separately in the validation
+  document, with no published counterpart;
+- the code names them differently (`gap_indirect_delta`, `e_x1`).
+
+The review proposed also asserting the *position* of the minimum, 0.855 X to
+±0.01. I have not made that an acceptance test. The only sources for it are our
+own calculation and the secondary reproduction [@epnet2026], which runs the
+same model, so it would be a regression value rather than a reference. The
+validation document reports the position alongside [@epnet2026] as
+corroboration.
+
+**Tolerances.** Table I quotes energies to 0.1 eV (rounding up to ±0.05 eV), and
+the paper states its basis converged "within 0.1 eV". All its energies are
+measured from Γ₂₅′, so I read the convergence statement as applying to each
+tabulated energy relative to Γ₂₅′. That gives:
+
+- splittings from Γ₂₅′ (Γ₂₅′–Γ₂′, Γ₂₅′–Γ₁₅, Γ₂₅′–L₁, the indirect gap):
+  0.05 + 0.1 = **0.15 eV**;
+- splittings between two non-VBM levels (L₃′–L₁, L₃′–L₃, X₄–X₁), which
+  inherit two such errors if they are uncorrelated: 0.05 + 2 × 0.1 =
+  **0.25 eV**.
+
+Both follow from the paper's statements and are fixed before implementation.
+The least margin is expected on Γ₂₅′–Γ₂′. I re-checked the transcription of
+that entry against the scan: it reads 3.8. Our model value rounds to 3.9,
+and the difference is within the paper's stated convergence.
+
+The calculated values are the acceptance data. They will be transcribed into `reference/` with a note on
 the source and the reading.
 
 The paper's band-structure figure [@cb1966, Fig. 1] uses the path
@@ -313,6 +408,9 @@ The levels are identified by degeneracy and order rather than by label:
   $\boldsymbol{\tau}$, the synthesised potential
   $V(\mathbf{r}) = \sum_\mathbf{G}\tilde V(\mathbf{G})e^{i\mathbf{G}\cdot\mathbf{r}}$
   must be inversion-symmetric about $\boldsymbol{\tau}$, not about $-\boldsymbol{\tau}$.
+  $V(\mathbf{r})$ is synthesised by direct summation over the ≤ 44 non-zero
+  $\mathbf{G}$ at a handful of points. That needs no FFT grid, which keeps
+  FFTs out of 1b's scope.
 - Unit conversions round-trip, and the stored parameters reproduce the
   published values in Ry and Å.
 
@@ -326,58 +424,80 @@ The levels are identified by degeneracy and order rather than by label:
   point-group part still fixes the spectrum.
 - Periodicity in $\mathbf{k}+\mathbf{G}_0$, as in 1a.
 - Every eigenvalue is non-increasing with $E_\text{cut}$ at fixed $\mathbf{k}$.
-- Degeneracies at Γ, X and L as listed above. Every level at X is even.
+- Degeneracies at Γ, X and L as listed above. Every level at X, and at
+  sampled points on the X–W line, has even degeneracy. A generic
+  square-face point does not pair.
+- **Inversion parities** at Γ and L as listed above. Parity is computed as
+  the trace of the inversion operator, $c(\mathbf{G}) \mapsto c(-\mathbf{G}-2\mathbf{k})$,
+  over each degenerate level's projector, divided by the degeneracy. That
+  makes it well defined inside a degenerate level despite the
+  eigenvector-rotation caveat from 1a. It is the only check here that tests
+  **eigenvectors**. It does not detect the structure-factor phase sign; the
+  real-space check does.
 - A gap between bands 4 and 5 over the whole path. The valence maximum is at
-  Γ, and the conduction minimum is on Γ–X.
+  Γ, and the conduction minimum is on Γ–X. The path covers Δ, where the
+  minimum is, so this test is meaningful rather than lucky.
 - Bands independent of $N_\text{pad}$ (the 1a padding test, now with a
   physical non-diagonal term).
 - Operator–dense agreement and Hermiticity, now non-trivial.
 
 **Against references**
 
-1. Converged splittings against the calculated values of [@cb1966, Table I],
-   below. Tolerance 0.15 eV. Table I gives energies to 0.1 eV, so rounding
-   alone contributes up to ±0.05 eV, and the paper states its own basis
-   converged within 0.1 eV. The tolerance is the sum of the two, both taken
-   from the paper and fixed before implementation. It is far larger than our
-   numerical error, so the test checks the model and its conventions, not the
-   numerics. The experimental values in the same table are for
-   interpretation only, not for testing: they test the model, not our
-   implementation of it.
-2. Against a reference code running the same model on the same system, if we
-   can run one (open question 2). Tolerance set by the convergence of both
-   codes at matched cutoffs, expected to be of order meV.
+1. Converged splittings at the 6 Ha test cutoff against the calculated values
+   of [@cb1966, Table I], with the per-entry tolerances derived above (0.15 eV
+   and 0.25 eV). These are far larger than our numerical error, so the test
+   checks the model and its conventions, not the numerics. They still
+   discriminate strongly. The review found that scaling $V$ by 2 (a Ry/Ha slip)
+   moves Γ₂₅′–Γ₁₅ by about 5 eV, and scaling by ½ closes the gap. The
+   experimental values in the same table are for interpretation only: they
+   test the model, not our implementation of it.
 
-## Open questions for review
+**Numerical tolerances**, distinct from the physics tolerances above:
 
-1. **Resolved: published reference values.** Table I of the paper, above,
-   with the 0.15 eV tolerance derived from its stated rounding and convergence.
-   The modern reproduction [@epnet2026] (CBM at 0.85 X, gap 0.82 eV) serves as
-   an additional, finer check of the gap, if we accept a secondary source for
-   a test. Should it be an acceptance test, or only quoted in the validation
-   document?
-2. **Reference code.** DFTK, which is MIT-licensed, has a Cohen–Bergstresser
-   element and a silicon example [@dftk_cb]. Running it would give rung-3
-   reference data at matched cutoffs and k-points. It needs Julia, which is
-   not installed here. I have not checked DFTK's form-factor normalisation:
-   its documentation does not state it, and its source would need a specific
-   read. Install Julia and generate reference data into `reference/`, or skip
-   rung 3 for this milestone?
-3. **Structure representation.** Positions need a home. Proposed: a `Crystal`
-   pytree in `jaxdft/structure/` holding the `Lattice`, fractional positions
-   (leaf), per-atom weights λ (leaf, default 1), and species labels (static).
-   This is an API question, so I will raise it separately before writing
-   tests, as for 1a.
-4. **Where the CB parameters live.** Proposed: `jaxdft/pseudo/` (the
-   pseudopotential subpackage foreseen in the 1a layout), with the form
-   factors as data in publication units plus a parser-free constructor. This
-   keeps "nothing outside the parser reads file formats" trivially true. The
-   local-potential term in `jaxdft/hamiltonian/` takes any pseudopotential
-   callable and never imports CB by name.
-5. **Off-shell behaviour.** Proposed: CB raises if the cell's shells do not
-   match the table within a relative $10^{-8}$, rather than returning zero.
-   Alternative: return zero off-shell and document it. That is permissive, and
-   wrong under strain.
+- eigenvalue comparisons between our own computations (padding invariance,
+  symmetry, periodicity): $10^{-10}$ Ha, as in 1a;
+- grouping eigenvalues into degenerate levels: $10^{-8}$ Ha. Symmetry-forced
+  degeneracies come out at about $10^{-13}$ Ha, and the physics tolerances are
+  0.15 eV, about $5\times10^{-3}$ Ha. The two are kept far apart so they cannot
+  be confused.
+2. No reference code in 1b (decision 2 below).
+
+## Decisions from review
+
+1. **Reference values.** Acceptance uses the primary source, Table I of
+   [@cb1966], with per-entry tolerances of 0.15 eV and 0.25 eV. The indirect
+   gap is tested as the Δ minimum, with a structural check that it is
+   interior. [@epnet2026] is quoted in the validation document as
+   corroboration, not tested. It is an unrefereed preprint running the same
+   model, so it is not independent evidence.
+2. **Reference code.** No DFTK run in 1b. Table I already discriminates the
+   normalisation overwhelmingly, and the 1a analytic tests already validate
+   the solver. DFTK's own form-factor normalisation is undocumented, so it
+   would not be a free reference anyway. Julia and DFTK are deferred to the
+   SCF milestone, where there is no analytic or published reference to lean
+   on.
+3. **Structure representation.** A structure object holding the lattice,
+   fractional positions and per-atom weights. Positions are always stored
+   fractional, as an invariant. The exact API is settled in a question round
+   before the acceptance tests are written.
+4. **CB parameters** live in `jaxdft/pseudo/`. The element exposes its
+   tabulated data in publication units (Ry, Å) *and* the physical shell
+   radii it was tabulated at, which the guard needs. The local-potential term
+   in `jaxdft/hamiltonian/` takes any pseudopotential and never imports CB by
+   name.
+5. **Off-shell behaviour.** Raise, with the guard in physical units, for the
+   two reasons given in the fixed-cell section. A guard on dimensionless shell
+   indices would silently accept any isotropically scaled cell.
+6. **Operator.** The potential is applied matrix-free, by a jittable
+   neighbour gather over the ≤ 44 coupling vectors. Dense matrices are built
+   only from the operator.
+7. **Shell lookup.** The review suggested keying the lookup on exact integer
+   cubic indices (exact for fcc), to rule out round-off at shell boundaries. I
+   kept the physical-unit comparison with a relative tolerance instead. The
+   tabulated shells are separated by at least $(2\pi/a)^2$, so a $10^{-8}$
+   window has no boundary ambiguity, and the physical comparison is the one
+   the guard needs anyway. The integer form is fcc-specific; the physical one
+   works for any cell.
 
 ## References
 

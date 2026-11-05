@@ -284,3 +284,48 @@ which follows the theory post's argument that rounding scales with
 $\|H_\text{phys}\| \le E_\text{cut}$. The falsifying case is pinned as an
 explicit `@example`. I audited the other relative-only comparisons: they either
 compare exact zeros with exact zeros or involve no zeros.
+
+## 2026-11-05: Milestone 1b design decisions from theory review
+
+The [1b theory post](../theory/01b_cohen_bergstresser.qmd) was reviewed before
+implementation, and the review is kept in `docs/theory/reviews/`. It confirmed
+the normalisation. I checked its sharpest claims independently, with a
+throwaway NumPy model, before acting on them.
+
+**Matrix-free local potential.** The first draft proposed storing a dense
+$\tilde V(\mathbf{G}-\mathbf{G}')$ per k-point. That is $O(N^2)$ per k, multiplied
+by $n_k$ under `vmap`, and it is a stored matrix rather than an operator. Each
+row has at most 44 non-zeros (shells 3, 8 and 11), independently of the
+cutoff. So `prepare` builds a per-k neighbour table and `apply` is a gather and
+a sum. The neighbour search runs inside `jit`/`vmap` and so must be jittable:
+sorted integer Miller keys plus `searchsorted`, not a host dictionary. Dense
+matrices are built only from the operator, as in 1a.
+
+**Off-shell guard in physical units.** The guard must compare $|\mathbf{G}|^2$
+in Bohr⁻² against the shells at $a_\text{CB}$. Dimensionless shell indices are
+invariant under isotropic scaling, so a guard on them would accept any lattice
+constant. The review pointed this out; my draft had the reason subtly wrong.
+
+**Kept: physical-unit shell matching, not integer cubic indices.** The review
+proposed exact integer keys. They are exact for fcc only, and the separation
+between shells makes a $10^{-8}$ relative window unambiguous anyway.
+
+**Tests sharpened.**
+
+- The indirect gap is tested as the minimum along Δ, with an interiority
+  check. The level at X lies within the tolerance of the paper's value, so a
+  test of the level at X would pass on the wrong quantity.
+- Inversion parity gives the first eigenvector test, as a trace over the
+  level's projector.
+- Pairing is tested along the X–W line, with a negative control at a generic
+  face point.
+- The test cutoff is 6 Ha, where all Table I splittings have converged to
+  about 1 meV.
+- Physics tolerances are 0.15 or 0.25 eV per entry, derived from the paper's
+  stated rounding and convergence. Numerical tolerances are 1e-10 Ha for
+  eigenvalue comparisons and 1e-8 Ha for grouping degenerate levels.
+
+**Not adopted.** A test of the minimum's position (0.855 X ± 0.01) would be a
+regression value: the only sources are our own model and a secondary
+reproduction of the same model. It is reported in the validation document
+instead. DFTK is deferred to the SCF milestone.

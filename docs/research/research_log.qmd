@@ -43,3 +43,23 @@ interesting errors live (structure-factor sign, the 1/Ω normalisation of
 Ṽ(G − G′)). The property tests do exercise a non-diagonal, test-only coupling
 term, and it agrees with an independent NumPy diagonalisation. Milestone 1b,
 with Cohen–Bergstresser silicon, is the first physical test of that path.
+
+## 2026-11-05: Band sticking in diamond silicon is on the X–W line, not the whole face
+
+While reviewing the 1b theory post, the reviewer found that in the
+Cohen–Bergstresser model the bands stay paired from X to W along
+$\tfrac{2\pi}{a}(0,1,z)$. The reviewer generalised this to the entire square
+face of the Brillouin zone. A throwaway check refutes the generalisation. At a
+generic face point, $\tfrac{2\pi}{a}(0.13, 1, 0.21)$, the levels are split by
+several mHa, while along X–W they pair to rounding. The pairing needs the
+non-symmorphic operation of the diamond space group (with a phase of −1 on the
+face) *together with* time reversal, and that combination holds on the X–W
+line. The acceptance tests therefore sample that line and include the generic
+face point as a negative control. The pairing should disappear once spin–orbit
+coupling is added.
+
+A second point from the review: the 1966 paper's exactly diagonalised basis
+(about 15 plane waves) is far from converged, with the indirect gap off by
+roughly a factor of two. Its published values are nevertheless close to the
+converged model, which credits the Löwdin second-order correction. The
+validation document will show this from the library.
