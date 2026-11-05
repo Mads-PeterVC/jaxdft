@@ -22,7 +22,60 @@ print(f"Backend {jax.default_backend()}, devices: {jax.devices()}")
 print(f"x64     {jax.config.jax_enable_x64}")
 ```
 
-## Measurements
+## Milestone 1a: empty-lattice band structure
 
-No physics has been implemented yet. The first measurements will be the
-empty-lattice band structure of Milestone 1a.
+Wall time of `band_structure` on the fcc L–Γ–X–U|K–Γ path ($a$ = 10.26 Bohr),
+dense `eigh`, all k-points in one jitted, vmapped call. "First call" includes
+tracing and XLA compilation; "steady state" is the median of repeated calls
+with the same shapes. Measured when this page is rendered.
+
+```{python}
+#| echo: false
+import statistics
+import time
+
+import numpy as np
+import pandas as pd
+
+from jaxdft import Lattice, PlaneWaveBasis, band_structure, kpath, special_points_fcc
+
+lattice = Lattice.fcc(10.26)
+
+
+def timed(fn):
+    t0 = time.perf_counter()
+    out = fn()
+    out.eigenvalues.block_until_ready()
+    return time.perf_counter() - t0
+
+
+rows = []
+for ecut, n_k in [(2.5, 50), (2.5, 200), (5.0, 200), (10.0, 50)]:
+    path = kpath(lattice, special_points_fcc(), [["L", "G", "X", "U"], ["K", "G"]], n_points=n_k)
+    t0 = time.perf_counter()
+    basis = PlaneWaveBasis.build(lattice, path.kpoints, ecut)
+    t_basis = time.perf_counter() - t0
+    n_bands = int(basis.n_pw.min())
+    run = lambda: band_structure(lattice, basis, n_bands)
+    first = timed(run)
+    steady = statistics.median(timed(run) for _ in range(3))
+    rows.append(
+        {
+            "E_cut (Ha)": f"{ecut:g}",
+            "k-points": n_k,
+            "N_pad": basis.n_pad,
+            "basis build (s)": f"{t_basis:.3f}",
+            "first call (s)": f"{first:.2f}",
+            "steady state (s)": f"{steady:.3f}",
+            "per k-point (ms)": f"{1e3 * steady / n_k:.2f}",
+        }
+    )
+pd.DataFrame(rows).style.hide(axis="index")
+```
+
+At the smallest sizes compilation dominates the first call. Beyond that, the
+steady-state cost grows with $N_\text{pad}$ much faster than linearly, as the
+cubic cost of dense `eigh` would predict. That is fine for validation;
+production cutoffs will need the iterative solvers planned for later
+milestones. Basis construction is a one-off host-side enumeration and is not
+yet a concern.

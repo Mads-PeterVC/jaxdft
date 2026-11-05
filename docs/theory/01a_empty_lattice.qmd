@@ -5,7 +5,7 @@ date: 2026-11-05
 ---
 
 ::: {.callout-note}
-## Status: reviewed
+## Status: reviewed and implemented
 Reviewed on 2026-11-05. The review found no physics errors. It corrected
 several statements, added details that had been hidden, and settled the open
 questions. Those questions are recorded as decisions at the end of this post.

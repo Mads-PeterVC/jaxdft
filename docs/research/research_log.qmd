@@ -22,3 +22,24 @@ The empty lattice cannot detect errors that only matter when plane waves
 couple, such as the sign convention of the structure factor or the
 indexing of $V(\mathbf{G}-\mathbf{G}')$. That is Milestone 1b's job, validated
 against published Cohen–Bergstresser silicon bands.
+
+## 2026-11-05: Empty-lattice bands reproduced
+
+The fcc empty-lattice band structure ([validation](../validation/01a_empty_lattice.qmd))
+matches the folded free-electron parabolas at every k-point on L–Γ–X–U|K–Γ,
+with no plane wave below the cutoff missing. The degeneracies at all six
+high-symmetry points match the hand-derived table. That includes W, which the
+plotted path never visits.
+
+Two points of interpretation. First, the agreement with the library's own
+analytic reference is exact, not merely within tolerance. For a diagonal
+Hamiltonian that is expected and says little. The meaningful comparison is in
+the acceptance tests, against an independent enumeration. Second, the U|K
+equivalence shows up as continuity of the band energies across the path
+break. Only the slopes change, because the path direction does.
+
+Nothing here tests the coupling between plane waves, where the physically
+interesting errors live (structure-factor sign, the 1/Ω normalisation of
+Ṽ(G − G′)). The property tests do exercise a non-diagonal, test-only coupling
+term, and it agrees with an independent NumPy diagonalisation. Milestone 1b,
+with Cohen–Bergstresser silicon, is the first physical test of that path.

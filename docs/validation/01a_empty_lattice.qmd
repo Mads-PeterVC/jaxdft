@@ -1,0 +1,273 @@
+---
+title: "Milestone 1a: empty-lattice validation"
+description: "fcc free-electron bands against the analytic folded parabolas."
+date: 2026-11-05
+---
+
+```{python}
+#| echo: false
+from fractions import Fraction
+
+import altair as alt
+import numpy as np
+import pandas as pd
+
+from jaxdft import (
+    Lattice,
+    PlaneWaveBasis,
+    band_structure,
+    free_electron_bands,
+    kpath,
+    special_points_fcc,
+)
+from jaxdft.hamiltonian.operator import SENTINEL_FACTOR
+from jaxdft.plotting import style
+
+style.enable()
+
+a = 10.26  # Bohr, the Si lattice constant (the empty lattice is scale-free)
+lattice = Lattice.fcc(a)
+E0 = 0.5 * (2 * np.pi / a) ** 2  # energy unit 1/2 (2 pi / a)^2, Ha
+ecut = 12.5 * E0
+eps_mach = np.finfo(np.float64).eps
+tolerance = 1e-10  # Ha, acceptance-test tolerance (tests/support/tolerances.py)
+
+points = special_points_fcc()
+path = kpath(lattice, points, [["L", "G", "X", "U"], ["K", "G"]], n_points=200)
+basis = PlaneWaveBasis.build(lattice, path.kpoints, ecut)
+n_bands = int(basis.n_pw.min())
+bands = band_structure(lattice, basis, n_bands)
+reference = free_electron_bands(lattice, path.kpoints, n_bands)
+
+computed = np.asarray(bands.eigenvalues)
+analytic = np.asarray(reference)
+deviation = np.abs(computed - analytic)
+max_dev = float(deviation.max())
+# The interpretation relies on these; a regression must break the render.
+assert max_dev <= tolerance
+assert np.all(computed <= ecut)  # every plotted eigenvalue is in the exact, complete range
+```
+
+This document validates Milestone 1a against the first rung of the validation
+ladder: the exact band structure of a free electron in an fcc cell. The
+physics, conventions and acceptance criteria are in the
+[theory post](../theory/01a_empty_lattice.qmd).
+
+## Setup
+
+- fcc lattice, $a$ = `{python} f"{a}"` Bohr ($\Omega$ = `{python} f"{float(lattice.volume):.2f}"` Bohr³).
+- Energy unit $E_0 = \tfrac12(2\pi/a)^2$ = `{python} f"{E0:.5f}"` Ha.
+- Cutoff $E_\text{cut}$ = `{python} f"{ecut / E0:.1f}"` $E_0$ = `{python} f"{ecut:.4f}"` Ha.
+- Path L–Γ–X–U|K–Γ with `{python} f"{len(path.kpoints)}"` k-points, computed in
+  one vmapped call. $N_\text{PW}$ ranges from `{python} f"{int(basis.n_pw.min())}"`
+  to `{python} f"{int(basis.n_pw.max())}"` across the path, padded to
+  $N_\text{pad}$ = `{python} f"{basis.n_pad}"`, and `{python} f"{n_bands}"` bands
+  are computed at every k.
+
+All eigenvalues below the cutoff are exact in this basis, so the computed bands
+should equal the analytic folded parabolas to rounding.
+
+## Band structure
+
+Lines are the computed bands. Points are the analytic reference
+$\varepsilon_{n\mathbf{k}}$ = $n$-th smallest $\tfrac12|\mathbf{k}+\mathbf{G}|^2$,
+shown at every fifth k-point. Hover a point for values; drag or scroll to pan
+and zoom.
+
+```{python}
+#| echo: false
+E_MAX = 8.0  # E0, top of the plotted window
+x = np.asarray(path.distance)
+keep = np.flatnonzero(computed.min(axis=0) / E0 <= E_MAX)
+
+lines = pd.DataFrame(
+    [
+        {"distance": x[i], "band": int(n), "energy": computed[i, n] / E0, "source": "computed (jaxdft)"}
+        for n in keep
+        for i in range(len(x))
+    ]
+)
+marks = pd.DataFrame(
+    [
+        {
+            "distance": x[i],
+            "band": int(n) + 1,
+            "energy": analytic[i, n] / E0,
+            "energy_Ha": analytic[i, n],
+            "deviation_Ha": deviation[i, n],
+            "source": "analytic folded bands",
+        }
+        for n in keep
+        for i in range(0, len(x), 5)
+        if analytic[i, n] / E0 <= E_MAX
+    ]
+)
+
+ticks = np.asarray(path.tick_positions)
+label_lookup = "{" + ", ".join(f"'{t:.6f}': '{lab}'" for t, lab in zip(ticks, path.tick_labels)) + "}"
+x_axis = alt.X(
+    "distance:Q",
+    title=None,
+    scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
+    axis=alt.Axis(values=[float(t) for t in ticks], labelExpr=f"{label_lookup}[format(datum.value, '.6f')]", grid=True),
+)
+y_axis = alt.Y("energy:Q", title="Energy (E₀)", scale=alt.Scale(domain=[0, E_MAX]))
+colour = alt.Color(
+    "source:N",
+    title=None,
+    scale=alt.Scale(domain=["computed (jaxdft)", "analytic folded bands"], range=[style.SERIES[0], style.SERIES[1]]),
+)
+
+line_layer = alt.Chart(lines).mark_line(clip=True).encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
+point_layer = (
+    alt.Chart(marks)
+    .mark_point(clip=True, size=40, stroke=style.SURFACE, strokeWidth=1)
+    .encode(
+        x=x_axis,
+        y=y_axis,
+        color=colour,
+        tooltip=[
+            alt.Tooltip("band:Q", title="band"),
+            alt.Tooltip("energy:Q", title="energy (E₀)", format=".4f"),
+            alt.Tooltip("energy_Ha:Q", title="energy (Ha)", format=".6f"),
+            alt.Tooltip("deviation_Ha:Q", title="|computed − analytic| (Ha)", format=".1e"),
+        ],
+    )
+)
+(line_layer + point_layer).properties(width=style.WIDTH, height=style.HEIGHT).interactive()
+```
+
+## Deviation from the analytic bands
+
+```{python}
+#| echo: false
+n_exact = int(np.sum(deviation == 0))
+n_total = deviation.size
+agreement = (
+    "bit-for-bit identical"
+    if max_dev == 0
+    else f"equal to within {max_dev:.1e} Ha ({max_dev / (eps_mach * ecut):.1f} ε_mach E_cut)"
+)
+```
+
+Over all `{python} f"{n_total}"` eigenvalues on the path, the computed and
+analytic values are `{python} agreement`;
+`{python} f"{n_exact}"` of them agree exactly. Exact agreement is what we should
+expect here, and it is not a deep check by itself. The empty-lattice matrix is
+diagonal, so `eigh` returns its diagonal entries, sorted, without rounding. The
+library's analytic reference evaluates the same $\tfrac12|\mathbf{k}+\mathbf{G}|^2$
+with the same arithmetic. The acceptance tolerance of
+`{python} f"{tolerance:.0e}"` Ha is reserved for comparisons with non-identical
+arithmetic.
+
+The independent checks are in the acceptance tests. There, the reference is a
+separate NumPy enumeration over twice the proven Miller bound, computed by a
+different arithmetic route ($\mathbf{k}B + \mathbf{m}B$ rather than
+$(\mathbf{k}+\mathbf{m})B$), and itself checked against the hand-derived
+degeneracy table. A non-diagonal Hamiltonian is checked against eigenvalues
+computed independently in NumPy.
+
+## Degeneracies at the high-symmetry points
+
+Each point is computed with its own basis and all $N_\text{PW}(\mathbf{k})$ bands.
+The table shows the lowest six levels of the computed spectrum, grouped at
+$10^{-6}$ Ha. The comparison is with the library's analytic reference grouped
+the same way. (The acceptance tests compare instead with an independent NumPy
+enumeration and with the hand-derived table in the theory post.)
+
+```{python}
+#| echo: false
+def levels(e, atol=1e-6, n=6):
+    e = np.sort(np.asarray(e))
+    groups = [[e[0]]]
+    for v in e[1:]:
+        if v - groups[-1][-1] <= atol:
+            groups[-1].append(v)
+        else:
+            groups.append([v])
+    return [(float(np.mean(g)), len(g)) for g in groups][:n]
+
+
+def fmt(levs):
+    return ", ".join(f"{Fraction(v / E0).limit_denominator(8)} ({d})" for v, d in levs)
+
+
+rows = []
+for label in ["G", "X", "L", "W", "K", "U"]:
+    k = np.asarray(points[label])[None]
+    b = PlaneWaveBasis.build(lattice, k, ecut)
+    e = np.asarray(band_structure(lattice, b, int(b.n_pw[0])).eigenvalues[0])
+    e = e[e <= ecut]
+    ref = np.asarray(free_electron_bands(lattice, k, len(e))[0])
+    got, want = levels(e), levels(ref)
+    worst = max(abs(g[0] - w[0]) for g, w in zip(got, want))
+    rows.append(
+        {
+            "point": "Γ" if label == "G" else label,
+            "N_PW": int(b.n_pw[0]),
+            "lowest levels in E₀ (degeneracy)": fmt(got),
+            "degeneracies match": [d for _, d in got] == [d for _, d in want],
+            "max level error (Ha)": f"{worst:.1e}",
+        }
+    )
+# The interpretation below relies on this; a regression must break the render.
+assert all(r["degeneracies match"] for r in rows)
+pd.DataFrame(rows).style.hide(axis="index")
+```
+
+## Basis size and the cost of padding
+
+The theory post chose one padded Miller-index list per k-point over a single
+shared candidate set containing every $\mathcal{B}_\mathbf{k}$ (radius
+$G_\text{max} + |\mathrm{W}|$). The table compares the two over the six
+high-symmetry points for a range of cutoffs. $N_\text{asym} = \Omega(2E_\text{cut})^{3/2}/6\pi^2$
+is the asymptotic basis size. Dense diagonalisation costs the cube of the
+padded size.
+
+```{python}
+#| echo: false
+ks = np.array([np.asarray(points[p]) for p in ["G", "X", "L", "W", "K", "U"]])
+r_bz = float(np.linalg.norm(np.asarray(points["W"]) @ np.asarray(lattice.reciprocal)))
+rows = []
+for E in [5.0, 10.0, 20.0, 40.0]:
+    b = PlaneWaveBasis.build(lattice, ks, E)
+    shared_radius = np.sqrt(2 * E) + r_bz
+    shared = int(PlaneWaveBasis.build(lattice, np.zeros((1, 3)), 0.5 * shared_radius**2).n_pw[0])
+    n_asym = float(lattice.volume) * (2 * E) ** 1.5 / (6 * np.pi**2)
+    rows.append(
+        {
+            "E_cut (Ha)": f"{E:g}",
+            "N_PW range": f"{int(b.n_pw.min())}–{int(b.n_pw.max())}",
+            "N_asym": f"{n_asym:.1f}",
+            "per-k padded N_pad": b.n_pad,
+            "shared set": shared,
+            "size ratio": f"{shared / b.n_pad:.2f}",
+            "eigh cost ratio": f"{(shared / b.n_pad) ** 3:.1f}×",
+        }
+    )
+pd.DataFrame(rows).style.hide(axis="index")
+```
+
+## Interpretation
+
+The computed bands reproduce the folded free-electron parabolas everywhere on
+the path, including the band counts: no plane wave below the cutoff is missing
+at any k-point. The padding sentinel (`{python} f"{SENTINEL_FACTOR:g}"`
+$E_\text{cut}$) leaves the physical eigenvalues untouched, as it should if
+the padding is exactly decoupled. That holds here for the
+`{python} f"{int(np.sum(np.asarray(basis.n_pw) < basis.n_pad))}"` of
+`{python} f"{len(path.kpoints)}"` path k-points that carry padding.
+
+Every degeneracy at the high-symmetry points matches the analytic count. In
+particular, the U and K spectra are identical, which is why the band plot is
+continuous across the U|K jump; only the slope changes there. The bands meet
+the zone boundary in pairs (at X the lowest level is doubly degenerate) and the
+parabolas cross freely, as they must without a potential to open gaps.
+Milestone 1b introduces the gaps.
+
+What this does **not** validate is anything involving coupling between plane
+waves. The empty-lattice Hamiltonian is diagonal, so the structure-factor
+sign, the $1/\Omega$ normalisation of $\tilde V(\mathbf{G}-\mathbf{G}')$, and
+the decoupling of padding under a non-diagonal term are not tested here. The
+last of these is covered by the property tests, using a test-only coupling
+term. The first two are Milestone 1b's job.

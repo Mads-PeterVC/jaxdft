@@ -25,5 +25,5 @@ than feature count or peak performance.
 | Milestone | Scope | Status |
 |-----------|-------|--------|
 | Step 0 | Package, environment, tests, docs, double precision | Done |
-| 1a | Empty-lattice band structure, fcc | Acceptance tests written; implementation next |
+| 1a | Empty-lattice band structure, fcc | Done: implemented and validated |
 | 1b | Cohen–Bergstresser empirical pseudopotential silicon | Not started |

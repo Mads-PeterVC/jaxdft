@@ -198,3 +198,89 @@ cutoff"). The tests follow it everywhere, and the test-only coupling term is
 kept weak (a Gershgorin bound of about 0.16 Ha). Requesting all N_PW bands with
 a strong potential is legitimate input, but it may return sentinel
 eigenvalues.
+
+## 2026-11-05: Milestone 1a implementation
+
+**Pytrees.** `Lattice` and `PlaneWaveBasis` are pytree classes whose
+`tree_unflatten` bypasses `__init__`. JAX rebuilds pytrees with tracers,
+cotangents and placeholder objects, and validation or dtype conversion in
+`__init__` would break on those. Input conversion (to float64, shape checks)
+therefore happens only on user construction. `ecut` and `n_pad` are static aux
+data of the basis, so changing the cutoff retraces. That is intended, since
+the shapes change with it anyway. Prepared terms and `Hamiltonian` use
+`register_dataclass`; the sentinel is a static field.
+
+**Basis construction without a k loop.** `PlaneWaveBasis.build` enumerates one
+integer box from the proven bound, using the largest |k| in the batch. It
+evaluates ½|(f+m)B|² for every k at once, then compacts each row with a stable
+`argsort` of the inverted mask. Real entries come first and padding takes
+Miller index 0. This runs eagerly on the host, because the output shape depends
+on the data. The box is shared across k, which wastes some work when the
+k-points differ a lot in |k|. That matters only for construction, not for the
+padded arrays the physics sees.
+
+**Operator and solver.**
+
+- `apply_H` is the only place that knows about padding (the sentinel is
+  2·ecut).
+- `dense_eigensolver` symmetrises the matrix it builds before `eigh`. This
+  costs nothing and removes rounding-level anti-Hermitian parts that a future
+  term could introduce.
+- `band_structure` zeroes eigenvectors on padding explicitly. With LAPACK
+  `eigh` on an exactly decoupled block this is already true bit for bit (a
+  mutation test confirmed it). The explicit mask makes it a guarantee for
+  solvers that don't share that property.
+- The whole band structure is one `jit` over a `vmap` over k, with `n_bands`
+  and the solver static.
+
+**Mutation testing of the acceptance suite.** The tests had never been run
+against an implementation, so a clean first pass proved little. I planted bugs
+one at a time and checked that the suite caught them. Each of these was caught:
+
+- terms seeing padded input
+- coupled padding rows
+- a sentinel far above 10·ecut
+- an enumeration bound that ignores |k|
+- a 1e-7 error in the kinetic prefactor
+- a missing transpose in B
+- a 2% cutoff error
+
+Two changes were not caught, both by design:
+
+- `<=` versus `<` in the cutoff test, since tests never put a cutoff on a
+  shell.
+- A cutoff error of 0.1%. Test cutoffs sit mid-gap, so it selects the same
+  plane waves and is physically unobservable.
+
+**Validation document.**
+
+- In the empty lattice, the computed eigenvalues agree bit for bit with the
+  library's analytic reference. `eigh` on a diagonal matrix returns the
+  diagonal, and both evaluate the same expression. The document says so rather
+  than presenting it as a tolerance check.
+- The document asserts its own interpretive claims (degeneracies match,
+  deviation within tolerance), so a regression breaks the render rather than
+  leaving stale prose.
+
+**Plotting and dependencies.** The shared style lives in `jaxdft.plotting.style`.
+Inside the package, the docs can import it without `sys.path` manipulation.
+It imports altair lazily, and nothing in the physics imports it. It disables
+altair's 5000-row cap, because band structures are a few thousand points.
+`pandas` joins the `docs` group. I checked the charts visually by rendering
+their Vega-Lite specs to PNG with `vl-convert`, in a throwaway environment.
+That is not a project dependency.
+
+## 2026-11-05: Test correction, kinetic diagonal tolerance at k+G = 0
+
+Hypothesis found a case where the property test
+`test_empty_lattice_physical_block_is_kinetic_diagonal` failed: a cubic cell
+with k = (1,1,1) fractional, so one plane wave has k+G = 0 exactly. The two
+arithmetic routes, $(\mathbf{f}+\mathbf{m})B$ in the package and
+$\mathbf{k} + \mathbf{m}B$ in the test, both round to a kinetic energy of order
+1e-32 Ha. The test's purely relative tolerance (`rtol=1e-13`, `atol=0`) cannot
+accept rounding at an exact zero. This was a defect in the test, not the code.
+I raised it before changing anything, and the agreed fix adds `atol = 1e-14·ecut`,
+which follows the theory post's argument that rounding scales with
+$\|H_\text{phys}\| \le E_\text{cut}$. The falsifying case is pinned as an
+explicit `@example`. I audited the other relative-only comparisons: they either
+compare exact zeros with exact zeros or involve no zeros.

@@ -4,7 +4,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
@@ -73,6 +73,8 @@ def test_dense_matrix_is_hermitian(terms, A, k, target):
 
 @settings(max_examples=10)
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS)
+# Regression: k + G = 0 exactly, where both routes round to O(1e-32) Ha.
+@example(A=6.0 * np.eye(3), k=np.array([1.0, 1.0, 1.0]), target=1.0)
 def test_empty_lattice_physical_block_is_kinetic_diagonal(A, k, target):
     lat, basis = padded_basis(A, k, target)
     b = basis[0]
@@ -81,7 +83,9 @@ def test_empty_lattice_physical_block_is_kinetic_diagonal(A, k, target):
     m = np.asarray(b.miller)[mask]
     expected = 0.5 * np.sum((k @ reciprocal(A) + m @ reciprocal(A)) ** 2, axis=1)
     phys = H[np.ix_(mask, mask)]
-    np.testing.assert_allclose(np.diag(phys), expected, rtol=1e-13)
+    # Rounding scales with ||H_phys|| <= ecut, so an absolute floor is needed where
+    # 1/2|k+G|^2 is (near) zero; a purely relative tolerance cannot accept it.
+    np.testing.assert_allclose(np.diag(phys), expected, rtol=1e-13, atol=1e-14 * basis.ecut)
     np.testing.assert_array_equal(phys - np.diag(np.diag(phys)), 0)
 
 

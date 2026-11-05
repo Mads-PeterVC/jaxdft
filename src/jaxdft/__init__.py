@@ -2,6 +2,31 @@
 
 # Must be imported before anything else creates a JAX array.
 from jaxdft import _config  # noqa: F401
+from jaxdft.analytic.free_electron import free_electron_bands
+from jaxdft.basis.planewave import PlaneWaveBasis
+from jaxdft.calculations.bands import Bands, band_structure
+from jaxdft.hamiltonian.kinetic import Kinetic
+from jaxdft.hamiltonian.operator import Hamiltonian, apply_H, dense_matrix, hamiltonian
 from jaxdft.precision import assert_double_precision, is_double_precision
+from jaxdft.solvers.eigen import dense_eigensolver
+from jaxdft.structure.kpoints import KPath, kpath, special_points_fcc
+from jaxdft.structure.lattice import Lattice
 
-__all__ = ["assert_double_precision", "is_double_precision"]
+__all__ = [
+    "Bands",
+    "Hamiltonian",
+    "KPath",
+    "Kinetic",
+    "Lattice",
+    "PlaneWaveBasis",
+    "apply_H",
+    "assert_double_precision",
+    "band_structure",
+    "dense_eigensolver",
+    "dense_matrix",
+    "free_electron_bands",
+    "hamiltonian",
+    "is_double_precision",
+    "kpath",
+    "special_points_fcc",
+]
