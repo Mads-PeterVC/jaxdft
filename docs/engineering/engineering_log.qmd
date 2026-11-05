@@ -687,3 +687,37 @@ reproduced when re-run from the post's code. Changes:
     scan of all tracked files found no other control characters.
 - `ecut_for` now raises when the threshold is never reached, instead of
   returning the first grid point.
+
+## 2026-11-05: Concept post on the matrix-free Hamiltonian
+
+Second concept post, `docs/concepts/matrix_free_hamiltonian.qmd`. Notes on
+choices made while writing it:
+
+- **Tied to jaxdft.** The post's NumPy H for Cohen–Bergstresser silicon at Γ
+  is asserted equal to `dense_matrix` (rows matched by Miller index), and its
+  gather finds the same 44 coupling vectors as `LocalPotential.bind`. Only
+  the post depends on jaxdft, never the other way round.
+- **Smooth potential.** The contrast to Cohen–Bergstresser is the HGH Si local
+  part from the pseudopotential post. It is used only as a typical form
+  factor; without screening or a nonlocal part it is not a physical
+  Hamiltonian, and the post says so.
+- **Zeros are structural.** The draft claimed a smooth potential fills every
+  coupling. The assert caught that 25% of couplings at 3 Ha vanish because
+  diamond's structure factor cos(G·τ) is zero there. The assert now checks
+  that the smooth potential is non-zero exactly where the structure factor
+  is.
+- **FFT grid.** The FFT product cuts V at |d| ≤ 2G_max and uses 4n + 1 points
+  per axis, which reproduces the dense product to rounding error. A 1D toy
+  asserts that the cyclic convolution is exact from M = 4K + 1 and wrong at
+  4K.
+- **LOBPCG.** `scipy.sparse.linalg.lobpcg` wraps the FFT product in a
+  `LinearOperator`, with a diagonal 1/(T + 1 Ha) preconditioner
+  [Payne et al. 1992]. Two buffer vectors are used, because a block of
+  exactly 8 stalled just above tolerance. Iterations are counted until the
+  8 wanted residuals converge, not until scipy stops, since the buffer
+  vectors otherwise inflate the count. scipy returns residual norms with a
+  complex dtype for complex operators; the post takes their absolute value.
+- **Timing claims.** Timings depend on the machine. The text quotes fitted
+  slopes and the dense–FFT crossover from the measurements. It asserts only
+  that the dense slope is the steepest, and chooses its wording for "dense is
+  still faster at N = 749" from the measured comparison.
