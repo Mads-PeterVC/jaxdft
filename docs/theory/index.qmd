@@ -1,0 +1,12 @@
+---
+title: "Theory"
+listing:
+  contents: "*.qmd"
+  sort: "date"
+  type: table
+  fields: [date, title, description]
+---
+
+One theory post per milestone, scoped to that milestone's physics. Each post
+is reviewed before implementation starts, and the milestone's acceptance tests
+are derived from it.

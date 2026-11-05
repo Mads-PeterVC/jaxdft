@@ -1,0 +1,7 @@
+---
+title: "Research"
+---
+
+- [Research log](research_log.qmd): physical results, unexpected behaviour
+  and its interpretation, comparisons with literature, and choices of
+  approximation.

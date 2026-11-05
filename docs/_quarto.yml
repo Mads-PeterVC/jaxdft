@@ -1,5 +1,14 @@
 project:
   type: website
+  render:
+    - "*.qmd"
+    - "!_*.qmd"
+
+execute:
+  # Documents compute their results from jaxdft at render time. Never freeze:
+  # a document that no longer runs against the current code is a failing test.
+  freeze: false
+  error: false
 
 website:
   title: "jaxdft"
@@ -7,6 +16,14 @@ website:
     left:
       - href: index.qmd
         text: Home
+      - href: theory/index.qmd
+        text: Theory
+      - href: validation/index.qmd
+        text: Validation
+      - href: engineering/index.qmd
+        text: Engineering
+      - href: research/index.qmd
+        text: Research
       - about.qmd
 
 format:
@@ -16,6 +33,4 @@ format:
       - brand
     css: styles.css
     toc: true
-
-
-
+    html-math-method: mathjax

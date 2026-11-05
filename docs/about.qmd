@@ -2,4 +2,10 @@
 title: "About"
 ---
 
-About this site
+jaxdft is developed by Mads-Peter Verner Christiansen, largely through agentic
+development with Claude Code. Project conventions, physics invariants and the
+milestone workflow are set out in `CLAUDE.md` at the repository root.
+
+Every number in these documents is computed from the `jaxdft` package when the
+site is rendered. The site is rendered as part of the project's definition of
+done, so a document that no longer runs fails the build.

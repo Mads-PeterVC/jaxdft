@@ -2,6 +2,28 @@
 title: "jaxdft"
 ---
 
-This is a Quarto website.
+A GPU-first plane-wave density functional theory code written in
+[JAX](https://jax.readthedocs.io).
 
-To learn more about Quarto websites visit <https://quarto.org/docs/websites>.
+The project has two goals, in this order: to explore building a substantial
+scientific code through agentic development, and to produce real, verifiable
+physics along the way. Correctness, clarity and sound architecture matter more
+than feature count or peak performance.
+
+## Sections
+
+- [Theory](theory/index.qmd): one post per milestone, scoped to that
+  milestone's physics.
+- [Validation](validation/index.qmd): comparisons against analytic limits,
+  published results and reference codes, with interpretation.
+- [Engineering](engineering/index.qmd): the engineering log and performance
+  tracking.
+- [Research](research/index.qmd): the research log of physical results.
+
+## Milestones
+
+| Milestone | Scope | Status |
+|-----------|-------|--------|
+| Step 0 | Package, environment, tests, docs, double precision | Done |
+| 1a | Empty-lattice band structure, fcc | Theory reviewed; acceptance tests next |
+| 1b | Cohen–Bergstresser empirical pseudopotential silicon | Not started |

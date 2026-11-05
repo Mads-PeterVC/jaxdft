@@ -1,7 +1,7 @@
 [project]
 name = "jaxdft"
 version = "0.1.0"
-description = "Add your description here"
+description = "A GPU-first plane-wave density functional theory code written in JAX."
 readme = "README.md"
 authors = [
     { name = "Mads-Peter Verner Christiansen", email = "mpvc@bio.aau.dk" }
@@ -11,15 +11,28 @@ dependencies = [
     "jax>=0.12.0.1",
 ]
 
-[project.scripts]
-jaxdft = "jaxdft:main"
-
 [build-system]
 requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+dev = [
+    "hypothesis>=6.170.14",
+    "pytest>=9.2.0",
+]
 docs = [
     "altair>=6.3.0",
     "jupyter>=1.1.1",
 ]
+
+[tool.uv]
+# The definition of done renders the docs, so the docs group is always needed.
+default-groups = ["dev", "docs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--import-mode=importlib"]
+markers = [
+    "slow: tests that take more than a few seconds on a laptop CPU",
+]
+filterwarnings = ["error"]

@@ -1,0 +1,63 @@
+---
+title: "Engineering log"
+---
+
+Design decisions, refactors, numerical stability issues, data layout and
+performance choices. It supplements the git history with the reasoning.
+Entries are dated H2 sections; existing entries are never edited.
+
+## 2026-11-05: Step 0, project scaffolding
+
+**Double precision.** `jax_enable_x64` is set in `jaxdft/_config.py`, the
+first import in `jaxdft/__init__.py`. Any entry point that imports anything
+from the package therefore enables x64 before any array exists. The test suite
+checks this in a fresh subprocess as well as in-process, because
+`tests/conftest.py` imports `jaxdft` for every test and would otherwise hide a
+broken import order.
+
+`jaxdft.precision.assert_double_precision` walks a pytree and rejects any
+inexact leaf that is not float64 or complex128. Integer and boolean leaves
+(Miller indices, masks) are ignored. Physics tests should call it on their
+outputs. This is how "a test must fail if any physical array is float32" is
+enforced in practice.
+
+**Test configuration.**
+
+- `--import-mode=importlib`, so the three test directories can contain
+  files with the same name without `__init__.py` packages.
+- `filterwarnings = error`: a warning from JAX (e.g. an implicit dtype
+  truncation) fails the test rather than scrolling past.
+- `--strict-markers`, with one marker, `slow`, defined up front.
+- Hypothesis runs with `deadline=None`, because the first call of a jitted
+  function includes tracing and compilation, so per-example timing is
+  meaningless. Two profiles: `default` (50 examples, for laptops) and `ci`
+  (200), selected with `HYPOTHESIS_PROFILE`.
+
+**Dependencies.** `pytest` and `hypothesis` are in the `dev` group, `altair`
+and `jupyter` in `docs`. Both are uv default groups, since the definition of
+done needs both, so a plain `uv sync` installs everything.
+
+**Docs execution.** `execute.freeze` is explicitly `false`. Documents compute
+their numbers from `jaxdft` at render time, and freezing would let a document
+go stale against the code without failing.
+
+Quarto must find the project's virtual environment. It does when the venv is
+active (it then picks `.venv/bin/python3` from `PATH`). From a plain shell it
+falls back to the system Python and fails. I tried a `docs/_environment` file
+setting `QUARTO_PYTHON`. Quarto resolves that relative path against the
+directory it is invoked from, not the project, so it broke depending on where
+the command was run, and I removed it. `uv run quarto render docs/` works from
+any shell and is the robust form of the definition-of-done command.
+
+**Removed.** The `jaxdft` console-script entry point and its `main()`
+placeholder from the `uv init` template. A command-line interface will be
+added when there is something to run.
+
+**Deferred.**
+
+- The shared plot-style module arrives with the first plot (Milestone 1a
+  validation). It will live outside the physics so that `altair` stays a docs
+  dependency.
+- A `units` module with tested conversions arrives with the first
+  boundary conversion. Milestone 1a works entirely in atomic units and in
+  units of $\tfrac12(2\pi/a)^2$.

@@ -1,0 +1,28 @@
+---
+title: "Performance"
+---
+
+Wall time per milestone, measured on the development machine unless stated
+otherwise. Profile before optimising; this page records what was measured,
+not what was guessed.
+
+## Environment
+
+```{python}
+#| echo: false
+import platform
+
+import jax
+
+import jaxdft  # noqa: F401  (enables x64)
+
+print(f"Python  {platform.python_version()}")
+print(f"JAX     {jax.__version__}")
+print(f"Backend {jax.default_backend()}, devices: {jax.devices()}")
+print(f"x64     {jax.config.jax_enable_x64}")
+```
+
+## Measurements
+
+No physics has been implemented yet. The first measurements will be the
+empty-lattice band structure of Milestone 1a.

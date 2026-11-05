@@ -1,0 +1,13 @@
+---
+title: "Validation"
+listing:
+  contents: "*.qmd"
+  sort: "date"
+  type: table
+  fields: [date, title, description]
+---
+
+Comparisons of jaxdft results against references, in order of the validation
+ladder: analytic limits, published numerical results, then reference codes run
+on the same system. Each document states the tolerances used and interprets
+whether deviations are physically sensible.
