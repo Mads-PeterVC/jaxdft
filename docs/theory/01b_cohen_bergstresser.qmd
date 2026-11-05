@@ -114,13 +114,27 @@ $$
 \tilde V(\mathbf{G}) = \frac{\Omega_\text{at}}{\Omega}\sum_j \lambda_j\, e^{-i\mathbf{G}\cdot\boldsymbol{\tau}_j}\, V^S(|\mathbf{G}|^2).
 $$
 
-For the two-atom cell, $\Omega_\text{at}/\Omega = 1/2$, and the sum reduces to
-$S(\mathbf{G})V^S$. The factor of one half is exactly the normalised structure
+This is the paper's own definition [@cb1966, p. 790]. It writes
+$V^S_G = \tfrac12(V_1(G) + V_2(G))$ with
+$V_1(G) = \frac{2}{\Omega}\int V_1(\mathbf{r})\,e^{-i\mathbf{G}\cdot\mathbf{r}}\,d^3r$,
+where $\Omega$ is the volume of the (two-atom) primitive cell, and places the
+atoms at $\pm a(\tfrac18,\tfrac18,\tfrac18)$. For the two-atom cell,
+$\Omega_\text{at}/\Omega = 1/2$, and the sum reduces to $S(\mathbf{G})V^S$. The factor of one half is exactly the normalised structure
 factor $\tfrac12\sum_j e^{-i\mathbf{G}\cdot\boldsymbol{\tau}_j}$ found in the
 empirical-pseudopotential literature. The general form keeps it correct when
 atoms are added, removed or weighted.
 
-For silicon [@cb1966]:
+**A convention difference.** The paper expands the potential as
+$V(\mathbf{r}) = \sum_\mathbf{G}\big(S^S V^S + iS^A V^A\big)e^{-i\mathbf{G}\cdot\mathbf{r}}$
+[@cb1966, eq. 2], with the opposite exponent sign to our
+$V(\mathbf{r}) = \sum_\mathbf{G}\tilde V(\mathbf{G})e^{+i\mathbf{G}\cdot\mathbf{r}}$.
+For an elemental diamond crystal the antisymmetric part vanishes, and
+$S^S V^S$ is real and even in $\mathbf{G}$, so the two conventions give the
+same $V(\mathbf{r})$. The difference would matter for the antisymmetric
+($V^A$) form factors of the zinc-blende compounds. Those are out of scope,
+but anyone adding them must apply the conversion explicitly.
+
+For silicon [@cb1966, Table II]:
 
 | $|\mathbf{G}|^2$ in $(2\pi/a)^2$ | 3 | 8 | 11 |
 |:--|:--:|:--:|:--:|
@@ -209,15 +223,18 @@ non-trivial:
   steps, of the size of the variational error. They must shrink with
   increasing cutoff, which the validation document will show.
 
-The 1966 calculations used a much smaller basis than we can afford. As far as
-I can tell from secondary sources, further plane waves were included only
-approximately (Löwdin perturbation theory, standard for the method at the
-time). This needs confirming against the paper itself. Either way, the published
-eigenvalues need not be the converged eigenvalues of the model. The paper
-states an accuracy of 0.01 Ry near the gap and 0.04 Ry over a 1 Ry range
-[@cb1966]. Differences of order 0.1 eV from converged values are therefore
-expected and do not indicate an error. This sets the tolerance for
-comparison with the paper (below).
+The 1966 calculations used a much smaller basis than we can afford. Plane
+waves with $|\mathbf{G}+\mathbf{k}|^2 \le E_1 = 7\,(2\pi/a)^2$ were treated
+exactly. Those with $E_1 < |\mathbf{G}+\mathbf{k}|^2 \le E_2 = 21\,(2\pi/a)^2$
+were added in second order by Löwdin's method, as modified by Brust. The paper
+states "convergence within 0.1 eV" [@cb1966, p. 791]. In our cutoff
+convention these limits are $E_\text{cut} = 7E_0$ and $21E_0$ (about 1.3 and
+3.9 Ha at $a$ = 5.43 Å). The published eigenvalues are therefore not the
+converged eigenvalues of the model, and differences of up to 0.1 eV from our
+converged values are expected and do not indicate an error. The validation
+document can make this concrete: diagonalising exactly in the $E_1$ basis,
+without the Löwdin correction, shows how far the paper's raw basis is from
+convergence.
 
 ## What the band structure should look like
 
@@ -235,12 +252,48 @@ gap to look at. Expected features:
 - **Gap:** indirect, with the conduction-band minimum on the Γ–X line close to X.
   A recent reproduction of the CB silicon model, in the body of [@epnet2026],
   reports the minimum at $0.85\,\mathrm{X}$ and an indirect gap of 0.82 eV. A throwaway NumPy
-  calculation while preparing this post agreed, which confirms the
-  normalisation above. The CB model is known to underestimate the experimental
+  calculation while preparing this post agreed with that, and with every
+  calculated entry of Table I below within the paper's stated 0.1 eV, which
+  confirms the normalisation above. The CB model is known to underestimate the experimental
   gap (1.17 eV); that is a property of the model, not of the implementation.
 
 The group-theory labels are for orientation. Tests check degeneracies and
 orderings, not labels.
+
+## Reference values
+
+Table I of [@cb1966] gives, for Si at $a$ = 5.43 Å, energy splittings in eV,
+measured from the valence-band maximum Γ₂₅′. Spin–orbit splitting has been
+removed from the experimental values, and the model has none. Where the
+paper gives both, the experimental value is listed first:
+
+| Splitting | Experiment | Calculated (CB) |
+|:--|:--:|:--:|
+| Γ₂₅′ – Γ₂′ | — | 3.8 |
+| Γ₂₅′ – Γ₁₅ | 3.4 | 3.4 |
+| Γ₂₅′ – L₁ | — | 1.9 |
+| Γ₂₅′ – X₁ (Δ₁ minimum) | 1.1 | 0.8 |
+| L₃′ – L₁ | 3.2 | 3.1 |
+| L₃′ – L₃ | 5.3 | 5.2 |
+| X₄ – X₁ | 4.1 | 4.0 |
+
+"Γ₂₅′ – X₁ (Δ₁)" is the indirect gap, to the conduction-band minimum on the Δ
+(Γ–X) line, not the energy at X itself. The calculated values are the
+acceptance data. They will be transcribed into `reference/` with a note on
+the source and the reading.
+
+The paper's band-structure figure [@cb1966, Fig. 1] uses the path
+L–Γ–X–K–Γ. It reaches K by going from X along the X–U(K) line and then
+"directly from (1,1,0) to Γ" [@cb1966, p. 793]. Since $(1,1,0)\tfrac{2\pi}{a}$
+is equivalent to X, this is our L–Γ–X–U|K–Γ.
+
+The levels are identified by degeneracy and order rather than by label:
+
+- Γ₂₅′ is the triplet at the valence-band maximum, and Γ₁₅ and Γ₂′ are the
+  conduction triplet and singlet above it.
+- X₄ is the highest valence pair at X, and X₁ the lowest conduction pair.
+- L₃′ is the highest valence pair at L. L₁ is the conduction singlet and L₃
+  the conduction pair.
 
 ## Invariants and checks
 
@@ -282,27 +335,27 @@ orderings, not labels.
 
 **Against references**
 
-1. Converged eigenvalues at Γ, X and L and the gap against published values
-   (see open question 1 for the source). Tolerance 0.1 eV, from the paper's
-   own stated accuracy and Löwdin truncation (above). That is far larger than
-   our numerical error, so the test checks the model and its conventions, not
-   the numerics.
+1. Converged splittings against the calculated values of [@cb1966, Table I],
+   below. Tolerance 0.15 eV. Table I gives energies to 0.1 eV, so rounding
+   alone contributes up to ±0.05 eV, and the paper states its own basis
+   converged within 0.1 eV. The tolerance is the sum of the two, both taken
+   from the paper and fixed before implementation. It is far larger than our
+   numerical error, so the test checks the model and its conventions, not the
+   numerics. The experimental values in the same table are for
+   interpretation only, not for testing: they test the model, not our
+   implementation of it.
 2. Against a reference code running the same model on the same system, if we
    can run one (open question 2). Tolerance set by the convergence of both
    codes at matched cutoffs, expected to be of order meV.
 
 ## Open questions for review
 
-1. **Source of published reference values.** The paper [@cb1966] (Phys. Rev.,
-   paywalled) is the primary source for the Si eigenvalues at Γ, X and L. I
-   could not access its tables. Options:
-   - (a) you supply the relevant table from the paper;
-   - (b) a textbook reproduction (Cohen & Chelikowsky, *Electronic Structure
-     and Optical Properties of Semiconductors*);
-   - (c) use only the secondary modern reproduction [@epnet2026] (CBM position
-     and gap).
-
-   I recommend (a), with (c) as an additional check.
+1. **Resolved: published reference values.** Table I of the paper, above,
+   with the 0.15 eV tolerance derived from its stated rounding and convergence.
+   The modern reproduction [@epnet2026] (CBM at 0.85 X, gap 0.82 eV) serves as
+   an additional, finer check of the gap, if we accept a secondary source for
+   a test. Should it be an acceptance test, or only quoted in the validation
+   document?
 2. **Reference code.** DFTK, which is MIT-licensed, has a Cohen–Bergstresser
    element and a silicon example [@dftk_cb]. Running it would give rung-3
    reference data at matched cutoffs and k-points. It needs Julia, which is
