@@ -98,8 +98,12 @@ algorithms. The SCF loop must not know or care which XC functional,
 pseudopotential, or basis set it uses.
 
 - XC functional: a callable `(density) -> (energy, potential)`
-- Pseudopotential: a callable `(G vectors) -> (V_loc, V_nl)`, behind a parser
-  interface; nothing outside the parser reads file formats
+- Pseudopotential: an object exposing reciprocal-space radial data, behind a
+  parser interface; nothing outside the parser reads file formats. The local
+  part is a form factor `local(q) -> v̂(q)` (atomic Fourier transform,
+  Ha·Bohr³, cell-independent). Nonlocal projectors and their coefficients are
+  added as further methods in the milestone that first needs them; local and
+  nonlocal parts are used by separate Hamiltonian terms.
 - Basis set: an object defining representation and transforms between real
   and reciprocal space (plane waves now; keep LCAO possible later)
 - Diagonaliser and k-point generation: likewise swappable
