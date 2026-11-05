@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
 from jaxdft import Lattice, Structure, assert_double_precision, diamond, empty, fcc_lattice
+from support.budget import examples
 from support.free_electron import fcc_vectors
 from support.strategies import cells
 
@@ -27,7 +28,7 @@ def test_from_cartesian_stores_fractional_and_round_trips(A, frac):
     np.testing.assert_allclose(s.lattice.vectors, A, rtol=1e-15)
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(cells(), positions_strategy)
 # Regression: subnormal cell entries are flushed to zero by the conversion arithmetic.
 @example(A=np.array([[6.0, 1.33504432e-310, 1.33504432e-310], [1.33504432e-310, 6.0, 1.33504432e-310], [1.33504432e-310, 1.33504432e-310, 6.0]]), frac=np.zeros((1, 3)))

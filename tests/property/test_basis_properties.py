@@ -12,6 +12,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from jaxdft import Lattice, PlaneWaveBasis, fcc_lattice
+from support.budget import examples
 from support.free_electron import (
     A_SI,
     basis_set,
@@ -31,7 +32,7 @@ def miller_sets(basis):
     return [{tuple(int(x) for x in row) for row in m[i][mask[i]]} for i in range(m.shape[0])]
 
 
-@settings(max_examples=30)
+@settings(max_examples=examples(30))
 @given(cells(), st.lists(kfracs(), min_size=1, max_size=3), TARGET_ECUTS)
 def test_basis_is_exactly_the_cutoff_sphere(A, ks, target):
     """Every G in the basis satisfies the cutoff, and every G that does is included,
@@ -43,7 +44,7 @@ def test_basis_is_exactly_the_cutoff_sphere(A, ks, target):
         assert got == basis_set(A, k, ecut)
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(cells(), st.lists(kfracs(), min_size=1, max_size=3), TARGET_ECUTS)
 def test_shapes_dtypes_and_padding_length(A, ks, target):
     ks = np.array(ks)
@@ -62,7 +63,7 @@ def test_shapes_dtypes_and_padding_length(A, ks, target):
     assert basis.n_pad == n_pw.max()  # default: exactly max_k N_PW
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(cells(), kfracs(), TARGET_ECUTS, st.floats(1.1, 2.0))
 def test_nesting(A, k, target, factor):
     e1 = ecut_between_shells(A, [k], target)
@@ -73,7 +74,7 @@ def test_nesting(A, k, target, factor):
     assert s1 <= s2
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(cells(), kfracs(), st.tuples(*[st.integers(-2, 2)] * 3), TARGET_ECUTS)
 def test_shift_by_reciprocal_lattice_vector_relabels_basis(A, k, m0, target):
     """B_{k+G0} = B_k - G0, so in particular N_PW(k + G0) = N_PW(k)."""
@@ -84,7 +85,7 @@ def test_shift_by_reciprocal_lattice_vector_relabels_basis(A, k, m0, target):
     assert s_shift == {tuple(int(x) for x in np.array(m) - m0) for m in s}
 
 
-@settings(max_examples=15)
+@settings(max_examples=examples(15))
 @given(kfracs(-0.5, 0.5), TARGET_ECUTS)
 def test_basis_size_invariant_under_oh_in_fcc(k, target):
     A = fcc_vectors(A_SI)
@@ -96,7 +97,7 @@ def test_basis_size_invariant_under_oh_in_fcc(k, target):
     assert np.all(n_pw == n_pw[0])
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(kfracs(-0.5, 0.5), st.floats(1.0, 40.0))
 def test_basis_size_within_rigorous_bound(k, target):
     """(1 - r/Gmax)^3 <= N_PW/N_asym <= (1 + r/Gmax)^3, r = BZ circumradius = |W| (fcc)."""

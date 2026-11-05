@@ -22,6 +22,7 @@ from jaxdft import (
     dense_matrix,
     hamiltonian,
 )
+from support.budget import examples
 from support.free_electron import A_SI, ecut_between_shells, fcc_vectors, reciprocal
 from support.strategies import cells, kfracs
 from support.terms import ConstantShift, MillerCoupling
@@ -49,7 +50,7 @@ TERMS = {
 
 
 @pytest.mark.parametrize("terms", TERMS.values(), ids=TERMS.keys())
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS, seed=st.integers(0, 2**32 - 1))
 def test_apply_H_agrees_with_dense_matrix(terms, A, k, target, seed):
     lat, basis = padded_basis(A, k, target)
@@ -65,7 +66,7 @@ def test_apply_H_agrees_with_dense_matrix(terms, A, k, target, seed):
 
 
 @pytest.mark.parametrize("terms", TERMS.values(), ids=TERMS.keys())
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS)
 def test_dense_matrix_is_hermitian(terms, A, k, target):
     lat, basis = padded_basis(A, k, target)
@@ -73,7 +74,7 @@ def test_dense_matrix_is_hermitian(terms, A, k, target):
     np.testing.assert_allclose(H, H.conj().T, atol=1e-14 * np.abs(H).max())
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS)
 # Regression: k + G = 0 exactly, where both routes round to O(1e-32) Ha.
 @example(A=6.0 * np.eye(3), k=np.array([1.0, 1.0, 1.0]), target=1.0)
@@ -92,7 +93,7 @@ def test_empty_lattice_physical_block_is_kinetic_diagonal(A, k, target):
 
 
 @pytest.mark.parametrize("terms", TERMS.values(), ids=TERMS.keys())
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS)
 def test_padding_is_exactly_decoupled_with_bounded_sentinel(terms, A, k, target):
     """Zero rows/cols between padding and physical entries, even for a term that
@@ -112,7 +113,7 @@ def test_padding_is_exactly_decoupled_with_bounded_sentinel(terms, A, k, target)
     assert basis.ecut < s.real <= 10 * basis.ecut and s.imag == 0
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS)
 def test_non_diagonal_hamiltonian_eigenvalues(A, k, target):
     """Kinetic + a coupling defined outside the package: the bands equal the
@@ -132,7 +133,7 @@ def test_non_diagonal_hamiltonian_eigenvalues(A, k, target):
     np.testing.assert_allclose(bands.eigenvalues[0][:n], ref[:n], atol=EIGENVALUE_ATOL)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), ks=st.lists(kfracs(), min_size=1, max_size=3), target=TARGET_ECUTS, extra=st.integers(1, 20))
 def test_bands_independent_of_n_pad(A, ks, target, extra):
     """Solver-independent leak test: different padding lengths give the same bands."""
@@ -150,7 +151,7 @@ def test_bands_independent_of_n_pad(A, ks, target, extra):
     assert np.all((e2 < ecut) == below)
 
 
-@settings(max_examples=25)
+@settings(max_examples=examples(25))
 @given(
     n=st.integers(2, 40),
     data=st.data(),
@@ -174,7 +175,7 @@ def test_dense_eigensolver_on_arbitrary_hermitian_operator(n, data):
     assert np.all(resid <= RESIDUAL_RTOL * np.linalg.norm(M, 2) * max(1, np.sqrt(n)))
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs(), target=TARGET_ECUTS, v0=st.floats(-1.0, 1.0))
 def test_constant_potential_shifts_every_eigenvalue(A, k, target, v0):
     """A term defined outside the package (the 1b extension point) shifts by V0."""

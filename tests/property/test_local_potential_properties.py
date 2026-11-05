@@ -29,6 +29,7 @@ from jaxdft import (
 )
 from jaxdft.pseudo.cohen_bergstresser import silicon
 from support import cohen_bergstresser as cbref
+from support.budget import examples
 from support.free_electron import oh_operations, reciprocal
 from support.pseudos import GaussianPseudo, UnboundedPseudo
 from support.strategies import cells, kfracs
@@ -82,7 +83,7 @@ def test_mean_potential_is_zero_for_cb(si, vloc):
     assert vloc.coefficients(si, jnp.zeros((1, 3), dtype=int))[0] == 0
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(A=cells(), f=hnp.arrays(float, (2, 3), elements=st.floats(-1, 1)), w=hnp.arrays(float, (2,), elements=st.floats(0, 1)))
 def test_general_coefficients_hermitian_and_linear_in_weights(A, f, w):
     """V(-G) = conj V(G) for any positions and weights; V is linear in the weights."""
@@ -95,7 +96,7 @@ def test_general_coefficients_hermitian_and_linear_in_weights(A, f, w):
     np.testing.assert_allclose(np.asarray(vg.coefficients(s3, m)), 0.3 * v, atol=1e-14)
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(A=cells())
 def test_single_atom_at_origin_gives_v_hat_over_omega(A):
     """The 1/Omega normalisation, independently of CB's tabulated per-atom volume."""
@@ -139,7 +140,7 @@ def test_phase_sign_places_the_atom_at_its_position():
 # --- the operator --------------------------------------------------------------------
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs())
 def test_dense_physical_block_matches_numpy_hamiltonian(si, vloc, k):
     basis = PlaneWaveBasis.build(si.lattice, k[None], SMALL_ECUT)
@@ -153,7 +154,7 @@ def test_dense_physical_block_matches_numpy_hamiltonian(si, vloc, k):
     np.testing.assert_allclose(H[np.ix_(mask, mask)], H_ref[np.ix_(perm, perm)], atol=1e-13)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs())
 def test_matrix_elements_are_v_of_g_minus_g_prime(A, k):
     """<k+G|V|k+G'> = V(G - G'), checked entry by entry for a structure where V is complex.
@@ -173,7 +174,7 @@ def test_matrix_elements_are_v_of_g_minus_g_prime(A, k):
     np.testing.assert_allclose(H, expected, atol=1e-13)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs(), seed=st.integers(0, 2**32 - 1), extra=st.integers(1, 12))
 def test_operator_dense_hermitian_and_padding_decoupled(si, vloc, k, seed, extra):
     b0 = PlaneWaveBasis.build(si.lattice, k[None], SMALL_ECUT)
@@ -189,7 +190,7 @@ def test_operator_dense_hermitian_and_padding_decoupled(si, vloc, k, seed, extra
     np.testing.assert_array_equal(H[np.ix_(mask, ~mask)], 0)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs())
 def test_trace_of_H_equals_trace_of_T(si, vloc, k):
     b = PlaneWaveBasis.build(si.lattice, k[None], SMALL_ECUT)[0]
@@ -211,7 +212,7 @@ def test_prepared_term_is_matrix_free(si, vloc):
 # --- spectrum invariants ---------------------------------------------------------------
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs(-0.5, 0.5), t=hnp.arrays(float, (3,), elements=st.floats(-1, 1)))
 def test_spectrum_invariant_under_translation_and_exchange(si, vloc, k, t):
     """A rigid shift rephases V(G - G') (a unitary change of basis); the complex path
@@ -224,7 +225,7 @@ def test_spectrum_invariant_under_translation_and_exchange(si, vloc, k, t):
     np.testing.assert_allclose(spectrum(swapped, k, SMALL_ECUT, terms), e, atol=EIGENVALUE_ATOL)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs())
 def test_zero_weights_recover_the_empty_lattice(si, vloc, k):
     off = Structure(si.lattice, si.positions, si.species, weights=[0.0, 0.0])
@@ -233,7 +234,7 @@ def test_zero_weights_recover_the_empty_lattice(si, vloc, k):
     )
 
 
-@settings(max_examples=5)
+@settings(max_examples=examples(5))
 @given(k=kfracs(-0.5, 0.5))
 def test_spectrum_invariant_under_oh(si, vloc, k):
     B = np.asarray(si.lattice.reciprocal)
@@ -246,7 +247,7 @@ def test_spectrum_invariant_under_oh(si, vloc, k):
         np.testing.assert_allclose(row[below], e[0][below], atol=EIGENVALUE_ATOL)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(k=kfracs(), factor=st.floats(1.2, 2.0))
 def test_eigenvalues_non_increasing_with_cutoff(si, vloc, k, factor):
     """Courant-Fischer on nested bases, now with a non-diagonal H."""
@@ -256,7 +257,7 @@ def test_eigenvalues_non_increasing_with_cutoff(si, vloc, k, factor):
     assert np.all(hi[: len(lo)] <= lo + EIGENVALUE_ATOL)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(ks=st.lists(kfracs(), min_size=1, max_size=3), extra=st.integers(1, 20))
 def test_bands_independent_of_n_pad(si, vloc, ks, extra):
     ks = np.array(ks)

@@ -8,6 +8,7 @@ import numpy as np
 from hypothesis import given, settings
 
 from jaxdft import Lattice, assert_double_precision, fcc_lattice
+from support.budget import examples
 from support.free_electron import fcc_vectors, reciprocal
 from support.strategies import cells
 
@@ -26,7 +27,7 @@ def test_volume_and_brillouin_zone_volume(A):
     np.testing.assert_allclose(abs(np.linalg.det(lat.reciprocal)), (2 * np.pi) ** 3 / lat.volume, rtol=1e-12)
 
 
-@settings(max_examples=20)
+@settings(max_examples=examples(20))
 @given(cells())
 def test_plane_waves_are_lattice_periodic(A):
     lat = Lattice(A)
