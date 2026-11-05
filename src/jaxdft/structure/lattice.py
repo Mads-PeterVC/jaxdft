@@ -1,4 +1,6 @@
-"""Direct and reciprocal lattice (theory post 1a, 'Direct lattice', 'Reciprocal lattice')."""
+"""Direct and reciprocal lattice (theory post 1a, 'Direct lattice', 'Reciprocal lattice').
+
+Named lattices (fcc, ...) live in ``jaxdft.structure.builders``."""
 
 from __future__ import annotations
 
@@ -27,11 +29,6 @@ class Lattice:
 
     def __repr__(self):
         return f"Lattice(vectors={self.vectors!r})"
-
-    @classmethod
-    def fcc(cls, a) -> Lattice:
-        """Face-centred cubic with conventional cubic lattice constant ``a`` (Bohr)."""
-        return cls(0.5 * jnp.asarray(a, dtype=jnp.float64) * jnp.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=jnp.float64))
 
     @property
     def reciprocal(self) -> jax.Array:

@@ -1,0 +1,276 @@
+---
+title: "Milestone 1b: Cohen–Bergstresser silicon validation"
+description: "Silicon bands from the 1966 empirical pseudopotential against the paper's Table I."
+date: 2026-11-05
+bibliography: ../references.bib
+---
+
+```{python}
+#| echo: false
+import json
+from pathlib import Path
+
+import altair as alt
+import numpy as np
+import pandas as pd
+
+from jaxdft import (
+    Kinetic,
+    LocalPotential,
+    PlaneWaveBasis,
+    band_structure,
+    diamond,
+    kpath,
+    special_points_fcc,
+)
+from jaxdft.analysis.bands import band_minimum_on_segment
+from jaxdft.analysis.symmetry import group_levels, inversion_parities
+from jaxdft.plotting import style
+from jaxdft.pseudo.cohen_bergstresser import silicon
+from jaxdft.units import convert
+
+style.enable()
+
+TEST_ECUT = 6.0  # Ha, the acceptance-test cutoff
+LEVEL_ATOL = 1e-8  # Ha, degenerate-level grouping
+TOL_EV = {"from_vbm": 0.15, "between_levels": 0.25}  # theory post, 'Reference values'
+
+cb = silicon()
+si = diamond(cb.lattice_constant_angstrom, "Si", unit="Angstrom")
+terms = (Kinetic(), LocalPotential({"Si": cb}))
+points = {k: np.asarray(v) for k, v in special_points_fcc().items()}
+ev = float(convert(1.0, "Hartree", "eV"))
+E0 = 0.5 * (2 * np.pi / cb.lattice_constant) ** 2  # Ha
+
+table = json.loads(Path("../../reference/cohen_bergstresser_1966/si_table1.json").read_text())
+
+
+def spectrum(kfrac, ecut):
+    basis = PlaneWaveBasis.build(si.lattice, np.atleast_2d(kfrac), ecut)
+    return np.asarray(band_structure(si, basis, n_bands=int(basis.n_pw[0]), terms=terms).eigenvalues[0])
+
+
+def splittings(ecut):
+    """The seven Table I splittings (eV), levels identified by degeneracy and order."""
+    G, X, L = (spectrum(points[p], ecut) for p in ("G", "X", "L"))
+    t, e_min = band_minimum_on_segment(si, points["G"], points["X"], band=4, ecut=ecut, terms=terms)
+    vbm = G[3]
+    return {
+        "Gamma25p-Gamma2p": (G[7] - vbm) * ev,
+        "Gamma25p-Gamma15": (G[4] - vbm) * ev,
+        "Gamma25p-L1": (L[4] - vbm) * ev,
+        "Gamma25p-X1(Delta1)": (e_min - vbm) * ev,
+        "L3p-L1": (L[4] - L[2]) * ev,
+        "L3p-L3": (L[5] - L[2]) * ev,
+        "X4-X1": (X[4] - X[2]) * ev,
+    }, {"t_min": t, "e_x1": (X[4] - vbm) * ev, "n_pw_gamma": int(PlaneWaveBasis.build(si.lattice, points["G"][None], ecut).n_pw[0])}
+
+
+ours, extra = splittings(TEST_ECUT)
+```
+
+This document validates Milestone 1b against the second rung of the validation
+ladder: the published band structure of silicon from the Cohen–Bergstresser
+empirical pseudopotential [@cb1966]. The physics, conventions and tolerances
+are in the [theory post](../theory/01b_cohen_bergstresser.qmd).
+
+## Setup
+
+- Diamond-structure Si, $a$ = `{python} f"{cb.lattice_constant_angstrom}"` Å
+  = `{python} f"{cb.lattice_constant:.4f}"` Bohr. Atoms at $\pm(\tfrac18,\tfrac18,\tfrac18)$.
+- Form factors $V^S_3, V^S_8, V^S_{11}$ = `{python} ", ".join(f"{v:+.2f}" for v in cb.form_factors_ry.values())` Ry.
+- Cutoff `{python} f"{TEST_ECUT:g}"` Ha, giving `{python} f"{extra['n_pw_gamma']}"`
+  plane waves at Γ. The convergence section below shows this is converged to
+  well below the comparison tolerance.
+- Energies in eV relative to the valence-band maximum Γ₂₅′.
+
+## Band structure
+
+```{python}
+#| echo: false
+path = kpath(si.lattice, special_points_fcc(), [["L", "G", "X", "U"], ["K", "G"]], n_points=200)
+basis = PlaneWaveBasis.build(si.lattice, path.kpoints, TEST_ECUT)
+bands = band_structure(si, basis, n_bands=10, terms=terms)
+e = np.asarray(bands.eigenvalues)
+vbm = float(spectrum(points["G"], TEST_ECUT)[3])
+x = np.asarray(path.distance)
+lines = pd.DataFrame(
+    [{"distance": x[i], "band": n, "energy": (e[i, n] - vbm) * ev} for n in range(10) for i in range(len(x))]
+)
+ticks = [float(t) for t in path.tick_positions]  # L, Γ, X, U|K, Γ (Γ appears twice)
+assert list(path.tick_labels) == ["L", "Γ", "X", "U|K", "Γ"]
+x_L, x_G, x_X = ticks[0], ticks[1], ticks[2]
+published = {r["id"]: r["calculated"] for r in table["splittings"]}
+marks = pd.DataFrame(
+    [
+        {"distance": x_G, "energy": published["Gamma25p-Gamma15"], "level": "Γ₁₅"},
+        {"distance": x_G, "energy": published["Gamma25p-Gamma2p"], "level": "Γ₂′"},
+        {"distance": x_L, "energy": published["Gamma25p-L1"], "level": "L₁"},
+        {"distance": x_G + extra["t_min"] * (x_X - x_G), "energy": published["Gamma25p-X1(Delta1)"], "level": "Δ₁ minimum"},
+    ]
+)
+lookup = "{" + ", ".join(f"'{t:.6f}': '{lab}'" for lab, t in zip(path.tick_labels, ticks)) + "}"
+x_axis = alt.X(
+    "distance:Q", title=None, scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
+    axis=alt.Axis(values=ticks, labelExpr=f"{lookup}[format(datum.value, '.6f')]", grid=True),
+)
+y_axis = alt.Y("energy:Q", title="Energy − E(Γ₂₅′) (eV)", scale=alt.Scale(domain=[-13, 6]))
+colour = alt.Color(
+    "source:N", title=None,
+    scale=alt.Scale(domain=["computed (jaxdft)", "CB 1966, Table I"], range=[style.SERIES[0], style.SERIES[1]]),
+)
+line_layer = alt.Chart(lines.assign(source="computed (jaxdft)")).mark_line(clip=True).encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
+mark_layer = alt.Chart(marks.assign(source="CB 1966, Table I")).mark_point(size=90, filled=True, stroke=style.SURFACE, strokeWidth=1.5).encode(
+    x=x_axis, y=y_axis, color=colour,
+    tooltip=[alt.Tooltip("level:N"), alt.Tooltip("energy:Q", title="published (eV)", format=".1f")],
+)
+(line_layer + mark_layer).properties(width=style.WIDTH, height=style.HEIGHT).interactive()
+```
+
+Points mark the four levels that Table I gives directly relative to the
+valence-band maximum. The Δ₁ minimum is placed at its computed position on
+Γ–X, since the paper gives its energy but not its position.
+
+## Comparison with Table I
+
+```{python}
+#| echo: false
+rows = []
+for r in table["splittings"]:
+    dev = ours[r["id"]] - r["calculated"]
+    rows.append({
+        "splitting": r["id"].replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"),
+        "jaxdft (eV)": f"{ours[r['id']]:.3f}",
+        "CB 1966 calc. (eV)": f"{r['calculated']:.1f}",
+        "deviation (eV)": f"{dev:+.3f}",
+        "tolerance (eV)": f"{TOL_EV[r['tolerance_class']]:.2f}",
+        "within": abs(dev) <= TOL_EV[r["tolerance_class"]],
+        "experiment (eV)": "—" if r["experiment"] is None else f"{r['experiment']:.1f}",
+    })
+assert all(row["within"] for row in rows)
+worst = max(table["splittings"], key=lambda r: abs(ours[r["id"]] - r["calculated"]))
+pd.DataFrame(rows).style.hide(axis="index")
+```
+
+Every splitting is within tolerance. The largest deviation is
+`{python} f"{ours[worst['id']] - worst['calculated']:+.3f}"` eV, on
+`{python} worst['id'].replace("Gamma", "Γ").replace("p", "′")`.
+
+**The indirect gap.** The paper's "Γ₂₅′–X₁(Δ₁)" is the minimum of the lowest
+conduction band along Γ–X. Here it lies at
+`{python} f"{extra['t_min']:.3f}"` of the way to X, with energy
+`{python} f"{ours['Gamma25p-X1(Delta1)']:.3f}"` eV. The level at X itself is at
+`{python} f"{extra['e_x1']:.3f}"` eV. The two differ by
+`{python} f"{extra['e_x1'] - ours['Gamma25p-X1(Delta1)']:.3f}"` eV, less than
+the 0.15 eV tolerance. That is why the acceptance test compares the Δ minimum
+and separately checks that it lies inside Γ–X. A modern reproduction of
+the same model [@epnet2026] reports the minimum at 0.85 X and a gap of
+0.82 eV, in agreement. It runs the same model, so it is corroboration rather
+than independent evidence.
+
+## Convergence, and the paper's own basis
+
+```{python}
+#| echo: false
+cutoffs = [2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0]
+conv = {E: splittings(E)[0] for E in cutoffs}
+ref = conv[cutoffs[-1]]
+conv_df = pd.DataFrame(
+    [{"ecut": E, "max_dev": max(abs(conv[E][k] - ref[k]) for k in ref) * 1e3} for E in cutoffs[:-1]]
+)
+alt.Chart(conv_df).mark_line(point=alt.OverlayMarkDef(size=60, filled=True)).encode(
+    x=alt.X("ecut:Q", title="E_cut (Ha)"),
+    y=alt.Y("max_dev:Q", title=f"max |splitting − value at {cutoffs[-1]:g} Ha| (meV)", scale=alt.Scale(type="log")),
+    color=alt.value(style.SERIES[0]),
+    tooltip=[alt.Tooltip("ecut:Q", title="E_cut (Ha)"), alt.Tooltip("max_dev:Q", title="meV", format=".3g")],
+).properties(width=style.WIDTH, height=240)
+```
+
+```{python}
+#| echo: false
+dev_at_test = max(abs(conv[TEST_ECUT][k] - ref[k]) for k in ref) * 1e3
+e1, e1_extra = splittings(7 * E0)  # the paper's exactly diagonalised basis, E1 = 7 (2 pi / a)^2
+e2, e2_extra = splittings(21 * E0)  # the paper's Loewdin range, E2 = 21 (2 pi / a)^2
+basis_rows = []
+for label, vals, n in [
+    ("E₁ = 7 E₀, exact (no Löwdin)", e1, e1_extra["n_pw_gamma"]),
+    ("E₂ = 21 E₀, exact", e2, e2_extra["n_pw_gamma"]),
+    (f"{TEST_ECUT:g} Ha (tests)", ours, extra["n_pw_gamma"]),
+]:
+    basis_rows.append({"basis": label, "N_PW(Γ)": n, **{k.replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"): f"{v:.3f}" for k, v in vals.items()}})
+basis_rows.append({"basis": "CB 1966, Table I", "N_PW(Γ)": "", **{r["id"].replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"): f"{r['calculated']:.1f}" for r in table["splittings"]}})
+assert dev_at_test < 1.0  # meV; the theory post's claim that 6 Ha is converged to ~1 meV
+pd.DataFrame(basis_rows).style.hide(axis="index")
+```
+
+At the test cutoff, all seven splittings are within
+`{python} f"{dev_at_test:.2g}"` meV of their values at
+`{python} f"{cutoffs[-1]:g}"` Ha, two orders of magnitude inside the comparison
+tolerance. The eigenvalues themselves approach their limits from above, as the
+variational principle requires and the property tests check.
+
+The second table repeats the comparison in the paper's own bases. Cohen and
+Bergstresser diagonalised exactly in the $E_1 = 7E_0$ basis
+(`{python} f"{e1_extra['n_pw_gamma']}"` plane waves at Γ) and added the rest up
+to $E_2 = 21E_0$ by Löwdin perturbation theory. Diagonalised exactly without
+that correction, the $E_1$ basis puts the indirect gap at
+`{python} f"{e1['Gamma25p-X1(Delta1)']:.2f}"` eV, against
+`{python} f"{ours['Gamma25p-X1(Delta1)']:.2f}"` eV converged. The exact $E_2$
+basis is already close to converged. The published values agree with the
+converged model far better than the raw $E_1$ basis does. So the Löwdin
+correction did real work, and the agreement in the previous section is
+evidence that it was accurate.
+
+## Degeneracies and parities
+
+```{python}
+#| echo: false
+par_rows, parities = [], {}
+for p, name in [("G", "Γ"), ("X", "X"), ("L", "L")]:
+    b = PlaneWaveBasis.build(si.lattice, points[p][None], TEST_ECUT)
+    bb = band_structure(si, b, n_bands=12, terms=terms)
+    levs = inversion_parities(bb, 0, atol=LEVEL_ATOL)[:5]
+    parities[p] = [(d, round(par)) for _, d, par in levs]
+    par_rows.append({
+        "point": name,
+        "lowest levels (eV): degeneracy, parity": "; ".join(
+            f"{(lv - vbm) * ev:+.2f}: {d}, {'+' if par > 0.5 else '−' if par < -0.5 else '0'}" for lv, d, par in levs
+        ),
+    })
+# The prose below relies on these; a regression must break the render.
+assert parities["G"][:4] == [(1, 1), (3, 1), (3, -1), (1, -1)]
+assert parities["L"][:5] == [(1, -1), (1, 1), (2, -1), (1, 1), (2, 1)]
+assert all(d % 2 == 0 and par == 0 for d, par in parities["X"])
+pd.DataFrame(par_rows).style.hide(axis="index")
+```
+
+At Γ the levels are Γ₁ (+), Γ₂₅′ (+, threefold, the valence-band maximum),
+Γ₁₅ (−) and Γ₂′ (−). At L the order is L₂′ (−), L₁ (+), L₃′ (−), L₁ (+), L₃ (+).
+The labels look surprising for L but follow from the parities: the prime
+means odd at L and even at Γ. At X every level is paired. Each pair contains
+one even and one odd combination, so its parity averages to zero. The
+pairing persists along X–W and disappears at a generic point of the square
+face (acceptance tests).
+
+## Interpretation
+
+The implementation reproduces the Cohen–Bergstresser silicon band structure
+within the accuracy the paper itself claims, using the conventions derived in
+the theory post: v̂ = V^S Ω_at, the 1/Ω structure factor, and the
+$e^{-i\mathbf{G}\cdot\boldsymbol\tau}$ phase. The comparison is discriminating.
+A Rydberg–Hartree slip or a misplaced factor of the atomic volume moves the
+splittings by electronvolts, and the mutation tests confirm that each such
+error fails the suite.
+
+The remaining deviations are what the paper's method predicts. They are
+largest for Γ₂′, which the paper identifies as the level most sensitive to
+the form factors [@cb1966, Sec. IV]. They come from the paper's perturbative treatment of the
+basis and its 0.1 eV rounding, not from our numerics, which are converged to
+the meV level.
+
+Compared with experiment, the model gives the silicon band structure that made
+it famous: the indirect gap with its minimum near X, Γ₁₅ below Γ₂′, and
+valence-band splittings within a few tenths of an eV. The gap itself is too
+small: about 0.8 eV against the 1.1 eV experimental value in the same table.
+This is a property of the three-parameter local model, not of the
+implementation.

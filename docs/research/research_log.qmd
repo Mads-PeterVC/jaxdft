@@ -43,3 +43,51 @@ interesting errors live (structure-factor sign, the 1/Ω normalisation of
 Ṽ(G − G′)). The property tests do exercise a non-diagonal, test-only coupling
 term, and it agrees with an independent NumPy diagonalisation. Milestone 1b,
 with Cohen–Bergstresser silicon, is the first physical test of that path.
+
+## 2026-11-05: Band sticking in diamond silicon is on the X–W line, not the whole face
+
+While reviewing the 1b theory post, the reviewer found that in the
+Cohen–Bergstresser model the bands stay paired from X to W along
+$\tfrac{2\pi}{a}(0,1,z)$. The reviewer generalised this to the entire square
+face of the Brillouin zone. A throwaway check refutes the generalisation. At a
+generic face point, $\tfrac{2\pi}{a}(0.13, 1, 0.21)$, the levels are split by
+several mHa, while along X–W they pair to rounding. The pairing needs the
+non-symmorphic operation of the diamond space group (with a phase of −1 on the
+face) *together with* time reversal, and that combination holds on the X–W
+line. The acceptance tests therefore sample that line and include the generic
+face point as a negative control. The pairing should disappear once spin–orbit
+coupling is added.
+
+A second point from the review: the 1966 paper's exactly diagonalised basis
+(about 15 plane waves) is far from converged, with the indirect gap off by
+roughly a factor of two. Its published values are nevertheless close to the
+converged model, which credits the Löwdin second-order correction. The
+validation document will show this from the library.
+
+## 2026-11-05: Cohen–Bergstresser silicon reproduced
+
+The [1b validation](../validation/01b_cohen_bergstresser.qmd) shows that all
+seven Si splittings in Table I of Cohen & Bergstresser (1966) are reproduced
+within the tolerances derived from the paper's own rounding and stated
+convergence. The worst entry is Γ₂₅′–Γ₂′. The paper identifies Γ₂′ as the
+level most sensitive to the form factors, so its 0.1 eV rounding and
+second-order basis treatment matter most there.
+
+Diagonalising exactly in the paper's explicitly treated basis (about 15 plane
+waves) gives an indirect gap of roughly half the converged value. The
+published numbers sit much closer to the converged model than to that basis.
+This is quantitative evidence that their Löwdin correction was accurate, not
+just a small adjustment.
+
+Physically the model gives the textbook picture: the indirect gap with its
+minimum near 0.85 X, Γ₁₅ below Γ₂′, bands paired along X–W, and the L
+parities that explain the "surprising" L₂′-below-L₁ ordering. Its gap is
+about 0.3 eV below experiment, a known limitation of a three-parameter local
+model. That limitation motivates the norm-conserving pseudopotentials and
+self-consistency of the next milestone.
+
+One numerical subtlety worth remembering: a band structure cannot distinguish
+H from conj(H), so it cannot tell a crystal from its inversion image. The
+convention ⟨G|V|G′⟩ = Ṽ(G − G′) and the structure-factor sign are therefore
+pinned by real-space and matrix-element tests rather than by any band energy.
+That will matter as soon as positions get forces.

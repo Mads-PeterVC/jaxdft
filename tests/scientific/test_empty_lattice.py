@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 
 from jaxdft import (
+    empty,
+    fcc_lattice,
     Bands,
     Lattice,
     PlaneWaveBasis,
@@ -40,7 +42,7 @@ TARGET_ECUT = 12.5 * e0(A_SI)
 
 @pytest.fixture(scope="module")
 def lattice():
-    return Lattice.fcc(A_SI)
+    return fcc_lattice(A_SI, unit="Bohr")
 
 
 @pytest.fixture(scope="module")
@@ -53,7 +55,7 @@ def special_bands(lattice):
     out = {}
     for label, k in zip(LABELS, ks):
         basis = PlaneWaveBasis.build(lattice, k[None], ecut)
-        out[label] = band_structure(lattice, basis, n_bands=int(basis.n_pw[0]))
+        out[label] = band_structure(empty(lattice), basis, n_bands=int(basis.n_pw[0]))
     return out
 
 
@@ -63,7 +65,7 @@ def path_bands(lattice):
     ks = np.asarray(path.kpoints)
     ecut = ecut_between_shells(fcc_vectors(A_SI), ks, TARGET_ECUT)
     basis = PlaneWaveBasis.build(lattice, ks, ecut)
-    return band_structure(lattice, basis, n_bands=int(np.min(basis.n_pw)))
+    return band_structure(empty(lattice), basis, n_bands=int(np.min(basis.n_pw)))
 
 
 def assert_matches_folded_bands(bands: Bands):
@@ -113,7 +115,7 @@ def test_vmapped_path_matches_per_k(lattice, path_bands):
     ecut = path_bands.basis.ecut
     for i in [0, 7, 23, 41, 59]:
         k = np.asarray(path_bands.kpoints[i])[None]
-        single = band_structure(lattice, PlaneWaveBasis.build(lattice, k, ecut), n_bands=path_bands.eigenvalues.shape[1])
+        single = band_structure(empty(lattice), PlaneWaveBasis.build(lattice, k, ecut), n_bands=path_bands.eigenvalues.shape[1])
         np.testing.assert_allclose(single.eigenvalues[0], path_bands.eigenvalues[i], atol=EIGENVALUE_ATOL)
 
 

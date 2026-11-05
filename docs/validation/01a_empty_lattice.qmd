@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 
 from jaxdft import (
-    Lattice,
+    empty,
+    fcc_lattice,
     PlaneWaveBasis,
     band_structure,
     free_electron_bands,
@@ -26,7 +27,7 @@ from jaxdft.plotting import style
 style.enable()
 
 a = 10.26  # Bohr, the Si lattice constant (the empty lattice is scale-free)
-lattice = Lattice.fcc(a)
+lattice = fcc_lattice(a, unit="Bohr")
 E0 = 0.5 * (2 * np.pi / a) ** 2  # energy unit 1/2 (2 pi / a)^2, Ha
 ecut = 12.5 * E0
 eps_mach = np.finfo(np.float64).eps
@@ -36,7 +37,7 @@ points = special_points_fcc()
 path = kpath(lattice, points, [["L", "G", "X", "U"], ["K", "G"]], n_points=200)
 basis = PlaneWaveBasis.build(lattice, path.kpoints, ecut)
 n_bands = int(basis.n_pw.min())
-bands = band_structure(lattice, basis, n_bands)
+bands = band_structure(empty(lattice), basis, n_bands)
 reference = free_electron_bands(lattice, path.kpoints, n_bands)
 
 computed = np.asarray(bands.eigenvalues)
@@ -196,7 +197,7 @@ rows = []
 for label in ["G", "X", "L", "W", "K", "U"]:
     k = np.asarray(points[label])[None]
     b = PlaneWaveBasis.build(lattice, k, ecut)
-    e = np.asarray(band_structure(lattice, b, int(b.n_pw[0])).eigenvalues[0])
+    e = np.asarray(band_structure(empty(lattice), b, int(b.n_pw[0])).eigenvalues[0])
     e = e[e <= ecut]
     ref = np.asarray(free_electron_bands(lattice, k, len(e))[0])
     got, want = levels(e), levels(ref)

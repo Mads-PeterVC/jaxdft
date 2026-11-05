@@ -8,7 +8,7 @@ import numpy as np
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from jaxdft import Lattice, PlaneWaveBasis, band_structure
+from jaxdft import Lattice, PlaneWaveBasis, band_structure, empty, fcc_lattice
 from support.free_electron import A_SI, ecut_between_shells, fcc_vectors, oh_operations, reciprocal
 from support.strategies import cells, kfracs
 from support.tolerances import EIGENVALUE_ATOL
@@ -18,7 +18,7 @@ TARGET_ECUTS = st.floats(1.0, 2.5)
 
 def spectra_below_cutoff(lat, ks, ecut):
     basis = PlaneWaveBasis.build(lat, np.asarray(ks), ecut)
-    e = np.asarray(band_structure(lat, basis, n_bands=int(np.min(basis.n_pw))).eigenvalues)
+    e = np.asarray(band_structure(empty(lat), basis, n_bands=int(np.min(basis.n_pw))).eigenvalues)
     return [row[row <= ecut] for row in e]
 
 
@@ -52,8 +52,8 @@ def test_scaling_with_lattice_constant(k, target, a2):
     a1 = A_SI
     ecut1 = ecut_between_shells(fcc_vectors(a1), [k], target)
     ecut2 = ecut1 * (a1 / a2) ** 2
-    (e1,) = spectra_below_cutoff(Lattice.fcc(a1), [k], ecut1)
-    (e2,) = spectra_below_cutoff(Lattice.fcc(a2), [k], ecut2)
+    (e1,) = spectra_below_cutoff(fcc_lattice(a1, unit="Bohr"), [k], ecut1)
+    (e2,) = spectra_below_cutoff(fcc_lattice(a2, unit="Bohr"), [k], ecut2)
     assert len(e1) == len(e2)
     np.testing.assert_allclose(a1**2 * e1, a2**2 * e2, atol=EIGENVALUE_ATOL * a1**2)
 
@@ -66,7 +66,7 @@ def test_eigenvalues_non_increasing_with_cutoff(A, k, target, factor):
 
     def all_bands(ecut):
         basis = PlaneWaveBasis.build(lat, k[None], ecut)
-        return np.asarray(band_structure(lat, basis, n_bands=int(basis.n_pw[0])).eigenvalues[0])
+        return np.asarray(band_structure(empty(lat), basis, n_bands=int(basis.n_pw[0])).eigenvalues[0])
 
     e_lo = all_bands(ecut_between_shells(A, [k], target))
     e_hi = all_bands(ecut_between_shells(A, [k], target * factor))

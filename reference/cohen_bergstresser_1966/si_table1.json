@@ -1,0 +1,22 @@
+{
+  "source": {
+    "citation": "M. L. Cohen and T. K. Bergstresser, Phys. Rev. 141, 789 (1966)",
+    "doi": "10.1103/PhysRev.141.789",
+    "table": "Table I, row Si",
+    "page": 790,
+    "transcribed_by": "Claude Opus 5.5, from a scan of the paper",
+    "transcribed_on": "2026-11-05",
+    "notes": "Energies in eV as printed, to 0.1 eV. In Table I the experimental value is printed directly above the calculated one; a blank means no value given. Spin-orbit splitting has been removed from the experimental values by the authors. 'Gamma25p-X1' is the indirect gap to the conduction-band minimum on the Delta line, labelled X1(Delta1) in the paper, not the level at X."
+  },
+  "lattice_constant_angstrom": 5.43,
+  "units": "eV",
+  "splittings": [
+    {"id": "Gamma25p-Gamma2p",   "lower": "Gamma25'", "upper": "Gamma2'",        "experiment": null, "calculated": 3.8, "tolerance_class": "from_vbm"},
+    {"id": "Gamma25p-Gamma15",   "lower": "Gamma25'", "upper": "Gamma15",        "experiment": 3.4,  "calculated": 3.4, "tolerance_class": "from_vbm"},
+    {"id": "Gamma25p-L1",        "lower": "Gamma25'", "upper": "L1",             "experiment": null, "calculated": 1.9, "tolerance_class": "from_vbm"},
+    {"id": "Gamma25p-X1(Delta1)","lower": "Gamma25'", "upper": "Delta1 minimum", "experiment": 1.1,  "calculated": 0.8, "tolerance_class": "from_vbm"},
+    {"id": "L3p-L1",             "lower": "L3'",      "upper": "L1",             "experiment": 3.2,  "calculated": 3.1, "tolerance_class": "between_levels"},
+    {"id": "L3p-L3",             "lower": "L3'",      "upper": "L3",             "experiment": 5.3,  "calculated": 5.2, "tolerance_class": "between_levels"},
+    {"id": "X4-X1",              "lower": "X4",       "upper": "X1",             "experiment": 4.1,  "calculated": 4.0, "tolerance_class": "between_levels"}
+  ]
+}

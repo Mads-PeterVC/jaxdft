@@ -11,7 +11,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from jaxdft import Lattice, PlaneWaveBasis
+from jaxdft import Lattice, PlaneWaveBasis, fcc_lattice
 from support.free_electron import (
     A_SI,
     basis_set,
@@ -111,7 +111,7 @@ def test_basis_size_within_rigorous_bound(k, target):
 
 
 def test_n_pad_override_and_validation():
-    lat = Lattice.fcc(A_SI)
+    lat = fcc_lattice(A_SI, unit="Bohr")
     ks = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]])
     ecut = ecut_between_shells(np.asarray(lat.vectors), ks, 2.0)
     basis = PlaneWaveBasis.build(lat, ks, ecut)
@@ -125,7 +125,7 @@ def test_n_pad_override_and_validation():
 def test_single_kpoint_view_and_vmap():
     """basis[i] is a PlaneWaveBasis without the k axis; vmap hands the mapped
     function the same thing."""
-    lat = Lattice.fcc(A_SI)
+    lat = fcc_lattice(A_SI, unit="Bohr")
     ks = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5], [0.5, 0.5, 0.5]])
     basis = PlaneWaveBasis.build(lat, ks, ecut_between_shells(np.asarray(lat.vectors), ks, 2.0))
     b1 = basis[1]

@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 
 from jaxdft.basis.planewave import PlaneWaveBasis
-from jaxdft.structure.lattice import Lattice
+from jaxdft.structure.structure import Structure
 
 
 @jax.tree_util.register_dataclass
@@ -27,6 +27,6 @@ class DiagonalTerm:
 class Kinetic:
     """The kinetic-energy term. Has no parameters."""
 
-    def prepare(self, lattice: Lattice, basis_k: PlaneWaveBasis) -> DiagonalTerm:
-        q = (basis_k.kpoints + basis_k.miller) @ lattice.reciprocal  # Cartesian k+G
+    def prepare(self, structure: Structure, basis_k: PlaneWaveBasis) -> DiagonalTerm:
+        q = (basis_k.kpoints + basis_k.miller) @ structure.lattice.reciprocal  # Cartesian k+G
         return DiagonalTerm(0.5 * jnp.sum(q**2, axis=-1))

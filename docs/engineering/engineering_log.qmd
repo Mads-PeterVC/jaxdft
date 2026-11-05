@@ -284,3 +284,255 @@ which follows the theory post's argument that rounding scales with
 $\|H_\text{phys}\| \le E_\text{cut}$. The falsifying case is pinned as an
 explicit `@example`. I audited the other relative-only comparisons: they either
 compare exact zeros with exact zeros or involve no zeros.
+
+## 2026-11-05: Milestone 1b design decisions from theory review
+
+The [1b theory post](../theory/01b_cohen_bergstresser.qmd) was reviewed before
+implementation, and the review is kept in `docs/theory/reviews/`. It confirmed
+the normalisation. I checked its sharpest claims independently, with a
+throwaway NumPy model, before acting on them.
+
+**Matrix-free local potential.** The first draft proposed storing a dense
+$\tilde V(\mathbf{G}-\mathbf{G}')$ per k-point. That is $O(N^2)$ per k, multiplied
+by $n_k$ under `vmap`, and it is a stored matrix rather than an operator. Each
+row has at most 44 non-zeros (shells 3, 8 and 11), independently of the
+cutoff. So `prepare` builds a per-k neighbour table and `apply` is a gather and
+a sum. The neighbour search runs inside `jit`/`vmap` and so must be jittable:
+sorted integer Miller keys plus `searchsorted`, not a host dictionary. Dense
+matrices are built only from the operator, as in 1a.
+
+**Off-shell guard in physical units.** The guard must compare $|\mathbf{G}|^2$
+in Bohr⁻² against the shells at $a_\text{CB}$. Dimensionless shell indices are
+invariant under isotropic scaling, so a guard on them would accept any lattice
+constant. The review pointed this out; my draft had the reason subtly wrong.
+
+**Kept: physical-unit shell matching, not integer cubic indices.** The review
+proposed exact integer keys. They are exact for fcc only, and the separation
+between shells makes a $10^{-8}$ relative window unambiguous anyway.
+
+**Tests sharpened.**
+
+- The indirect gap is tested as the minimum along Δ, with an interiority
+  check. The level at X lies within the tolerance of the paper's value, so a
+  test of the level at X would pass on the wrong quantity.
+- Inversion parity gives the first eigenvector test, as a trace over the
+  level's projector.
+- Pairing is tested along the X–W line, with a negative control at a generic
+  face point.
+- The test cutoff is 6 Ha, where all Table I splittings have converged to
+  about 1 meV.
+- Physics tolerances are 0.15 or 0.25 eV per entry, derived from the paper's
+  stated rounding and convergence. Numerical tolerances are 1e-10 Ha for
+  eigenvalue comparisons and 1e-8 Ha for grouping degenerate levels.
+
+**Not adopted.** A test of the minimum's position (0.855 X ± 0.01) would be a
+regression value: the only sources are our own model and a secondary
+reproduction of the same model. It is reported in the validation document
+instead. DFTK is deferred to the SCF milestone.
+
+## 2026-11-05: Milestone 1b public API, agreed before implementation
+
+Settled in four question rounds with the project lead before any 1b test or
+code was written. The changes to the 1a API were approved as part of these
+rounds.
+
+**The system object is `Structure`, not `Lattice`.** `Structure` is a pytree:
+a `Lattice`, fractional `positions` with shape (n_atoms, 3) as a leaf, per-atom
+`weights` with shape (n_atoms,) as a leaf defaulting to 1, and static `species`
+labels. It represents any periodic configuration: a bulk crystal, a slab, or a
+molecule in a vacuum box. "Crystal" was rejected because it reads oddly for the
+last two. Positions are always stored fractional. The decisions that follow:
+
+- `Structure.from_cartesian(cell, positions, species, unit=...)` takes the cell
+  and positions in the same unit, `"Angstrom"` or `"Bohr"`. There is no default,
+  so every call states its unit. It converts once.
+- Weights are not range-checked. Their physical range is [0, 1], but
+  finite-difference checks at λ = 1 need to step past it.
+- Atoms are mapped to pseudopotentials by species label, through a dict held by
+  the term.
+- Factories live in a subpackage, one module each:
+  `structure/builders/{fcc,diamond,empty}.py`. `Lattice.fcc` moves there as
+  `fcc_lattice`, so `Lattice` keeps only its general constructor. Code used by
+  several builders goes in a shared module when it appears.
+- The term protocol becomes `prepare(structure, basis_k)`, and
+  `band_structure(structure, basis, ...)` and `hamiltonian(structure, ...)`
+  follow. The 1a tests are updated mechanically. The empty lattice is
+  `empty(lattice)`. `PlaneWaveBasis.build`, `kpath` and `free_electron_bands`
+  keep taking a `Lattice`, because they involve no atoms.
+
+**Pseudopotential protocol** (and the matching update to `CLAUDE.md`). The
+literal `(G) -> (V_loc, V_nl)` signature was dropped after a discussion. The
+two parts are different kinds of object: a local form factor v̂(q), against
+nonlocal projectors depending on k+G and k+G′ separately. A tuple would force
+us to guess the nonlocal interface before anything exists to test it. The
+protocol is now:
+
+- `local(q) -> v̂(q)`: the atomic Fourier transform, in Ha·Bohr³,
+  cell-independent. The `LocalPotential` term applies
+  Ṽ(G) = Ω⁻¹ Σⱼ λⱼ e^{−iG·τⱼ} v̂ⱼ(|G|).
+- `local_support: float | None`: the q beyond which v̂ is exactly zero.
+  `None` means unbounded. The gather-based term refuses an unbounded
+  pseudopotential, pointing to the FFT term that comes with SCF.
+- An optional host-side `validate(...)` hook. `band_structure` calls
+  `term.validate(structure)` before tracing, and `LocalPotential` forwards it
+  to each pseudopotential. Cohen–Bergstresser raises if a non-zero |G|² within
+  its support is off its tabulated shells, comparing in physical units.
+- Nonlocal methods are added, additively, in the milestone that first needs
+  them, with their own Hamiltonian term.
+
+**Cohen–Bergstresser.** `jaxdft.pseudo.cohen_bergstresser.silicon()` returns
+a `CohenBergstresser` holding a_CB and the form factors in publication units
+(Å, Ry), converted at construction. Only Si is included, so no untested data
+ships.
+
+**Units.** `jaxdft/units.py` holds CODATA 2022 constants and a `convert`
+helper. Units are cross-cutting (structure, pseudo, plotting), so no
+subpackage owns them.
+
+**Analysis.** A `jaxdft/analysis/` subpackage holds the tools both tests and
+docs need: degenerate-level grouping, inversion parity, the VBM energy
+reference, and the minimum of a band along a segment. The minimum is found by
+dense vmapped sampling followed by bracketed golden-section refinement on the
+host. An autodiff-based search (via group velocities) was deferred to a
+dedicated milestone: the k-dependent basis makes dE/dk well defined only
+within a fixed basis.
+
+**Reference data.** `reference/cohen_bergstresser_1966/si_table1.json` holds
+Table I's Si row, in eV as printed, with experiment and calculation separate,
+a tolerance class per entry, and source metadata. A README says it was
+transcribed by hand from the scan.
+
+## 2026-11-05: Milestone 1b acceptance tests and the signature details they fix
+
+The tests follow the API agreed in the question rounds. Writing them fixed the
+following details, listed here so none slips in unannounced.
+
+- **Top-level re-exports** add `Structure`, `LocalPotential`, `diamond`,
+  `empty` and `fcc_lattice`. Pseudopotentials, `units` and `analysis` are
+  imported from their modules.
+- **`Structure`.**
+  - Signature: `Structure(lattice, positions, species, weights=None)`, with
+    `.n_atoms`, `.cartesian_positions` (derived) and `species` as a tuple.
+  - `from_cartesian(cell, positions, species, unit, weights=None)`, where an
+    unknown unit raises `ValueError`.
+  - `empty(lattice).lattice is lattice`.
+- **Builders.** `fcc_lattice(a, unit)` and `diamond(a, species, unit)`.
+  The unit is a required argument.
+- **Units.** `BOHR_IN_ANGSTROM`, `HARTREE_IN_EV`, `RYDBERG_IN_HARTREE`, and
+  `convert(value, from_unit, to_unit)`. Unit names are case-sensitive:
+  `"Bohr"`, `"Angstrom"`, `"Hartree"`, `"Rydberg"`, `"eV"`. Mixed dimensions
+  raise.
+- **Cohen–Bergstresser.**
+  - `silicon()` exposes `lattice_constant_angstrom`, `form_factors_ry`
+    (keys 3, 8, 11), `lattice_constant` (Bohr) and `shell_q`, the physical
+    shell radii in Bohr⁻¹.
+  - `local(q)` returns the tabulated v̂ on shells 3, 8 and 11. Everywhere
+    else it returns 0, so traced code and autodiff through `jnp.where` stay
+    NaN-free.
+  - `validate(q_values)` raises on any q within the support that is off the
+    table.
+  - **Shell 4 counts as off-table.** CB never fitted it. It drops out of
+    perfect diamond only because S = 0 there. So unequal weights, or a single
+    atom, which make S ≠ 0 at shell 4, are refused.
+- **`LocalPotential`.**
+  - `coefficients(structure, miller)` returns Ṽ(mB) in complex128. It is
+    public, used for the real-space phase-sign check and the docs.
+  - `validate(structure)` raises `ValueError` for a species without a
+    pseudopotential and `NotImplementedError` for unbounded support. It
+    forwards to the pseudopotential only the q at which that species'
+    structure factor is non-zero. So a perfect 8-atom conventional cell is
+    accepted, and the same cell with one weight changed is refused.
+  - Matrix-free bound: the prepared term holds at most 256·N_pad elements.
+- **Analysis.**
+  - `group_levels(eigenvalues, atol)` returns `[(level, degeneracy)]`.
+  - `inversion_parities(bands, k_index, atol=1e-8)` returns
+    `[(level, degeneracy, parity)]`. It raises unless 2k is a reciprocal
+    lattice vector.
+  - `valence_band_maximum(bands, n_valence)`.
+  - `band_minimum_on_segment(structure, k_start, k_end, band, ecut, terms)`
+    returns `(t, energy)`, with t ∈ [0, 1] and a 0-based band index.
+
+**Tests that go beyond the theory post's list.** Each tests the theory more
+sharply:
+
+- *Supercell folding.* The 8-atom conventional cell at Γ must reproduce the
+  primitive spectra at Γ and the three X points exactly. This exercises the
+  general 1/Ω per-atom structure factor with 8 atoms, which a hard-coded
+  two-atom CB normalisation would fail.
+- *1/Ω normalisation alone.* A single atom at the origin must give
+  v̂(|G|)/Ω, checked with a test-only Gaussian pseudopotential.
+- *Independent NumPy model.* `tests/support/cohen_bergstresser.py` implements
+  the model in the paper's own form. The package's Hamiltonian matrix and
+  eigenvalues must match it to 1e-13 and 1e-10 Ha. This NumPy model was itself
+  checked against Table I before any package code existed.
+
+The mechanical 1a test updates (approved in the API rounds): `Lattice.fcc(a)`
+becomes `fcc_lattice(a, unit="Bohr")`, `band_structure(lattice, ...)` becomes
+`band_structure(empty(lattice), ...)`, and test-only terms take
+`prepare(structure, basis_k)`. No test logic changed.
+
+## 2026-11-05: Milestone 1b implementation
+
+**The `bind` hook (agreed during implementation).** The coupling vectors of
+the matrix-free local potential depend on the cell, and their number fixes an
+array shape. Inside `jit` the cell is traced, so they cannot be computed in
+`prepare`. The agreed `validate` hook returned nothing, so it could not carry
+them. After a question to the project lead, terms gained an optional
+`bind(structure) -> term`, which `band_structure` calls on the host before
+tracing. `LocalPotential.bind` validates and returns a copy carrying the
+coupling vectors as integer leaves. Called outside `jit` (for example through
+`hamiltonian(...)` directly), `prepare` binds on the fly. It raises a clear
+error if it is reached under tracing without having been bound.
+
+**Which couplings are kept.** `bind` keeps every Miller vector within the
+largest support at which some species' form factor is non-zero. It does *not*
+drop vectors whose structure factor happens to vanish for the current
+positions, such as shell 4 in diamond. Doing so would freeze the current
+positions into the operator and silently break derivatives with respect to
+positions. For CB Si the result is 44 vectors, independent of the cutoff.
+
+**Neighbour search.** Miller indices are encoded as int64 keys with radius
+2¹⁹. That is safely below overflow: (2²⁰+1)³ ≈ 1.2e18 < 9.2e18. Padded entries
+get the maximum int64 as their key, so they can never match. A neighbour is
+found by `searchsorted` on the sorted keys, which is jittable and vmappable.
+
+**Safe norm.** |G| is computed with a guarded square root, so autodiff
+through G = 0 gives a finite gradient rather than NaN. This matters for cell
+derivatives later.
+
+**Mutation testing.** Planted bugs that were caught:
+
+- the structure-factor sign
+- 1/(2Ω) normalisation
+- Rydberg used as Hartree
+- Ω_at = Ω
+- the guard disabled
+- weights ignored
+
+Two survived:
+
+- *Coupling direction m+d instead of m−d.* This builds conj(H), whose
+  eigenvalues are identical, so no spectrum test can see it. With the
+  symmetric origin, Ṽ is real and the mutant is exactly the correct code. It
+  is still a real defect: it is the crystal inverted through the origin, and
+  would flip forces later. I added `test_matrix_elements_are_v_of_g_minus_g_prime`,
+  an entry-by-entry check of ⟨G|V|G′⟩ = Ṽ(G−G′) for an asymmetric
+  structure with complex Ṽ. It kills the mutant. This adds a test; no
+  existing test was changed.
+- *Padding keys not excluded.* Benign as the code stands: real entries come
+  first, the sort is stable, and so a match always lands on the real G = 0
+  entry. The explicit exclusion stays as a guard that does not depend on that
+  ordering.
+
+**Test correction (raised and agreed).** The property test of
+`from_cartesian` unit consistency compared cells with a purely relative
+tolerance. Hypothesis found a cell with subnormal entries (1e-310) that the
+conversion arithmetic flushes to zero. The agreed fix is an absolute floor of
+1e-14·max|A|. The case is pinned as an `@example`.
+
+**Validation document.** The first band plot placed the published Δ₁ marker
+relative to the *last* Γ tick. That was my bug: a dict keyed by tick label, and
+the path visits Γ twice. The validation document now asserts the tick order
+and indexes ticks by position. It also asserts all its interpretive claims
+(Table I within tolerance, convergence below 1 meV at 6 Ha, parities), so a
+regression breaks the render.
