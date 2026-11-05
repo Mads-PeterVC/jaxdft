@@ -9,6 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from jaxdft import Lattice, PlaneWaveBasis, band_structure, empty, fcc_lattice
+from support.budget import examples
 from support.free_electron import A_SI, ecut_between_shells, fcc_vectors, oh_operations, reciprocal
 from support.strategies import cells, kfracs
 from support.tolerances import EIGENVALUE_ATOL
@@ -22,7 +23,7 @@ def spectra_below_cutoff(lat, ks, ecut):
     return [row[row <= ecut] for row in e]
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(cells(), kfracs(), st.tuples(*[st.integers(-2, 2)] * 3), TARGET_ECUTS)
 def test_spectrum_periodic_in_reciprocal_lattice(A, k, m0, target):
     ks = np.array([k, k + np.array(m0)])
@@ -32,7 +33,7 @@ def test_spectrum_periodic_in_reciprocal_lattice(A, k, m0, target):
     np.testing.assert_allclose(e, e_shift, atol=EIGENVALUE_ATOL)
 
 
-@settings(max_examples=5)
+@settings(max_examples=examples(5))
 @given(kfracs(-0.5, 0.5), TARGET_ECUTS)
 def test_spectrum_invariant_under_oh_in_fcc(k, target):
     A = fcc_vectors(A_SI)
@@ -45,7 +46,7 @@ def test_spectrum_invariant_under_oh_in_fcc(k, target):
         np.testing.assert_allclose(e, spectra[0], atol=EIGENVALUE_ATOL)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(kfracs(-0.5, 0.5), TARGET_ECUTS, st.floats(6.0, 14.0))
 def test_scaling_with_lattice_constant(k, target, a2):
     """a^2 eps is independent of a at fixed fractional k, with ecut scaled as a^-2."""
@@ -58,7 +59,7 @@ def test_scaling_with_lattice_constant(k, target, a2):
     np.testing.assert_allclose(a1**2 * e1, a2**2 * e2, atol=EIGENVALUE_ATOL * a1**2)
 
 
-@settings(max_examples=10)
+@settings(max_examples=examples(10))
 @given(cells(), kfracs(), TARGET_ECUTS, st.floats(1.2, 2.0))
 def test_eigenvalues_non_increasing_with_cutoff(A, k, target, factor):
     """Courant-Fischer on nested bases: the n-th eigenvalue never increases with ecut."""

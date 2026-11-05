@@ -536,3 +536,32 @@ the path visits Γ twice. The validation document now asserts the tick order
 and indexes ticks by position. It also asserts all its interpretive claims
 (Table I within tolerance, convergence below 1 meV at 6 Ha, parities), so a
 regression breaks the render.
+
+## 2026-11-05: Hypothesis example budgets scale with the profile
+
+**Problem.** Every property test set a literal `max_examples`. A per-test
+setting overrides the profile, so `HYPOTHESIS_PROFILE=ci` changed nothing: the
+profile's own `max_examples` reached no property test at all.
+
+**Decision.** The per-test numbers are kept, because they encode relative cost.
+Most of that cost is JAX compiling for each new array shape, and the slowest
+test takes about 12 s at 10 examples. They become *base* budgets that
+`tests/support/budget.py` multiplies by the active profile's factor:
+`@settings(max_examples=examples(10))`.
+
+| Profile | Factor | Use |
+|:--|--:|:--|
+| `default` | 1 | local runs; the definition of done (property tests about 80 s) |
+| `ci` | 5 | before a merge, or on CI hardware |
+| `deep` | 20 | occasional exhaustive runs |
+
+Tests without a stated budget get 50 × factor through the profile itself.
+
+**Guards.** An unknown `HYPOTHESIS_PROFILE` raises an error at conftest load
+instead of silently falling back to the default. A unit test walks the AST of
+every test file and fails on a literal `max_examples`, so the override cannot
+creep back. A planted literal confirmed that the guard catches it.
+
+**Rejected alternatives.** Dropping the per-test counts would run every test at
+the same count, making expensive tests dominate the default run. A pytest
+plugin that rewrites settings would be harder to follow, for no gain.

@@ -53,8 +53,11 @@ jaxdft/
 A change is done only when this passes:
 
 ```
-uv run pytest && quarto render docs/
+uv run pytest && uv run quarto render docs/
 ```
+
+(`uv run` makes Quarto execute documents with the project environment rather
+than whatever Python is first on `PATH`.)
 
 A broken validation document is a failing test.
 
