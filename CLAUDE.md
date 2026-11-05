@@ -54,7 +54,7 @@ jaxdft/
 A change is done only when this passes:
 
 ```
-uv run pytest && uv run quarto render docs/
+uv run ruff format --check docs/ && uv run pytest && uv run quarto render docs/
 ```
 
 (`uv run` makes Quarto execute documents with the project environment rather
