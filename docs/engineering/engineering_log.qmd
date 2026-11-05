@@ -621,3 +621,21 @@ is only G = 0, so V is real and the test's precondition failed before anything
 about the code was tested. The precondition is now `assume(...)`, and that
 cell is pinned as an `@example`. The coupling-direction check itself is
 unchanged.
+
+## 2026-11-05: Ruff formats the code in documents; annotations replace comments
+
+The visible code in the documents had lines past 100 columns, so code blocks
+scrolled sideways. Ruff 0.17 can format Python code blocks inside Markdown as a
+preview feature. It handles Quarto's ```` ```{python} ```` fences, leaves `#|`
+cell options alone, and accepts `.qmd` through an `extension = {qmd =
+"markdown"}` mapping in its config. `docs/ruff.toml` holds that config with an
+80-column limit, so the package sources keep their own style and nothing outside
+`docs/` is reformatted. Ruff was added as a dev dependency.
+
+Ruff does not wrap comments, docstrings or strings, and when it splits a
+statement it moves a trailing comment after the closing parenthesis. Both
+needed hand fixes. In the concept post, explanatory comments became Quarto code
+annotations (`code-annotations: hover`, set site-wide), which keeps the code
+short and puts the explanation in prose. Ruff leaves the `# <n>` markers on
+their lines. One validation cell gained a small `parity_sign` helper in place of
+a nested conditional inside an f-string.

@@ -36,3 +36,4 @@ format:
     css: styles.css
     toc: true
     html-math-method: mathjax
+    code-annotations: hover

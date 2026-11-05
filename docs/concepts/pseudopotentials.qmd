@@ -55,21 +55,52 @@ style.enable()
 S = style.SERIES
 
 
-def hover_lines(df, x, y, color, *, x_title, y_title, y_domain=None, width=style.WIDTH, height=style.HEIGHT,
-                sort=None, extra_tooltip=()):
+def hover_lines(
+    df,
+    x,
+    y,
+    color,
+    *,
+    x_title,
+    y_title,
+    y_domain=None,
+    width=style.WIDTH,
+    height=style.HEIGHT,
+    sort=None,
+    extra_tooltip=(),
+):
     """Lines with a nearest-point hover rule and tooltip."""
-    hover = alt.selection_point(fields=[x], nearest=True, on="pointerover", empty=False)
+    hover = alt.selection_point(
+        fields=[x], nearest=True, on="pointerover", empty=False
+    )
     yscale = alt.Scale(domain=y_domain) if y_domain else alt.Scale()
     enc_color = alt.Color(f"{color}:N", title=None, sort=sort)
     base = alt.Chart(df).encode(alt.X(f"{x}:Q", title=x_title))
-    lines = base.mark_line(clip=True).encode(alt.Y(f"{y}:Q", title=y_title, scale=yscale), enc_color)
-    points = base.mark_point(size=60, clip=True).encode(
-        alt.Y(f"{y}:Q", scale=yscale), enc_color,
-        opacity=alt.condition(hover, alt.value(1), alt.value(0)),
-        tooltip=[alt.Tooltip(f"{color}:N", title="curve"), alt.Tooltip(f"{x}:Q", format=".3g"),
-                 alt.Tooltip(f"{y}:Q", format=".4g"), *extra_tooltip],
-    ).add_params(hover)
-    rule = base.mark_rule(color=style.GRID).encode(opacity=alt.condition(hover, alt.value(1), alt.value(0))).transform_filter(hover)
+    lines = base.mark_line(clip=True).encode(
+        alt.Y(f"{y}:Q", title=y_title, scale=yscale), enc_color
+    )
+    points = (
+        base
+        .mark_point(size=60, clip=True)
+        .encode(
+            alt.Y(f"{y}:Q", scale=yscale),
+            enc_color,
+            opacity=alt.condition(hover, alt.value(1), alt.value(0)),
+            tooltip=[
+                alt.Tooltip(f"{color}:N", title="curve"),
+                alt.Tooltip(f"{x}:Q", format=".3g"),
+                alt.Tooltip(f"{y}:Q", format=".4g"),
+                *extra_tooltip,
+            ],
+        )
+        .add_params(hover)
+    )
+    rule = (
+        base
+        .mark_rule(color=style.GRID)
+        .encode(opacity=alt.condition(hover, alt.value(1), alt.value(0)))
+        .transform_filter(hover)
+    )
     return (lines + points + rule).properties(width=width, height=height)
 ```
 
@@ -88,34 +119,54 @@ symmetric tridiagonal eigenvalue problem. That is all the solver is:
 
 ```{python}
 Z, A_SCR, B_SCR = 14, 0.4, 1.0
-h = 0.002                      # Bohr; the 1s orbital is ~1/14 Bohr across
-r = h * np.arange(1, 20001)    # 0 < r <= 40 Bohr
+h = 0.002  # <1>
+r = h * np.arange(1, 20001)  # <2>
 V_ae = -(1 + (Z - 1) * np.exp(-r / A_SCR) * (1 + B_SCR * r)) / r
 
 
 def radial_levels(V, l, n_levels):
-    """Lowest radial eigenpairs on the grid, with u normalised so that ∫u² dr = 1."""
+    """Lowest radial eigenpairs on the grid, u normalised so that ∫u² dr = 1."""
     diagonal = 1 / h**2 + V + l * (l + 1) / (2 * r**2)
     off_diagonal = np.full(len(r) - 1, -0.5 / h**2)
-    eps, u = eigh_tridiagonal(diagonal, off_diagonal, select="i", select_range=(0, n_levels - 1))
+    eps, u = eigh_tridiagonal(
+        diagonal, off_diagonal, select="i", select_range=(0, n_levels - 1)
+    )
     u = u / np.sqrt(h)
     outer = np.argmax(np.abs(u) * (r > 0.5)[:, None], axis=0)
-    u = u * np.sign(u[outer, np.arange(n_levels)])          # outer lobe positive
+    u = u * np.sign(u[outer, np.arange(n_levels)])  # <3>
     return eps, u.T
 
 
-eps_s, u_s = radial_levels(V_ae, l=0, n_levels=4)   # 1s 2s 3s 4s
-eps_p, u_p = radial_levels(V_ae, l=1, n_levels=3)   # 2p 3p 4p
-orbitals = {"1s": (eps_s[0], u_s[0]), "2s": (eps_s[1], u_s[1]), "2p": (eps_p[0], u_p[0]),
-            "3s": (eps_s[2], u_s[2]), "3p": (eps_p[1], u_p[1])}
+eps_s, u_s = radial_levels(V_ae, l=0, n_levels=4)  # <4>
+eps_p, u_p = radial_levels(V_ae, l=1, n_levels=3)  # <4>
+orbitals = {
+    "1s": (eps_s[0], u_s[0]),
+    "2s": (eps_s[1], u_s[1]),
+    "2p": (eps_p[0], u_p[0]),
+    "3s": (eps_s[2], u_s[2]),
+    "3p": (eps_p[1], u_p[1]),
+}
 
-# The finite-difference error is largest for the most compact orbital. Check it on
-# the bare Coulomb problem, where the exact 1s energy is -Z²/2.
-eps_hydrogenic, _ = radial_levels(-Z / r, l=0, n_levels=1)
-assert abs(eps_hydrogenic[0] + Z**2 / 2) / (Z**2 / 2) < 1e-3
-assert eps_s[0] < eps_s[1] < eps_p[0] < eps_s[2] < eps_p[1] < 0   # 1s < 2s < 2p < 3s < 3p
-pd.DataFrame({"orbital": list(orbitals), "energy (Ha)": [e for e, _ in orbitals.values()]}).round(4)
+eps_hydrogenic, _ = radial_levels(-Z / r, l=0, n_levels=1)  # <5>
+assert abs(eps_hydrogenic[0] + Z**2 / 2) / (Z**2 / 2) < 1e-3  # <5>
+assert eps_s[0] < eps_s[1] < eps_p[0] < eps_s[2] < eps_p[1] < 0  # <6>
+pd.DataFrame({
+    "orbital": list(orbitals),
+    "energy (Ha)": [e for e, _ in orbitals.values()],
+}).round(4)
 ```
+
+1. Grid spacing in Bohr. The 1s orbital is about 1/14 Bohr across, so the grid
+   must be much finer than that.
+2. The grid covers 0 < r ≤ 40 Bohr. The point r = 0 is left out: u(0) = 0 is the
+   boundary condition, and so is u = 0 just beyond the last point.
+3. Eigenvectors come with an arbitrary sign. Making the outer lobe positive keeps
+   the plots consistent.
+4. The lowest four s levels are 1s, 2s, 3s and 4s; the lowest three p levels are
+   2p, 3p and 4p.
+5. The finite-difference error is largest for the most compact orbital, so check
+   it on the bare Coulomb problem, where the exact 1s energy is −Z²/2.
+6. The levels come out in the expected order, 1s < 2s < 2p < 3s < 3p, all bound.
 
 The two valence levels sit near −0.6 and −0.3 Ha. The core levels are one to
 two orders of magnitude deeper. Real silicon shows the same separation of
@@ -131,10 +182,23 @@ scales: its 1s, 2s and 2p binding energies are 1839, 149.7 and about 99.6 eV
 rows = []
 mask = r <= 6
 for name, (e, u) in orbitals.items():
-    rows.append(pd.DataFrame({"r (Bohr)": r[mask][::5], "u(r)": u[mask][::5], "orbital": name}))
+    rows.append(
+        pd.DataFrame({
+            "r (Bohr)": r[mask][::5],
+            "u(r)": u[mask][::5],
+            "orbital": name,
+        })
+    )
 df_orb = pd.concat(rows)
-hover_lines(df_orb, "r (Bohr)", "u(r)", "orbital", x_title="r (Bohr)", y_title="u(r) = r R(r)",
-            sort=list(orbitals)).properties(title="Radial functions of the model atom")
+hover_lines(
+    df_orb,
+    "r (Bohr)",
+    "u(r)",
+    "orbital",
+    x_title="r (Bohr)",
+    y_title="u(r) = r R(r)",
+    sort=list(orbitals),
+).properties(title="Radial functions of the model atom")
 ```
 
 Two things in this plot matter.
@@ -160,40 +224,62 @@ and keeping only plane waves with $q^2/2 \le E_\text{cut}$ keeps the part of
 the orbital with $q \le \sqrt{2E_\text{cut}}$.
 
 ```{python}
-q = np.linspace(1e-4, 160, 2400)        # Bohr⁻¹; E_cut = q²/2 up to 12800 Ha
+q = np.linspace(1e-4, 160, 2400)  # <1>
 r_ft = r[r <= 20]
 
 
 def hankel(u, l):
     """ũ(q) = ∫ u(r) r j_l(qr) dr."""
-    return simpson(u[: len(r_ft)] * r_ft * spherical_jn(l, np.outer(q, r_ft)), x=r_ft, axis=1)
+    return simpson(
+        u[: len(r_ft)] * r_ft * spherical_jn(l, np.outer(q, r_ft)),
+        x=r_ft,
+        axis=1,
+    )
 
 
 def captured_fraction(u_q):
-    """Fraction of ∫u² dr carried by plane waves with q ≤ q_max, for each q_max in `q`."""
+    """Fraction of ∫u² dr carried by plane waves with q ≤ q_max.
+
+    One value for each q_max in the grid `q`.
+    """
     density = (2 / np.pi) * u_q**2 * q**2
-    cumulative = np.concatenate([[0.0], np.cumsum(0.5 * (density[1:] + density[:-1]) * np.diff(q))])
+    cumulative = np.concatenate([
+        [0.0],
+        np.cumsum(0.5 * (density[1:] + density[:-1]) * np.diff(q)),
+    ])
     return cumulative / cumulative[-1]
 
 
 def reconstruct(u_q, l, q_max, r_out):
     """u(r) rebuilt from plane waves with q ≤ q_max only."""
     keep = q <= q_max
-    return r_out * (2 / np.pi) * simpson(u_q[keep] * q[keep] ** 2 * spherical_jn(l, np.outer(r_out, q[keep])),
-                                         x=q[keep], axis=1)
+    return (
+        r_out
+        * (2 / np.pi)
+        * simpson(
+            u_q[keep]
+            * q[keep] ** 2
+            * spherical_jn(l, np.outer(r_out, q[keep])),
+            x=q[keep],
+            axis=1,
+        )
+    )
 
 
 u_q = {"1s": hankel(orbitals["1s"][1], 0), "3s": hankel(orbitals["3s"][1], 0)}
-# Parseval: the transform keeps the whole norm (q up to 160 Bohr⁻¹ is enough even for 1s).
-for name, uq in u_q.items():
-    full = (2 / np.pi) * simpson(uq**2 * q**2, x=q)
-    assert abs(full - 1) < 1e-3, (name, full)
+for name, uq in u_q.items():  # <2>
+    full = (2 / np.pi) * simpson(uq**2 * q**2, x=q)  # <2>
+    assert abs(full - 1) < 1e-3, (name, full)  # <2>
 
 
 def ecut_for(fraction_curve, missing):
     """Smallest E_cut (Ha) at which the missing norm drops below `missing`."""
     return float(q[np.argmax(1 - fraction_curve < missing)] ** 2 / 2)
 ```
+
+1. The q grid in Bohr⁻¹. Up to 160 Bohr⁻¹ means E_cut = q²/2 up to 12800 Ha.
+2. Parseval: the transform keeps the whole norm, so the q grid reaches far
+   enough even for the 1s orbital.
 
 Drag the slider to raise the cutoff. The left panel rebuilds the 1s and 3s
 orbitals from the plane waves that fit below it. The right panel shows how much
@@ -205,7 +291,7 @@ $N_\text{PW} \approx \Omega\, q_\text{max}^3 / 6\pi^2$.
 #| code-fold: true
 #| code-summary: "Interactive cutoff chart"
 #| column: page-inset
-OMEGA_SI = silicon().lattice_constant ** 3 / 4      # primitive-cell volume, Bohr³
+OMEGA_SI = silicon().lattice_constant ** 3 / 4  # primitive-cell volume, Bohr³
 log_ecuts = np.round(np.arange(0.0, 4.01, 0.25), 2)
 r_show = np.linspace(0.002, 3.0, 300)
 
@@ -213,47 +299,118 @@ rows = []
 for le in log_ecuts:
     qm = np.sqrt(2 * 10**le)
     for name in ("1s", "3s"):
-        rows.append(pd.DataFrame({"log10_ecut": le, "r": r_show, "u": reconstruct(u_q[name], 0, qm, r_show),
-                                  "orbital": name, "version": "plane waves below E_cut"}))
+        rows.append(
+            pd.DataFrame({
+                "log10_ecut": le,
+                "r": r_show,
+                "u": reconstruct(u_q[name], 0, qm, r_show),
+                "orbital": name,
+                "version": "plane waves below E_cut",
+            })
+        )
 recon = pd.concat(rows)
-exact = pd.concat([pd.DataFrame({"r": r_show, "u": np.interp(r_show, r, orbitals[n][1]), "orbital": n,
-                                 "version": "exact"}) for n in ("1s", "3s")])
+exact = pd.concat([
+    pd.DataFrame({
+        "r": r_show,
+        "u": np.interp(r_show, r, orbitals[n][1]),
+        "orbital": n,
+        "version": "exact",
+    })
+    for n in ("1s", "3s")
+])
 
-frac = pd.concat([pd.DataFrame({"ecut": q**2 / 2, "missing": np.clip(1 - captured_fraction(u_q[n]), 1e-12, 1),
-                                "orbital": n}) for n in ("1s", "3s")])
+frac = pd.concat([
+    pd.DataFrame({
+        "ecut": q**2 / 2,
+        "missing": np.clip(1 - captured_fraction(u_q[n]), 1e-12, 1),
+        "orbital": n,
+    })
+    for n in ("1s", "3s")
+])
 frac = frac[(frac.ecut >= 0.5) & (frac.ecut <= 1e4)].iloc[::4]
-labels = pd.DataFrame({"log10_ecut": log_ecuts, "ecut": 10.0**log_ecuts,
-                       "n_pw": OMEGA_SI * (2 * 10.0**log_ecuts) ** 1.5 / (6 * np.pi**2)})
+labels = pd.DataFrame({
+    "log10_ecut": log_ecuts,
+    "ecut": 10.0**log_ecuts,
+    "n_pw": OMEGA_SI * (2 * 10.0**log_ecuts) ** 1.5 / (6 * np.pi**2),
+})
 
-slider = alt.param(name="log10_ecut", value=1.0,
-                   bind=alt.binding_range(min=0, max=4, step=0.25, name="log₁₀ E_cut (Ha) "))
+slider = alt.param(
+    name="log10_ecut",
+    value=1.0,
+    bind=alt.binding_range(min=0, max=4, step=0.25, name="log₁₀ E_cut (Ha) "),
+)
 colors = alt.Scale(domain=["1s", "3s"], range=[S[0], S[1]])
-dashes = alt.Scale(domain=["exact", "plane waves below E_cut"], range=[[4, 3], [1, 0]])
+dashes = alt.Scale(
+    domain=["exact", "plane waves below E_cut"], range=[[4, 3], [1, 0]]
+)
 uscale = alt.Scale(domain=[-1.5, 4.2])
 left = (
-    alt.Chart(exact).mark_line(clip=True, strokeWidth=1.5).encode(
-        x=alt.X("r:Q", title="r (Bohr)"), y=alt.Y("u:Q", title="u(r)", scale=uscale),
-        color=alt.Color("orbital:N", scale=colors, title="orbital"),
-        strokeDash=alt.StrokeDash("version:N", scale=dashes, title=None))
-    + alt.Chart(recon).mark_line(clip=True).encode(
-        x="r:Q", y=alt.Y("u:Q", scale=uscale), color=alt.Color("orbital:N", scale=colors),
-        strokeDash=alt.StrokeDash("version:N", scale=dashes),
-        tooltip=["orbital:N", alt.Tooltip("r:Q", format=".3f"), alt.Tooltip("u:Q", format=".3f")])
-    .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
-).add_params(slider).properties(width=360, height=300, title="Orbitals rebuilt from plane waves")
+    (
+        alt
+        .Chart(exact)
+        .mark_line(clip=True, strokeWidth=1.5)
+        .encode(
+            x=alt.X("r:Q", title="r (Bohr)"),
+            y=alt.Y("u:Q", title="u(r)", scale=uscale),
+            color=alt.Color("orbital:N", scale=colors, title="orbital"),
+            strokeDash=alt.StrokeDash("version:N", scale=dashes, title=None),
+        )
+        + alt
+        .Chart(recon)
+        .mark_line(clip=True)
+        .encode(
+            x="r:Q",
+            y=alt.Y("u:Q", scale=uscale),
+            color=alt.Color("orbital:N", scale=colors),
+            strokeDash=alt.StrokeDash("version:N", scale=dashes),
+            tooltip=[
+                "orbital:N",
+                alt.Tooltip("r:Q", format=".3f"),
+                alt.Tooltip("u:Q", format=".3f"),
+            ],
+        )
+        .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+    )
+    .add_params(slider)
+    .properties(
+        width=360, height=300, title="Orbitals rebuilt from plane waves"
+    )
+)
 
 right = (
-    alt.Chart(frac).mark_line(clip=True).encode(
+    alt
+    .Chart(frac)
+    .mark_line(clip=True)
+    .encode(
         x=alt.X("ecut:Q", title="E_cut (Ha)", scale=alt.Scale(type="log")),
-        y=alt.Y("missing:Q", title="norm not captured", scale=alt.Scale(type="log", domain=[1e-8, 1])),
+        y=alt.Y(
+            "missing:Q",
+            title="norm not captured",
+            scale=alt.Scale(type="log", domain=[1e-8, 1]),
+        ),
         color=alt.Color("orbital:N", scale=colors),
-        tooltip=["orbital:N", alt.Tooltip("ecut:Q", format=".4g"), alt.Tooltip("missing:Q", format=".2e")])
-    + alt.Chart(labels).mark_rule(color=style.TEXT_SECONDARY).encode(x="ecut:Q")
-      .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
-    + alt.Chart(labels).mark_text(align="left", dx=6, y=12, color=style.TEXT_PRIMARY)
-      .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
-      .transform_calculate(label="'E_cut = ' + format(datum.ecut, ',.3~g') + ' Ha, N_PW ≈ ' + format(datum.n_pw, ',.0f')")
-      .encode(x="ecut:Q", text="label:N")
+        tooltip=[
+            "orbital:N",
+            alt.Tooltip("ecut:Q", format=".4g"),
+            alt.Tooltip("missing:Q", format=".2e"),
+        ],
+    )
+    + alt
+    .Chart(labels)
+    .mark_rule(color=style.TEXT_SECONDARY)
+    .encode(x="ecut:Q")
+    .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+    + alt
+    .Chart(labels)
+    .mark_text(align="left", dx=6, y=12, color=style.TEXT_PRIMARY)
+    .transform_filter("abs(datum.log10_ecut - log10_ecut) < 1e-6")
+    .transform_calculate(
+        label=(
+            "'E_cut = ' + format(datum.ecut, ',.3~g') + ' Ha, "
+            "N_PW ≈ ' + format(datum.n_pw, ',.0f')"
+        )
+    )
+    .encode(x="ecut:Q", text="label:N")
 ).properties(width=300, height=300, title="Missing norm vs cutoff")
 alt.hconcat(left, right)
 ```
@@ -261,7 +418,9 @@ alt.hconcat(left, right)
 ```{python}
 #| echo: false
 need = {n: ecut_for(captured_fraction(u_q[n]), 1e-4) for n in ("1s", "3s")}
-n_pw_need = {n: OMEGA_SI * (2 * e) ** 1.5 / (6 * np.pi**2) for n, e in need.items()}
+n_pw_need = {
+    n: OMEGA_SI * (2 * e) ** 1.5 / (6 * np.pi**2) for n, e in need.items()
+}
 assert need["1s"] > 100 * 10 and need["1s"] / need["3s"] > 3
 ```
 
@@ -335,40 +494,52 @@ def kerker(u, eps, l, rc, conserve_norm=True):
     i = int(round(rc / h)) - 1
     rc = r[i]
     du = (u[i + 1] - u[i - 1]) / (2 * h)
-    # p and its first two derivatives at r_c, from u and from the radial equation itself.
-    p0 = np.log(u[i] / rc ** (l + 1))
-    p1 = du / u[i] - (l + 1) / rc
-    p2 = 2 * (V_ae[i] - eps) - 2 * (l + 1) * p1 / rc - p1**2
+    p0 = np.log(u[i] / rc ** (l + 1))  # <1>
+    p1 = du / u[i] - (l + 1) / rc  # <1>
+    p2 = 2 * (V_ae[i] - eps) - 2 * (l + 1) * p1 / rc - p1**2  # <1>
     inner = r[: i + 1]
 
-    def coefficients(fixed):
-        # Value, slope and curvature at r_c are linear in (α, β, γ, δ). One more
-        # unknown is fixed: γ when conserving norm (then found by root-finding), else α = 0.
+    def coefficients(fixed):  # <2>
         if conserve_norm:
             gamma = fixed
-            M = np.array([[rc**4, rc**3, 1], [4 * rc**3, 3 * rc**2, 0], [12 * rc**2, 6 * rc, 0]])
-            alpha, beta, delta = np.linalg.solve(M, [p0 - gamma * rc**2, p1 - 2 * gamma * rc, p2 - 2 * gamma])
+            M = np.array([
+                [rc**4, rc**3, 1],
+                [4 * rc**3, 3 * rc**2, 0],
+                [12 * rc**2, 6 * rc, 0],
+            ])
+            alpha, beta, delta = np.linalg.solve(
+                M, [p0 - gamma * rc**2, p1 - 2 * gamma * rc, p2 - 2 * gamma]
+            )
         else:
             alpha = 0.0
-            M = np.array([[rc**3, rc**2, 1], [3 * rc**2, 2 * rc, 0], [6 * rc, 2, 0]])
+            M = np.array([
+                [rc**3, rc**2, 1],
+                [3 * rc**2, 2 * rc, 0],
+                [6 * rc, 2, 0],
+            ])
             beta, gamma, delta = np.linalg.solve(M, [p0, p1, p2])
         return alpha, beta, gamma, delta
 
     def p_and_derivatives(c):
         a, b, g, d = c
-        return (a * inner**4 + b * inner**3 + g * inner**2 + d,
-                4 * a * inner**3 + 3 * b * inner**2 + 2 * g * inner,
-                12 * a * inner**2 + 6 * b * inner + 2 * g)
+        return (
+            a * inner**4 + b * inner**3 + g * inner**2 + d,
+            4 * a * inner**3 + 3 * b * inner**2 + 2 * g * inner,
+            12 * a * inner**2 + 6 * b * inner + 2 * g,
+        )
 
     if conserve_norm:
         norm_target = simpson(u[: i + 1] ** 2, x=inner)
 
         def excess_norm(gamma):
             p, _, _ = p_and_derivatives(coefficients(gamma))
-            return simpson(inner ** (2 * l + 2) * np.exp(2 * p), x=inner) - norm_target
+            return (
+                simpson(inner ** (2 * l + 2) * np.exp(2 * p), x=inner)
+                - norm_target
+            )
 
-        grid = np.linspace(-20, 20, 401)
-        values = np.array([excess_norm(g) for g in grid])
+        grid = np.linspace(-20, 20, 401)  # <3>
+        values = np.array([excess_norm(g) for g in grid])  # <3>
         k = np.flatnonzero(np.sign(values[:-1]) != np.sign(values[1:]))[0]
         c = coefficients(brentq(excess_norm, grid[k], grid[k + 1], xtol=1e-14))
     else:
@@ -377,9 +548,19 @@ def kerker(u, eps, l, rc, conserve_norm=True):
     p, dp, d2p = p_and_derivatives(c)
     u_ps, V_ps = u.copy(), V_ae.copy()
     u_ps[: i + 1] = inner ** (l + 1) * np.exp(p)
-    V_ps[: i + 1] = eps + (l + 1) * dp / inner + 0.5 * (d2p + dp**2)
+    V_ps[: i + 1] = eps + (l + 1) * dp / inner + 0.5 * (d2p + dp**2)  # <4>
     return u_ps, V_ps
 ```
+
+1. The value, slope and curvature of p at r_c. The first two come from u; the
+   curvature comes from the radial equation itself, which fixes u'' in terms of
+   u and the potential.
+2. Value, slope and curvature at r_c are linear in (α, β, γ, δ), which gives
+   three equations for four unknowns. One more must be fixed: γ when conserving
+   the norm (then found by root-finding), otherwise α = 0.
+3. Scan γ for a sign change of the excess norm, then root-find inside that
+   bracket.
+4. The inverted radial equation from above, valid inside r_c.
 
 Each check below tests one property the construction promises. The
 pseudo-atom's *lowest* s level reproduces the all-electron 3s energy, because
@@ -387,7 +568,7 @@ the nodeless pseudo-orbital is now the ground state. The same holds for p, and
 the norm inside $r_c$ agrees.
 
 ```{python}
-RC = 1.6   # Bohr
+RC = 1.6  # Bohr
 eps3s, u3s = orbitals["3s"]
 eps3p, u3p = orbitals["3p"]
 u_ps_s, V_ps_s = kerker(u3s, eps3s, 0, RC)
@@ -397,11 +578,20 @@ eps_ps_s, _ = radial_levels(V_ps_s, l=0, n_levels=2)
 eps_ps_p, _ = radial_levels(V_ps_p, l=1, n_levels=1)
 inside = r <= RC
 assert abs(eps_ps_s[0] - eps3s) < 1e-5 and abs(eps_ps_p[0] - eps3p) < 1e-5
-assert abs(simpson(u_ps_s[inside] ** 2, x=r[inside]) - simpson(u3s[inside] ** 2, x=r[inside])) < 1e-10
-assert np.all(u_ps_s[inside] > 0)                                    # nodeless
-assert np.allclose(u_ps_s[~inside], u3s[~inside])                    # identical outside r_c
-pd.DataFrame({"": ["3s", "3p"], "all-electron ε (Ha)": [eps3s, eps3p],
-              "pseudo-atom ground state ε (Ha)": [eps_ps_s[0], eps_ps_p[0]]}).round(6)
+assert (
+    abs(
+        simpson(u_ps_s[inside] ** 2, x=r[inside])
+        - simpson(u3s[inside] ** 2, x=r[inside])
+    )
+    < 1e-10
+)
+assert np.all(u_ps_s[inside] > 0)  # nodeless
+assert np.allclose(u_ps_s[~inside], u3s[~inside])  # identical outside r_c
+pd.DataFrame({
+    "": ["3s", "3p"],
+    "all-electron ε (Ha)": [eps3s, eps3p],
+    "pseudo-atom ground state ε (Ha)": [eps_ps_s[0], eps_ps_p[0]],
+}).round(6)
 ```
 
 ### What the core radius trades off
@@ -415,54 +605,170 @@ pseudo-orbital needs (right).
 #| code-summary: "Interactive core-radius chart"
 #| column: page-inset
 last_node_3s = r[np.flatnonzero(np.diff(np.sign(u3s[r < 3])))[-1]]
-rcs = np.round(np.arange(np.ceil((last_node_3s + 0.25) * 10) / 10, 2.61, 0.1), 2)
-r_plot = (r <= 4)
+rcs = np.round(
+    np.arange(np.ceil((last_node_3s + 0.25) * 10) / 10, 2.61, 0.1), 2
+)
+r_plot = r <= 4
 stride = 8
 u_rows, v_rows, f_rows, need_rows = [], [], [], []
 u_q_ae3s = hankel(u3s, 0)
 frac_ae = captured_fraction(u_q_ae3s)
 for rc in rcs:
     ups, vps = kerker(u3s, eps3s, 0, rc)
-    u_rows.append(pd.DataFrame({"rc": rc, "r": r[r_plot][::stride], "u": ups[r_plot][::stride], "curve": "pseudo 3s"}))
-    v_rows.append(pd.DataFrame({"rc": rc, "r": r[r_plot][::stride], "V": vps[r_plot][::stride], "curve": "pseudopotential"}))
+    u_rows.append(
+        pd.DataFrame({
+            "rc": rc,
+            "r": r[r_plot][::stride],
+            "u": ups[r_plot][::stride],
+            "curve": "pseudo 3s",
+        })
+    )
+    v_rows.append(
+        pd.DataFrame({
+            "rc": rc,
+            "r": r[r_plot][::stride],
+            "V": vps[r_plot][::stride],
+            "curve": "pseudopotential",
+        })
+    )
     fr = captured_fraction(hankel(ups, 0))
     sel = (q**2 / 2 >= 0.5) & (q**2 / 2 <= 3e3)
-    f_rows.append(pd.DataFrame({"rc": rc, "ecut": (q**2 / 2)[sel][::3], "missing": np.clip(1 - fr, 1e-12, 1)[sel][::3],
-                                "curve": "pseudo 3s"}))
+    f_rows.append(
+        pd.DataFrame({
+            "rc": rc,
+            "ecut": (q**2 / 2)[sel][::3],
+            "missing": np.clip(1 - fr, 1e-12, 1)[sel][::3],
+            "curve": "pseudo 3s",
+        })
+    )
     need_rows.append({"rc": rc, "ecut": ecut_for(fr, 1e-4)})
-u_df, v_df, f_df, need_df = pd.concat(u_rows), pd.concat(v_rows), pd.concat(f_rows), pd.DataFrame(need_rows)
+u_df, v_df, f_df, need_df = (
+    pd.concat(u_rows),
+    pd.concat(v_rows),
+    pd.concat(f_rows),
+    pd.DataFrame(need_rows),
+)
 sel = (q**2 / 2 >= 0.5) & (q**2 / 2 <= 3e3)
-ae_u = pd.DataFrame({"r": r[r_plot][::stride], "u": u3s[r_plot][::stride], "curve": "all-electron 3s"})
-ae_v = pd.DataFrame({"r": r[r_plot][::stride], "V": V_ae[r_plot][::stride], "curve": "all-electron V"})
-ae_f = pd.DataFrame({"ecut": (q**2 / 2)[sel][::3], "missing": np.clip(1 - frac_ae, 1e-12, 1)[sel][::3],
-                     "curve": "all-electron 3s"})
+ae_u = pd.DataFrame({
+    "r": r[r_plot][::stride],
+    "u": u3s[r_plot][::stride],
+    "curve": "all-electron 3s",
+})
+ae_v = pd.DataFrame({
+    "r": r[r_plot][::stride],
+    "V": V_ae[r_plot][::stride],
+    "curve": "all-electron V",
+})
+ae_f = pd.DataFrame({
+    "ecut": (q**2 / 2)[sel][::3],
+    "missing": np.clip(1 - frac_ae, 1e-12, 1)[sel][::3],
+    "curve": "all-electron 3s",
+})
 
-rc_param = alt.param(name="rc", value=1.6, bind=alt.binding_range(min=float(rcs[0]), max=float(rcs[-1]), step=0.1,
-                                                                  name="core radius r_c (Bohr) "))
+rc_param = alt.param(
+    name="rc",
+    value=1.6,
+    bind=alt.binding_range(
+        min=float(rcs[0]),
+        max=float(rcs[-1]),
+        step=0.1,
+        name="core radius r_c (Bohr) ",
+    ),
+)
 flt = "abs(datum.rc - rc) < 1e-6"
-cscale = alt.Scale(domain=["all-electron 3s", "pseudo 3s", "all-electron V", "pseudopotential"],
-                   range=[S[1], S[0], S[1], S[0]])
-rc_rule = alt.Chart(need_df).mark_rule(color=style.TEXT_SECONDARY, strokeDash=[3, 3]).encode(x="rc:Q").transform_filter(flt)
-tip = lambda *f: [alt.Tooltip(x, format=".3g") if x.endswith(":Q") else x for x in f]
+cscale = alt.Scale(
+    domain=[
+        "all-electron 3s",
+        "pseudo 3s",
+        "all-electron V",
+        "pseudopotential",
+    ],
+    range=[S[1], S[0], S[1], S[0]],
+)
+rc_rule = (
+    alt
+    .Chart(need_df)
+    .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[3, 3])
+    .encode(x="rc:Q")
+    .transform_filter(flt)
+)
+tip = lambda *f: [
+    alt.Tooltip(x, format=".3g") if x.endswith(":Q") else x for x in f
+]
 
-p_u = (alt.Chart(ae_u).mark_line(clip=True).encode(alt.X("r:Q", title="r (Bohr)"), alt.Y("u:Q", title="u(r)"),
-                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "r:Q", "u:Q"))
-       + alt.Chart(u_df).mark_line(clip=True).encode(x="r:Q", y="u:Q", color=alt.Color("curve:N", scale=cscale), tooltip=tip("curve:N", "r:Q", "u:Q"))
-         .transform_filter(flt)
-       + rc_rule).add_params(rc_param).properties(width=250, height=260, title="Orbital")
-p_v = (alt.Chart(ae_v).mark_line(clip=True).encode(alt.X("r:Q", title="r (Bohr)"),
-                                           alt.Y("V:Q", title="V(r) (Ha)", scale=alt.Scale(domain=[-8, 4])),
-                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "r:Q", "V:Q"))
-       + alt.Chart(v_df).mark_line(clip=True).encode(x="r:Q", y="V:Q", color=alt.Color("curve:N", scale=cscale), tooltip=tip("curve:N", "r:Q", "V:Q"))
-         .transform_filter(flt)
-       + rc_rule).properties(width=250, height=260, title="Potential (s channel)")
-p_f = (alt.Chart(ae_f).mark_line(clip=True).encode(alt.X("ecut:Q", title="E_cut (Ha)", scale=alt.Scale(type="log")),
-                                           alt.Y("missing:Q", title="norm not captured",
-                                                 scale=alt.Scale(type="log", domain=[1e-8, 1])),
-                                           alt.Color("curve:N", scale=cscale, title=None), tooltip=tip("curve:N", "ecut:Q", "missing:Q"))
-       + alt.Chart(f_df).mark_line(clip=True).encode(x="ecut:Q", y="missing:Q", color=alt.Color("curve:N", scale=cscale),
-                                            tooltip=tip("curve:N", "ecut:Q", "missing:Q")).transform_filter(flt)
-       ).properties(width=250, height=260, title="Missing norm vs cutoff")
+p_u = (
+    (
+        alt
+        .Chart(ae_u)
+        .mark_line(clip=True)
+        .encode(
+            alt.X("r:Q", title="r (Bohr)"),
+            alt.Y("u:Q", title="u(r)"),
+            alt.Color("curve:N", scale=cscale, title=None),
+            tooltip=tip("curve:N", "r:Q", "u:Q"),
+        )
+        + alt
+        .Chart(u_df)
+        .mark_line(clip=True)
+        .encode(
+            x="r:Q",
+            y="u:Q",
+            color=alt.Color("curve:N", scale=cscale),
+            tooltip=tip("curve:N", "r:Q", "u:Q"),
+        )
+        .transform_filter(flt)
+        + rc_rule
+    )
+    .add_params(rc_param)
+    .properties(width=250, height=260, title="Orbital")
+)
+p_v = (
+    alt
+    .Chart(ae_v)
+    .mark_line(clip=True)
+    .encode(
+        alt.X("r:Q", title="r (Bohr)"),
+        alt.Y("V:Q", title="V(r) (Ha)", scale=alt.Scale(domain=[-8, 4])),
+        alt.Color("curve:N", scale=cscale, title=None),
+        tooltip=tip("curve:N", "r:Q", "V:Q"),
+    )
+    + alt
+    .Chart(v_df)
+    .mark_line(clip=True)
+    .encode(
+        x="r:Q",
+        y="V:Q",
+        color=alt.Color("curve:N", scale=cscale),
+        tooltip=tip("curve:N", "r:Q", "V:Q"),
+    )
+    .transform_filter(flt)
+    + rc_rule
+).properties(width=250, height=260, title="Potential (s channel)")
+p_f = (
+    alt
+    .Chart(ae_f)
+    .mark_line(clip=True)
+    .encode(
+        alt.X("ecut:Q", title="E_cut (Ha)", scale=alt.Scale(type="log")),
+        alt.Y(
+            "missing:Q",
+            title="norm not captured",
+            scale=alt.Scale(type="log", domain=[1e-8, 1]),
+        ),
+        alt.Color("curve:N", scale=cscale, title=None),
+        tooltip=tip("curve:N", "ecut:Q", "missing:Q"),
+    )
+    + alt
+    .Chart(f_df)
+    .mark_line(clip=True)
+    .encode(
+        x="ecut:Q",
+        y="missing:Q",
+        color=alt.Color("curve:N", scale=cscale),
+        tooltip=tip("curve:N", "ecut:Q", "missing:Q"),
+    )
+    .transform_filter(flt)
+).properties(width=250, height=260, title="Missing norm vs cutoff")
 alt.hconcat(p_u, p_v, p_f).resolve_scale(color="shared")
 ```
 
@@ -470,7 +776,8 @@ alt.hconcat(p_u, p_v, p_f).resolve_scale(color="shared")
 #| echo: false
 v_centre = {rc: kerker(u3s, eps3s, 0, rc)[1][0] for rc in rcs}
 repulsive = [rc for rc, v in v_centre.items() if v > 0]
-assert min(repulsive) > rcs[0] and max(repulsive) < rcs[-1]          # repulsive only in a middle window
+# repulsive only in a middle window
+assert min(repulsive) > rcs[0] and max(repulsive) < rcs[-1]
 assert v_centre[1.6] > 1 and v_centre[rcs[0]] < -10
 outer_peak_3s = r[np.argmax(np.where(r > last_node_3s, u3s, 0))]
 ecut_ps_16 = float(need_df.set_index("rc").loc[1.6, "ecut"])
@@ -528,55 +835,103 @@ def log_derivative(V, l, energies, R):
     """D_l(ε) = u'(R)/u(R) for the regular solution at each energy.
 
     Integrates outward with the same three-point difference equation the
-    eigensolver uses, so at an eigenvalue it reproduces that eigenvector exactly.
+    eigensolver uses, so at an eigenvalue it reproduces that eigenvector
+    exactly.
     """
     n = int(round(R / h))
     E = np.asarray(energies, dtype=float)
     W = V[: n + 1] + l * (l + 1) / (2 * r[: n + 1] ** 2)
-    u_prev, u = np.zeros_like(E), np.full_like(E, 1e-6)   # u(0) = 0, u(h) arbitrary
+    u_prev, u = np.zeros_like(E), np.full_like(E, 1e-6)  # <1>
     history = [u]
     for j in range(n):
-        u_prev, u = u, 2 * u - u_prev + 2 * h**2 * (W[j] - E) * u
+        u_prev, u = u, 2 * u - u_prev + 2 * h**2 * (W[j] - E) * u  # <2>
         history.append(u)
-    u_grid = np.array(history)          # u_grid[j] = u(r_j), r_j = (j + 1) h
-    i = n - 1                           # grid index of R
+    u_grid = np.array(history)  # <3>
+    i = n - 1  # <3>
     return (u_grid[i + 1] - u_grid[i - 1]) / (2 * h * u_grid[i])
 
 
 R_D = 2.0
 energies = np.linspace(-1.2, 0.6, 361)
 u_nn, V_nn = kerker(u3s, eps3s, 0, RC, conserve_norm=False)
-D = {"all-electron": log_derivative(V_ae, 0, energies, R_D),
-     "norm-conserving": log_derivative(V_ps_s, 0, energies, R_D),
-     "not norm-conserving": log_derivative(V_nn, 0, energies, R_D)}
+D = {
+    "all-electron": log_derivative(V_ae, 0, energies, R_D),
+    "norm-conserving": log_derivative(V_ps_s, 0, energies, R_D),
+    "not norm-conserving": log_derivative(V_nn, 0, energies, R_D),
+}
 
-# Exact agreement at ε_ref for both; matching slope only with norm conservation.
 de = 1e-4
-slope = {k: (log_derivative(V, 0, [eps3s + de], R_D)[0] - log_derivative(V, 0, [eps3s - de], R_D)[0]) / (2 * de)
-         for k, V in {"all-electron": V_ae, "norm-conserving": V_ps_s, "not norm-conserving": V_nn}.items()}
-at_ref = {k: log_derivative(V, 0, [eps3s], R_D)[0] for k, V in
-          {"all-electron": V_ae, "norm-conserving": V_ps_s, "not norm-conserving": V_nn}.items()}
+slope = {
+    k: (
+        log_derivative(V, 0, [eps3s + de], R_D)[0]
+        - log_derivative(V, 0, [eps3s - de], R_D)[0]
+    )
+    / (2 * de)
+    for k, V in {
+        "all-electron": V_ae,
+        "norm-conserving": V_ps_s,
+        "not norm-conserving": V_nn,
+    }.items()
+}
+at_ref = {
+    k: log_derivative(V, 0, [eps3s], R_D)[0]
+    for k, V in {
+        "all-electron": V_ae,
+        "norm-conserving": V_ps_s,
+        "not norm-conserving": V_nn,
+    }.items()
+}
 iR = int(round(R_D / h)) - 1
-hsc = -2 / u3s[iR] ** 2 * simpson(u3s[: iR + 1] ** 2, x=r[: iR + 1])
-assert abs(at_ref["norm-conserving"] - at_ref["all-electron"]) < 1e-4
-assert abs(at_ref["not norm-conserving"] - at_ref["all-electron"]) < 1e-4
-assert abs(slope["all-electron"] - hsc) / abs(hsc) < 1e-3          # the HSC identity itself
-assert abs(slope["norm-conserving"] - slope["all-electron"]) / abs(hsc) < 1e-3
-assert abs(slope["not norm-conserving"] - slope["all-electron"]) / abs(hsc) > 0.05
+hsc = -2 / u3s[iR] ** 2 * simpson(u3s[: iR + 1] ** 2, x=r[: iR + 1])  # <4>
+ref, s_ae = at_ref["all-electron"], slope["all-electron"]
+assert abs(at_ref["norm-conserving"] - ref) < 1e-4  # <5>
+assert abs(at_ref["not norm-conserving"] - ref) < 1e-4  # <5>
+assert abs(s_ae - hsc) / abs(hsc) < 1e-3  # <6>
+assert abs(slope["norm-conserving"] - s_ae) / abs(hsc) < 1e-3  # <7>
+assert abs(slope["not norm-conserving"] - s_ae) / abs(hsc) > 0.05  # <7>
 ```
+
+1. u(0) = 0. The value at u(h) is arbitrary, because D_l does not depend on the
+   normalisation.
+2. The finite-difference radial equation, rearranged to step outward one grid
+   point at a time.
+3. history[j] holds u(r_j) with r_j = (j + 1)h, so R = nh sits at index n − 1,
+   where D_l is taken as a centred difference.
+4. The slope that the HSC identity predicts, from the all-electron norm inside R.
+5. Both pseudopotentials reproduce D_l exactly at the reference energy, because
+   the construction builds that in.
+6. The numerical slope of the all-electron D_l agrees with the HSC identity.
+7. Only the norm-conserving pseudopotential also reproduces the slope.
 
 ```{python}
 #| code-fold: true
 #| code-summary: "Logarithmic-derivative chart"
 #| column: page-inset
 # arctan D jumps by π at each pole of D; unwrap it into a continuous phase.
-ld = pd.concat([pd.DataFrame({"energy (Ha)": energies, "arctan D": np.unwrap(np.arctan(v), period=np.pi), "curve": k})
-                for k, v in D.items()])
+ld = pd.concat([
+    pd.DataFrame({
+        "energy (Ha)": energies,
+        "arctan D": np.unwrap(np.arctan(v), period=np.pi),
+        "curve": k,
+    })
+    for k, v in D.items()
+])
 ld_order = list(D)
-chart = hover_lines(ld, "energy (Ha)", "arctan D", "curve", x_title="energy ε (Ha)",
-                    y_title="arctan D₀(ε) at R = 2 Bohr (unwrapped)", sort=ld_order)
-ref = alt.Chart(pd.DataFrame({"x": [eps3s], "label": ["3s reference energy"]})).mark_rule(
-    color=style.TEXT_SECONDARY, strokeDash=[3, 3]).encode(x="x:Q", tooltip=["label:N"])
+chart = hover_lines(
+    ld,
+    "energy (Ha)",
+    "arctan D",
+    "curve",
+    x_title="energy ε (Ha)",
+    y_title="arctan D₀(ε) at R = 2 Bohr (unwrapped)",
+    sort=ld_order,
+)
+ref = (
+    alt
+    .Chart(pd.DataFrame({"x": [eps3s], "label": ["3s reference energy"]}))
+    .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[3, 3])
+    .encode(x="x:Q", tooltip=["label:N"])
+)
 (chart + ref).properties(title="Scattering of an s wave off the core")
 ```
 
@@ -603,26 +958,50 @@ trade = []
 for rc in rcs:
     _, vps = kerker(u3s, eps3s, 0, rc)
     e_ps, _ = radial_levels(vps, l=0, n_levels=2)
-    trade.append({"rc": rc, "4s energy error (meV)": abs(e_ps[1] - eps4s) * 27211.386245981,
-                  "E_cut for 10⁻⁴ missing norm (Ha)": need_df.set_index("rc").loc[rc, "ecut"]})
+    trade.append({
+        "rc": rc,
+        "4s energy error (meV)": abs(e_ps[1] - eps4s) * 27211.386245981,
+        "E_cut for 10⁻⁴ missing norm (Ha)": need_df.set_index("rc").loc[
+            rc, "ecut"
+        ],
+    })
 trade = pd.DataFrame(trade)
 assert trade["E_cut for 10⁻⁴ missing norm (Ha)"].is_monotonic_decreasing
 base = alt.Chart(trade).encode(alt.X("rc:Q", title="core radius r_c (Bohr)"))
-soft = (base.mark_line(clip=True, color=S[0]).encode(alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q", scale=alt.Scale(type="log")))
-        + base.mark_point(color=S[0]).encode(alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q"),
-                                             tooltip=["rc:Q", alt.Tooltip("E_cut for 10⁻⁴ missing norm (Ha):Q", format=".3g")])
-        ).properties(width=300, height=240, title="Cost: cutoff needed")
-transf = (base.mark_line(clip=True, color=S[1]).encode(alt.Y("4s energy error (meV):Q", scale=alt.Scale(type="log")))
-          + base.mark_point(color=S[1]).encode(alt.Y("4s energy error (meV):Q"),
-                                               tooltip=["rc:Q", alt.Tooltip("4s energy error (meV):Q", format=".3g")])
-          ).properties(width=300, height=240, title="Accuracy: error in the unseen 4s level")
+soft = (
+    base.mark_line(clip=True, color=S[0]).encode(
+        alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q", scale=alt.Scale(type="log"))
+    )
+    + base.mark_point(color=S[0]).encode(
+        alt.Y("E_cut for 10⁻⁴ missing norm (Ha):Q"),
+        tooltip=[
+            "rc:Q",
+            alt.Tooltip("E_cut for 10⁻⁴ missing norm (Ha):Q", format=".3g"),
+        ],
+    )
+).properties(width=300, height=240, title="Cost: cutoff needed")
+transf = (
+    base.mark_line(clip=True, color=S[1]).encode(
+        alt.Y("4s energy error (meV):Q", scale=alt.Scale(type="log"))
+    )
+    + base.mark_point(color=S[1]).encode(
+        alt.Y("4s energy error (meV):Q"),
+        tooltip=["rc:Q", alt.Tooltip("4s energy error (meV):Q", format=".3g")],
+    )
+).properties(
+    width=300, height=240, title="Accuracy: error in the unseen 4s level"
+)
 alt.hconcat(soft, transf)
 ```
 
 ```{python}
 #| echo: false
 best = trade.loc[trade["4s energy error (meV)"].idxmin()]
-assert best.rc < 1.6 and trade.set_index("rc").loc[2.6, "4s energy error (meV)"] > 5 * best["4s energy error (meV)"]
+assert (
+    best.rc < 1.6
+    and trade.set_index("rc").loc[2.6, "4s energy error (meV)"]
+    > 5 * best["4s energy error (meV)"]
+)
 ```
 
 The cutoff falls steadily as $r_c$ grows. The 4s error is not simply
@@ -652,13 +1031,28 @@ resulting potential is different:
 #| code-fold: true
 #| code-summary: "s and p pseudopotentials"
 #| column: page-inset
-m = (r <= 3)
-pots = pd.concat([pd.DataFrame({"r (Bohr)": r[m][::6], "V (Ha)": v[m][::6], "curve": k}) for k, v in
-                  {"all-electron V": V_ae, "pseudopotential, l = 0": V_ps_s, "pseudopotential, l = 1": V_ps_p}.items()])
-assert np.max(np.abs(V_ps_s - V_ps_p)[r < RC]) > 0.1 and np.allclose(V_ps_s[r >= RC], V_ps_p[r >= RC])
-hover_lines(pots, "r (Bohr)", "V (Ha)", "curve", x_title="r (Bohr)", y_title="V(r) (Ha)", y_domain=[-8, 4],
-            sort=["all-electron V", "pseudopotential, l = 0", "pseudopotential, l = 1"]
-            ).properties(title=f"Pseudopotentials at r_c = {RC} Bohr")
+m = r <= 3
+pots = pd.concat([
+    pd.DataFrame({"r (Bohr)": r[m][::6], "V (Ha)": v[m][::6], "curve": k})
+    for k, v in {
+        "all-electron V": V_ae,
+        "pseudopotential, l = 0": V_ps_s,
+        "pseudopotential, l = 1": V_ps_p,
+    }.items()
+])
+assert np.max(np.abs(V_ps_s - V_ps_p)[r < RC]) > 0.1 and np.allclose(
+    V_ps_s[r >= RC], V_ps_p[r >= RC]
+)
+hover_lines(
+    pots,
+    "r (Bohr)",
+    "V (Ha)",
+    "curve",
+    x_title="r (Bohr)",
+    y_title="V(r) (Ha)",
+    y_domain=[-8, 4],
+    sort=["all-electron V", "pseudopotential, l = 0", "pseudopotential, l = 1"],
+).properties(title=f"Pseudopotentials at r_c = {RC} Bohr")
 ```
 
 That is unavoidable. The core that s electrons must stay orthogonal to (1s, 2s)
@@ -713,16 +1107,19 @@ $$
 $$
 
 ```{python}
-Z_ION, R_LOC, C1 = 4, 0.44, -7.33610297      # HGH (1998) Table I, Si, LDA
+Z_ION, R_LOC, C1 = 4, 0.44, -7.33610297  # HGH (1998) Table I, Si, LDA
 
 
 def v_hgh_local(q):
     g = np.exp(-0.5 * (q * R_LOC) ** 2)
-    return -4 * np.pi * Z_ION / q**2 * g + np.sqrt(8 * np.pi**3) * R_LOC**3 * C1 * g
+    return (
+        -4 * np.pi * Z_ION / q**2 * g
+        + np.sqrt(8 * np.pi**3) * R_LOC**3 * C1 * g
+    )
 
 
 def v_nucleus(q):
-    return -4 * np.pi * Z / q**2               # bare -Z/r, the all-electron problem
+    return -4 * np.pi * Z / q**2  # bare -Z/r, the all-electron problem
 ```
 
 ```{python}
@@ -731,15 +1128,34 @@ def v_nucleus(q):
 #| column: page-inset
 qq = np.linspace(0.3, 12, 400)
 ff = pd.concat([
-    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(v_nucleus(qq)), "curve": "nucleus, −14/r"}),
-    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(v_hgh_local(qq)), "curve": "HGH Si local part"}),
-    pd.DataFrame({"q": qq, "|v̂(q)| (Ha·Bohr³)": np.abs(4 * np.pi * Z_ION / qq**2), "curve": "ionic tail, −4/r"}),
+    pd.DataFrame({
+        "q": qq,
+        "|v̂(q)| (Ha·Bohr³)": np.abs(v_nucleus(qq)),
+        "curve": "nucleus, −14/r",
+    }),
+    pd.DataFrame({
+        "q": qq,
+        "|v̂(q)| (Ha·Bohr³)": np.abs(v_hgh_local(qq)),
+        "curve": "HGH Si local part",
+    }),
+    pd.DataFrame({
+        "q": qq,
+        "|v̂(q)| (Ha·Bohr³)": np.abs(4 * np.pi * Z_ION / qq**2),
+        "curve": "ionic tail, −4/r",
+    }),
 ])
 ff = ff[ff["|v̂(q)| (Ha·Bohr³)"] > 1e-6]
-hover_lines(ff, "q", "|v̂(q)| (Ha·Bohr³)", "curve", x_title="q (Bohr⁻¹)", y_title="|v̂(q)| (Ha·Bohr³)",
-            sort=["nucleus, −14/r", "HGH Si local part", "ionic tail, −4/r"]
-            ).encode(y=alt.Y("|v̂(q)| (Ha·Bohr³):Q", scale=alt.Scale(type="log"))
-            ).properties(title="Form factors: the nucleus against a pseudopotential")
+hover_lines(
+    ff,
+    "q",
+    "|v̂(q)| (Ha·Bohr³)",
+    "curve",
+    x_title="q (Bohr⁻¹)",
+    y_title="|v̂(q)| (Ha·Bohr³)",
+    sort=["nucleus, −14/r", "HGH Si local part", "ionic tail, −4/r"],
+).encode(
+    y=alt.Y("|v̂(q)| (Ha·Bohr³):Q", scale=alt.Scale(type="log"))
+).properties(title="Form factors: the nucleus against a pseudopotential")
 ```
 
 Three features matter here.
@@ -770,7 +1186,7 @@ is instructive:
 #| code-summary: "A comparison that does not work"
 cb = silicon()
 a_cb = cb.lattice_constant
-n_val = 32 / a_cb**3                                   # 8 atoms × 4 electrons per conventional cell
+n_val = 32 / a_cb**3  # 8 atoms × 4 electrons per conventional cell
 k_f = (3 * np.pi**2 * n_val) ** (1 / 3)
 
 
@@ -784,11 +1200,15 @@ shells = [3, 8, 11]
 qs = 2 * np.pi / a_cb * np.sqrt(shells)
 compare = pd.DataFrame({
     "|G|² (2π/a)²": shells,
-    "Cohen–Bergstresser v̂ (Ha·Bohr³)": [float(cb.local(np.array(x))) for x in qs],
+    "Cohen–Bergstresser v̂ (Ha·Bohr³)": [
+        float(cb.local(np.array(x))) for x in qs
+    ],
     "HGH local, bare": v_hgh_local(qs),
     "HGH local, Lindhard-screened": v_hgh_local(qs) / lindhard_epsilon(qs),
 })
-assert (compare["HGH local, Lindhard-screened"] < 0).all() and (compare["Cohen–Bergstresser v̂ (Ha·Bohr³)"].iloc[1:] > 0).all()
+assert (compare["HGH local, Lindhard-screened"] < 0).all() and (
+    compare["Cohen–Bergstresser v̂ (Ha·Bohr³)"].iloc[1:] > 0
+).all()
 compare.round(2)
 ```
 

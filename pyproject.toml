@@ -19,6 +19,7 @@ build-backend = "uv_build"
 dev = [
     "hypothesis>=6.170.14",
     "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]
 docs = [
     "altair>=6.3.0",

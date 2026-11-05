@@ -247,6 +247,14 @@ Later milestones are defined when we get there.
 - Give every chart cell `#| column: page-inset` so figures use the wider page
   layout and do not need horizontal scrolling. Charts narrower than the column
   are centred by `docs/styles.css`; `fig-align` does not apply to altair output.
+- Format the Python cells of every `.qmd` with `uv run ruff format docs/`
+  (config in `docs/ruff.toml`: 80 columns, ruff's preview Markdown support).
+  Ruff does not wrap comments, docstrings or strings; keep those within 80
+  columns by hand.
+- Explain code with Quarto code annotations (`# <n>` at the end of a line, a
+  numbered list after the cell; shown on hover), not with long comments. Plain
+  comments are fine for short labels such as units, and in hidden or folded
+  cells.
 
 ### Concept posts
 `docs/concepts/` holds pedagogical explainers of background ideas
