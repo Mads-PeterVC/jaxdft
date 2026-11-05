@@ -117,3 +117,84 @@ gross errors; the exact count is tested by enumeration.
 **References.** Cutoff conventions as documented for DFTK (`Ecut`), ABINIT
 (`ecut`) and Quantum ESPRESSO (`ecutwfc`, `ecutrho`). No source code was
 consulted.
+
+## 2026-11-05: Milestone 1a public API, agreed before implementation
+
+The acceptance tests fix the public API, so it was settled in a question round
+with the project lead before any code was written. Each decision below names
+the option that was chosen.
+
+**Layout.** Subpackages by role in the calculation, not a flat set of modules.
+The main names are re-exported from `jaxdft`.
+
+```
+jaxdft/
+  structure/    lattice.py (Lattice)   kpoints.py (special_points_fcc, kpath, KPath)
+  basis/        planewave.py (PlaneWaveBasis)
+  hamiltonian/  operator.py (Hamiltonian, hamiltonian, apply_H, dense_matrix)
+                kinetic.py (Kinetic)
+  solvers/      eigen.py (dense_eigensolver)
+  calculations/ bands.py (band_structure, Bands)
+  analytic/     free_electron.py (free_electron_bands)
+```
+
+XC, pseudopotentials and IO will get their own subpackages, so that the SCF
+loop never imports them by name.
+
+**Data.**
+
+- `Lattice` is a frozen dataclass registered as a pytree. Its only leaf is
+  `vectors` (rows, Bohr); `reciprocal` and `volume` are derived. `grad` of a
+  function of a `Lattice` returns a `Lattice`, which keeps cell derivatives
+  possible later. Input is converted to float64.
+- k-points are **fractional** (k = f·B) at every public interface.
+- `PlaneWaveBasis` stores only integers and masks: `miller` with shape
+  (n_k, N_pad, 3), `mask` with shape (n_k, N_pad), fractional `kpoints`, and
+  the static `ecut` and `n_pad`. Cartesian k+G and kinetic energies are
+  computed from a `Lattice` when needed, so the path from the cell to the
+  energies stays differentiable. The basis is purely combinatorial.
+- One batched basis holds all k-points. `basis[i]` returns the same class with
+  the k axis removed, which is also what `vmap` hands the mapped function.
+- `N_pad` defaults to exactly max_k N_PW and can be overridden with `n_pad=`.
+  If it is smaller than that, construction raises `ValueError`. Bucketing
+  waits until profiling shows recompilation matters.
+
+**Operators and solver.**
+
+- A Hamiltonian term is a pytree with `prepare(lattice, basis_k)`, which
+  returns a prepared pytree with `apply(psi)`. `hamiltonian()` prepares every
+  term once per k, so iterative solvers do not repeat the setup on every
+  apply. Terms never see padding.
+- `apply_H(ham, psi)` acts on blocks `psi` of shape (N_pad, n). It masks the
+  input, sums the terms, masks the output, and adds `s·psi` on padded entries.
+  Decoupling is therefore enforced centrally, so a new term cannot leak by
+  forgetting a mask. The tests require ecut < s ≤ 10·ecut.
+- `dense_eigensolver(apply, dim, n_bands)` takes any linear operator and knows
+  nothing about plane waves.
+- `band_structure(lattice, basis, n_bands, terms=(Kinetic(),), solver=dense_eigensolver)`
+  returns `Bands(eigenvalues, eigenvectors, kpoints, basis)`. Eigenvalues have
+  shape (n_k, n_bands) in Hartree; eigenvectors have shape
+  (n_k, N_pad, n_bands) and are zero on padding. The function raises
+  `ValueError` if n_bands > min_k N_PW.
+
+**k-paths.** `special_points_fcc()` returns a dict from label to fractional k,
+with ASCII keys (`"G"` for Γ). `kpath(lattice, points, segments, n_points)`
+spreads exactly `n_points` points over the segments by Cartesian length. It
+returns `KPath(kpoints, distance, tick_positions, tick_labels)`. The tick
+labels use Γ, and a break is labelled `"U|K"`; the distance does not advance
+across a break.
+
+**Analytic reference.** `jaxdft.analytic.free_electron_bands` exists so that
+the validation document can use it without reimplementing physics. The tests
+never trust it. They compare it with `tests/support/free_electron.py`, an
+independent NumPy enumeration over twice the proven Miller bound, which is
+itself checked against the hand-derived degeneracy table.
+
+**Spec gap found while writing the tests.** With a non-diagonal term, physical
+eigenvalues can exceed ecut, and the sentinel is only guaranteed to be above
+ecut. So the requested bands are guaranteed physical only below ecut. This is
+exactly the theory post's rule ("tests compare only eigenvalues below the
+cutoff"). The tests follow it everywhere, and the test-only coupling term is
+kept weak (a Gershgorin bound of about 0.16 Ha). Requesting all N_PW bands with
+a strong potential is legitimate input, but it may return sentinel
+eigenvalues.

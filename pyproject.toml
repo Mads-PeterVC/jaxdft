@@ -36,3 +36,4 @@ markers = [
     "slow: tests that take more than a few seconds on a laptop CPU",
 ]
 filterwarnings = ["error"]
+pythonpath = ["tests"]
