@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
@@ -29,11 +29,15 @@ def test_from_cartesian_stores_fractional_and_round_trips(A, frac):
 
 @settings(max_examples=20)
 @given(cells(), positions_strategy)
+# Regression: subnormal cell entries are flushed to zero by the conversion arithmetic.
+@example(A=np.array([[6.0, 1.33504432e-310, 1.33504432e-310], [1.33504432e-310, 6.0, 1.33504432e-310], [1.33504432e-310, 1.33504432e-310, 6.0]]), frac=np.zeros((1, 3)))
 def test_from_cartesian_units_are_consistent(A, frac):
     cart = frac @ A
     s_bohr = Structure.from_cartesian(A, cart, ["X"] * len(frac), unit="Bohr")
     s_ang = Structure.from_cartesian(A * A0, cart * A0, ["X"] * len(frac), unit="Angstrom")
-    np.testing.assert_allclose(s_ang.lattice.vectors, s_bohr.lattice.vectors, rtol=1e-14)
+    # Conversion rounding scales with the size of the cell vectors, not of each entry,
+    # so near-zero entries need an absolute floor; relative-only cannot accept 0 vs 1e-310.
+    np.testing.assert_allclose(s_ang.lattice.vectors, s_bohr.lattice.vectors, rtol=1e-14, atol=1e-14 * np.abs(A).max())
     np.testing.assert_allclose(s_ang.positions, s_bohr.positions, atol=1e-12)
 
 

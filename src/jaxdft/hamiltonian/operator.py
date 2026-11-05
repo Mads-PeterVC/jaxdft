@@ -3,12 +3,17 @@ exactly decoupled').
 
 Term protocol. A term is a pytree with
 
-    prepare(lattice, basis_k) -> prepared term
+    prepare(structure, basis_k) -> prepared term
 
 where the prepared term is a pytree with ``apply(psi) -> H_term psi`` acting on
 blocks ``psi`` of shape (n_pad, n). Terms never see padding: ``apply_H`` masks
 their input and output and puts a sentinel energy on padded components, so a
 new term cannot leak into the physical block by forgetting a mask.
+
+Optionally a term may define ``bind(structure) -> term``. ``band_structure`` calls it on
+the host before tracing, to validate the term against the structure and to precompute
+data that fixes array shapes (e.g. coupling vectors). ``prepare`` must then do only
+traced work.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import jax
 import jax.numpy as jnp
 
 from jaxdft.basis.planewave import PlaneWaveBasis
-from jaxdft.structure.lattice import Lattice
+from jaxdft.structure.structure import Structure
 
 # Padded components get the eigenvalue SENTINEL_FACTOR * ecut: above the kinetic
 # spectrum (||T_phys|| <= ecut), but only a small multiple of it, so iterative
@@ -37,9 +42,9 @@ class Hamiltonian:
     sentinel: float = field(metadata=dict(static=True))
 
 
-def hamiltonian(lattice: Lattice, basis_k: PlaneWaveBasis, terms: tuple) -> Hamiltonian:
+def hamiltonian(structure: Structure, basis_k: PlaneWaveBasis, terms: tuple) -> Hamiltonian:
     """Prepare every term once for the single-k basis ``basis_k``."""
-    prepared = tuple(term.prepare(lattice, basis_k) for term in terms)
+    prepared = tuple(term.prepare(structure, basis_k) for term in terms)
     return Hamiltonian(terms=prepared, mask=basis_k.mask, sentinel=SENTINEL_FACTOR * basis_k.ecut)
 
 

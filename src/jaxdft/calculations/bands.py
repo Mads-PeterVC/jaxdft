@@ -13,7 +13,7 @@ from jaxdft.basis.planewave import PlaneWaveBasis
 from jaxdft.hamiltonian.kinetic import Kinetic
 from jaxdft.hamiltonian.operator import apply_H, hamiltonian
 from jaxdft.solvers.eigen import dense_eigensolver
-from jaxdft.structure.lattice import Lattice
+from jaxdft.structure.structure import Structure
 
 
 @jax.tree_util.register_dataclass
@@ -33,8 +33,14 @@ class Bands:
     basis: PlaneWaveBasis
 
 
+def bind_terms(structure: Structure, terms) -> tuple:
+    """Host-side, before tracing: let each term validate itself against ``structure``
+    and precompute shape-fixing data (the optional ``bind`` hook)."""
+    return tuple(term.bind(structure) if hasattr(term, "bind") else term for term in terms)
+
+
 def band_structure(
-    lattice: Lattice,
+    structure: Structure,
     basis: PlaneWaveBasis,
     n_bands: int,
     terms: tuple = (Kinetic(),),
@@ -51,14 +57,15 @@ def band_structure(
     min_pw = int(jnp.min(basis.n_pw))
     if not 1 <= n_bands <= min_pw:
         raise ValueError(f"n_bands={n_bands} must be between 1 and min_k N_PW={min_pw}")
-    eigenvalues, eigenvectors = _solve(lattice, basis, tuple(terms), n_bands, solver)
+    terms = bind_terms(structure, terms)
+    eigenvalues, eigenvectors = _solve(structure, basis, terms, n_bands, solver)
     return Bands(eigenvalues, eigenvectors, basis.kpoints, basis)
 
 
 @partial(jax.jit, static_argnums=(3, 4))
-def _solve(lattice, basis, terms, n_bands, solver):
+def _solve(structure, basis, terms, n_bands, solver):
     def per_k(basis_k):
-        ham = hamiltonian(lattice, basis_k, terms)
+        ham = hamiltonian(structure, basis_k, terms)
         eps, vecs = solver(lambda psi: apply_H(ham, psi), dim=basis_k.n_pad, n_bands=n_bands)
         return eps, jnp.where(basis_k.mask[:, None], vecs, 0)
 

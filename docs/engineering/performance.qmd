@@ -37,9 +37,9 @@ import time
 import numpy as np
 import pandas as pd
 
-from jaxdft import Lattice, PlaneWaveBasis, band_structure, kpath, special_points_fcc
+from jaxdft import PlaneWaveBasis, band_structure, empty, fcc_lattice, kpath, special_points_fcc
 
-lattice = Lattice.fcc(10.26)
+lattice = fcc_lattice(10.26, unit="Bohr")
 
 
 def timed(fn):
@@ -56,7 +56,7 @@ for ecut, n_k in [(2.5, 50), (2.5, 200), (5.0, 200), (10.0, 50)]:
     basis = PlaneWaveBasis.build(lattice, path.kpoints, ecut)
     t_basis = time.perf_counter() - t0
     n_bands = int(basis.n_pw.min())
-    run = lambda: band_structure(lattice, basis, n_bands)
+    run = lambda: band_structure(empty(lattice), basis, n_bands)
     first = timed(run)
     steady = statistics.median(timed(run) for _ in range(3))
     rows.append(
