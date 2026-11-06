@@ -1,0 +1,14 @@
+---
+title: "Concepts"
+listing:
+  contents: "*.qmd"
+  sort: "date"
+  type: table
+  fields: [date, title, description]
+---
+
+Pedagogical explainers of ideas the code is built on. Unlike the theory and
+validation documents, these posts implement the physics themselves in
+NumPy/SciPy, with the code shown, as a second way into the mathematics. That
+code is for understanding only: it is not tested and is not a reference. Where
+a concept post and jaxdft disagree, jaxdft and its tests are the authority.

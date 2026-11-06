@@ -14,6 +14,8 @@ than feature count or peak performance.
 
 - [Theory](theory/index.qmd): one post per milestone, scoped to that
   milestone's physics.
+- [Concepts](concepts/index.qmd): pedagogical explainers of background ideas,
+  with the code shown.
 - [Validation](validation/index.qmd): comparisons against analytic limits,
   published results and reference codes, with interpretation.
 - [Engineering](engineering/index.qmd): the engineering log and performance

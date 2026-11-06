@@ -18,6 +18,8 @@ website:
         text: Home
       - href: theory/index.qmd
         text: Theory
+      - href: concepts/index.qmd
+        text: Concepts
       - href: validation/index.qmd
         text: Validation
       - href: engineering/index.qmd
@@ -34,3 +36,4 @@ format:
     css: styles.css
     toc: true
     html-math-method: mathjax
+    code-annotations: hover

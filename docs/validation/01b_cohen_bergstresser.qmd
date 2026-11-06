@@ -33,7 +33,10 @@ style.enable()
 
 TEST_ECUT = 6.0  # Ha, the acceptance-test cutoff
 LEVEL_ATOL = 1e-8  # Ha, degenerate-level grouping
-TOL_EV = {"from_vbm": 0.15, "between_levels": 0.25}  # theory post, 'Reference values'
+TOL_EV = {
+    "from_vbm": 0.15,
+    "between_levels": 0.25,
+}  # theory post, 'Reference values'
 
 cb = silicon()
 si = diamond(cb.lattice_constant_angstrom, "Si", unit="Angstrom")
@@ -42,18 +45,29 @@ points = {k: np.asarray(v) for k, v in special_points_fcc().items()}
 ev = float(convert(1.0, "Hartree", "eV"))
 E0 = 0.5 * (2 * np.pi / cb.lattice_constant) ** 2  # Ha
 
-table = json.loads(Path("../../reference/cohen_bergstresser_1966/si_table1.json").read_text())
+table = json.loads(
+    Path("../../reference/cohen_bergstresser_1966/si_table1.json").read_text()
+)
 
 
 def spectrum(kfrac, ecut):
     basis = PlaneWaveBasis.build(si.lattice, np.atleast_2d(kfrac), ecut)
-    return np.asarray(band_structure(si, basis, n_bands=int(basis.n_pw[0]), terms=terms).eigenvalues[0])
+    return np.asarray(
+        band_structure(
+            si, basis, n_bands=int(basis.n_pw[0]), terms=terms
+        ).eigenvalues[0]
+    )
 
 
 def splittings(ecut):
-    """The seven Table I splittings (eV), levels identified by degeneracy and order."""
+    """The seven Table I splittings (eV).
+
+    Levels are identified by degeneracy and order.
+    """
     G, X, L = (spectrum(points[p], ecut) for p in ("G", "X", "L"))
-    t, e_min = band_minimum_on_segment(si, points["G"], points["X"], band=4, ecut=ecut, terms=terms)
+    t, e_min = band_minimum_on_segment(
+        si, points["G"], points["X"], band=4, ecut=ecut, terms=terms
+    )
     vbm = G[3]
     return {
         "Gamma25p-Gamma2p": (G[7] - vbm) * ev,
@@ -63,7 +77,13 @@ def splittings(ecut):
         "L3p-L1": (L[4] - L[2]) * ev,
         "L3p-L3": (L[5] - L[2]) * ev,
         "X4-X1": (X[4] - X[2]) * ev,
-    }, {"t_min": t, "e_x1": (X[4] - vbm) * ev, "n_pw_gamma": int(PlaneWaveBasis.build(si.lattice, points["G"][None], ecut).n_pw[0])}
+    }, {
+        "t_min": t,
+        "e_x1": (X[4] - vbm) * ev,
+        "n_pw_gamma": int(
+            PlaneWaveBasis.build(si.lattice, points["G"][None], ecut).n_pw[0]
+        ),
+    }
 
 
 ours, extra = splittings(TEST_ECUT)
@@ -87,44 +107,91 @@ are in the [theory post](../theory/01b_cohen_bergstresser.qmd).
 ## Band structure
 
 ```{python}
+#| column: page-inset
 #| echo: false
-path = kpath(si.lattice, special_points_fcc(), [["L", "G", "X", "U"], ["K", "G"]], n_points=200)
+path = kpath(
+    si.lattice,
+    special_points_fcc(),
+    [["L", "G", "X", "U"], ["K", "G"]],
+    n_points=200,
+)
 basis = PlaneWaveBasis.build(si.lattice, path.kpoints, TEST_ECUT)
 bands = band_structure(si, basis, n_bands=10, terms=terms)
 e = np.asarray(bands.eigenvalues)
 vbm = float(spectrum(points["G"], TEST_ECUT)[3])
 x = np.asarray(path.distance)
-lines = pd.DataFrame(
-    [{"distance": x[i], "band": n, "energy": (e[i, n] - vbm) * ev} for n in range(10) for i in range(len(x))]
-)
-ticks = [float(t) for t in path.tick_positions]  # L, Γ, X, U|K, Γ (Γ appears twice)
+lines = pd.DataFrame([
+    {"distance": x[i], "band": n, "energy": (e[i, n] - vbm) * ev}
+    for n in range(10)
+    for i in range(len(x))
+])
+ticks = [
+    float(t) for t in path.tick_positions
+]  # L, Γ, X, U|K, Γ (Γ appears twice)
 assert list(path.tick_labels) == ["L", "Γ", "X", "U|K", "Γ"]
 x_L, x_G, x_X = ticks[0], ticks[1], ticks[2]
 published = {r["id"]: r["calculated"] for r in table["splittings"]}
-marks = pd.DataFrame(
-    [
-        {"distance": x_G, "energy": published["Gamma25p-Gamma15"], "level": "Γ₁₅"},
-        {"distance": x_G, "energy": published["Gamma25p-Gamma2p"], "level": "Γ₂′"},
-        {"distance": x_L, "energy": published["Gamma25p-L1"], "level": "L₁"},
-        {"distance": x_G + extra["t_min"] * (x_X - x_G), "energy": published["Gamma25p-X1(Delta1)"], "level": "Δ₁ minimum"},
-    ]
+marks = pd.DataFrame([
+    {"distance": x_G, "energy": published["Gamma25p-Gamma15"], "level": "Γ₁₅"},
+    {"distance": x_G, "energy": published["Gamma25p-Gamma2p"], "level": "Γ₂′"},
+    {"distance": x_L, "energy": published["Gamma25p-L1"], "level": "L₁"},
+    {
+        "distance": x_G + extra["t_min"] * (x_X - x_G),
+        "energy": published["Gamma25p-X1(Delta1)"],
+        "level": "Δ₁ minimum",
+    },
+])
+lookup = (
+    "{"
+    + ", ".join(
+        f"'{t:.6f}': '{lab}'" for lab, t in zip(path.tick_labels, ticks)
+    )
+    + "}"
 )
-lookup = "{" + ", ".join(f"'{t:.6f}': '{lab}'" for lab, t in zip(path.tick_labels, ticks)) + "}"
 x_axis = alt.X(
-    "distance:Q", title=None, scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
-    axis=alt.Axis(values=ticks, labelExpr=f"{lookup}[format(datum.value, '.6f')]", grid=True),
+    "distance:Q",
+    title=None,
+    scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
+    axis=alt.Axis(
+        values=ticks,
+        labelExpr=f"{lookup}[format(datum.value, '.6f')]",
+        grid=True,
+    ),
 )
-y_axis = alt.Y("energy:Q", title="Energy − E(Γ₂₅′) (eV)", scale=alt.Scale(domain=[-13, 6]))
+y_axis = alt.Y(
+    "energy:Q", title="Energy − E(Γ₂₅′) (eV)", scale=alt.Scale(domain=[-13, 6])
+)
 colour = alt.Color(
-    "source:N", title=None,
-    scale=alt.Scale(domain=["computed (jaxdft)", "CB 1966, Table I"], range=[style.SERIES[0], style.SERIES[1]]),
+    "source:N",
+    title=None,
+    scale=alt.Scale(
+        domain=["computed (jaxdft)", "CB 1966, Table I"],
+        range=[style.SERIES[0], style.SERIES[1]],
+    ),
 )
-line_layer = alt.Chart(lines.assign(source="computed (jaxdft)")).mark_line(clip=True).encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
-mark_layer = alt.Chart(marks.assign(source="CB 1966, Table I")).mark_point(size=90, filled=True, stroke=style.SURFACE, strokeWidth=1.5).encode(
-    x=x_axis, y=y_axis, color=colour,
-    tooltip=[alt.Tooltip("level:N"), alt.Tooltip("energy:Q", title="published (eV)", format=".1f")],
+line_layer = (
+    alt
+    .Chart(lines.assign(source="computed (jaxdft)"))
+    .mark_line(clip=True)
+    .encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
 )
-(line_layer + mark_layer).properties(width=style.WIDTH, height=style.HEIGHT).interactive()
+mark_layer = (
+    alt
+    .Chart(marks.assign(source="CB 1966, Table I"))
+    .mark_point(size=90, filled=True, stroke=style.SURFACE, strokeWidth=1.5)
+    .encode(
+        x=x_axis,
+        y=y_axis,
+        color=colour,
+        tooltip=[
+            alt.Tooltip("level:N"),
+            alt.Tooltip("energy:Q", title="published (eV)", format=".1f"),
+        ],
+    )
+)
+(line_layer + mark_layer).properties(
+    width=style.WIDTH, height=style.HEIGHT
+).interactive()
 ```
 
 Points mark the four levels that Table I gives directly relative to the
@@ -139,16 +206,23 @@ rows = []
 for r in table["splittings"]:
     dev = ours[r["id"]] - r["calculated"]
     rows.append({
-        "splitting": r["id"].replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"),
+        "splitting": r["id"]
+        .replace("Gamma", "Γ")
+        .replace("p", "′")
+        .replace("Delta1", "Δ₁"),
         "jaxdft (eV)": f"{ours[r['id']]:.3f}",
         "CB 1966 calc. (eV)": f"{r['calculated']:.1f}",
         "deviation (eV)": f"{dev:+.3f}",
         "tolerance (eV)": f"{TOL_EV[r['tolerance_class']]:.2f}",
         "within": abs(dev) <= TOL_EV[r["tolerance_class"]],
-        "experiment (eV)": "—" if r["experiment"] is None else f"{r['experiment']:.1f}",
+        "experiment (eV)": "—"
+        if r["experiment"] is None
+        else f"{r['experiment']:.1f}",
     })
 assert all(row["within"] for row in rows)
-worst = max(table["splittings"], key=lambda r: abs(ours[r["id"]] - r["calculated"]))
+worst = max(
+    table["splittings"], key=lambda r: abs(ours[r["id"]] - r["calculated"])
+)
 pd.DataFrame(rows).style.hide(axis="index")
 ```
 
@@ -171,35 +245,69 @@ than independent evidence.
 ## Convergence, and the paper's own basis
 
 ```{python}
+#| column: page-inset
 #| echo: false
 cutoffs = [2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0]
 conv = {E: splittings(E)[0] for E in cutoffs}
 ref = conv[cutoffs[-1]]
-conv_df = pd.DataFrame(
-    [{"ecut": E, "max_dev": max(abs(conv[E][k] - ref[k]) for k in ref) * 1e3} for E in cutoffs[:-1]]
-)
-alt.Chart(conv_df).mark_line(point=alt.OverlayMarkDef(size=60, filled=True)).encode(
+conv_df = pd.DataFrame([
+    {"ecut": E, "max_dev": max(abs(conv[E][k] - ref[k]) for k in ref) * 1e3}
+    for E in cutoffs[:-1]
+])
+alt.Chart(conv_df).mark_line(
+    point=alt.OverlayMarkDef(size=60, filled=True)
+).encode(
     x=alt.X("ecut:Q", title="E_cut (Ha)"),
-    y=alt.Y("max_dev:Q", title=f"max |splitting − value at {cutoffs[-1]:g} Ha| (meV)", scale=alt.Scale(type="log")),
+    y=alt.Y(
+        "max_dev:Q",
+        title=f"max |splitting − value at {cutoffs[-1]:g} Ha| (meV)",
+        scale=alt.Scale(type="log"),
+    ),
     color=alt.value(style.SERIES[0]),
-    tooltip=[alt.Tooltip("ecut:Q", title="E_cut (Ha)"), alt.Tooltip("max_dev:Q", title="meV", format=".3g")],
+    tooltip=[
+        alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
+        alt.Tooltip("max_dev:Q", title="meV", format=".3g"),
+    ],
 ).properties(width=style.WIDTH, height=240)
 ```
 
 ```{python}
 #| echo: false
 dev_at_test = max(abs(conv[TEST_ECUT][k] - ref[k]) for k in ref) * 1e3
-e1, e1_extra = splittings(7 * E0)  # the paper's exactly diagonalised basis, E1 = 7 (2 pi / a)^2
-e2, e2_extra = splittings(21 * E0)  # the paper's Loewdin range, E2 = 21 (2 pi / a)^2
+# the paper's exactly diagonalised basis, E1 = 7 (2 pi / a)^2
+e1, e1_extra = splittings(7 * E0)
+# the paper's Loewdin range, E2 = 21 (2 pi / a)^2
+e2, e2_extra = splittings(21 * E0)
 basis_rows = []
 for label, vals, n in [
     ("E₁ = 7 E₀, exact (no Löwdin)", e1, e1_extra["n_pw_gamma"]),
     ("E₂ = 21 E₀, exact", e2, e2_extra["n_pw_gamma"]),
     (f"{TEST_ECUT:g} Ha (tests)", ours, extra["n_pw_gamma"]),
 ]:
-    basis_rows.append({"basis": label, "N_PW(Γ)": n, **{k.replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"): f"{v:.3f}" for k, v in vals.items()}})
-basis_rows.append({"basis": "CB 1966, Table I", "N_PW(Γ)": "", **{r["id"].replace("Gamma", "Γ").replace("p", "′").replace("Delta1", "Δ₁"): f"{r['calculated']:.1f}" for r in table["splittings"]}})
-assert dev_at_test < 1.0  # meV; the theory post's claim that 6 Ha is converged to ~1 meV
+    basis_rows.append({
+        "basis": label,
+        "N_PW(Γ)": n,
+        **{
+            k
+            .replace("Gamma", "Γ")
+            .replace("p", "′")
+            .replace("Delta1", "Δ₁"): f"{v:.3f}"
+            for k, v in vals.items()
+        },
+    })
+basis_rows.append({
+    "basis": "CB 1966, Table I",
+    "N_PW(Γ)": "",
+    **{
+        r["id"]
+        .replace("Gamma", "Γ")
+        .replace("p", "′")
+        .replace("Delta1", "Δ₁"): f"{r['calculated']:.1f}"
+        for r in table["splittings"]
+    },
+})
+# meV; the theory post's claim that 6 Ha is converged to ~1 meV
+assert dev_at_test < 1.0
 pd.DataFrame(basis_rows).style.hide(axis="index")
 ```
 
@@ -225,6 +333,12 @@ evidence that it was accurate.
 
 ```{python}
 #| echo: false
+
+
+def parity_sign(par):
+    return "+" if par > 0.5 else "−" if par < -0.5 else "0"
+
+
 par_rows, parities = [], {}
 for p, name in [("G", "Γ"), ("X", "X"), ("L", "L")]:
     b = PlaneWaveBasis.build(si.lattice, points[p][None], TEST_ECUT)
@@ -234,7 +348,8 @@ for p, name in [("G", "Γ"), ("X", "X"), ("L", "L")]:
     par_rows.append({
         "point": name,
         "lowest levels (eV): degeneracy, parity": "; ".join(
-            f"{(lv - vbm) * ev:+.2f}: {d}, {'+' if par > 0.5 else '−' if par < -0.5 else '0'}" for lv, d, par in levs
+            f"{(lv - vbm) * ev:+.2f}: {d}, {parity_sign(par)}"
+            for lv, d, par in levs
         ),
     })
 # The prose below relies on these; a regression must break the render.

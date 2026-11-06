@@ -1,0 +1,12 @@
+# Ruff formats the Python cells of the Quarto documents (`uv run ruff format docs/`).
+# Markdown code-block formatting is a preview feature in ruff 0.17; it also handles
+# Quarto's ```{python} fences and leaves `#|` cell options alone.
+line-length = 80
+extend-include = ["*.qmd"]
+extend-exclude = ["_site", ".quarto"]
+
+[extension]
+qmd = "markdown"
+
+[format]
+preview = true

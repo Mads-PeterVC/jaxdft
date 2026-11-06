@@ -46,7 +46,8 @@ deviation = np.abs(computed - analytic)
 max_dev = float(deviation.max())
 # The interpretation relies on these; a regression must break the render.
 assert max_dev <= tolerance
-assert np.all(computed <= ecut)  # every plotted eigenvalue is in the exact, complete range
+# every plotted eigenvalue is in the exact, complete range
+assert np.all(computed <= ecut)
 ```
 
 This document validates Milestone 1a against the first rung of the validation
@@ -76,52 +77,75 @@ shown at every fifth k-point. Hover a point for values; drag or scroll to pan
 and zoom.
 
 ```{python}
+#| column: page-inset
 #| echo: false
 E_MAX = 8.0  # E0, top of the plotted window
 x = np.asarray(path.distance)
 keep = np.flatnonzero(computed.min(axis=0) / E0 <= E_MAX)
 
-lines = pd.DataFrame(
-    [
-        {"distance": x[i], "band": int(n), "energy": computed[i, n] / E0, "source": "computed (jaxdft)"}
-        for n in keep
-        for i in range(len(x))
-    ]
-)
-marks = pd.DataFrame(
-    [
-        {
-            "distance": x[i],
-            "band": int(n) + 1,
-            "energy": analytic[i, n] / E0,
-            "energy_Ha": analytic[i, n],
-            "deviation_Ha": deviation[i, n],
-            "source": "analytic folded bands",
-        }
-        for n in keep
-        for i in range(0, len(x), 5)
-        if analytic[i, n] / E0 <= E_MAX
-    ]
-)
+lines = pd.DataFrame([
+    {
+        "distance": x[i],
+        "band": int(n),
+        "energy": computed[i, n] / E0,
+        "source": "computed (jaxdft)",
+    }
+    for n in keep
+    for i in range(len(x))
+])
+marks = pd.DataFrame([
+    {
+        "distance": x[i],
+        "band": int(n) + 1,
+        "energy": analytic[i, n] / E0,
+        "energy_Ha": analytic[i, n],
+        "deviation_Ha": deviation[i, n],
+        "source": "analytic folded bands",
+    }
+    for n in keep
+    for i in range(0, len(x), 5)
+    if analytic[i, n] / E0 <= E_MAX
+])
 
 ticks = np.asarray(path.tick_positions)
-label_lookup = "{" + ", ".join(f"'{t:.6f}': '{lab}'" for t, lab in zip(ticks, path.tick_labels)) + "}"
+label_lookup = (
+    "{"
+    + ", ".join(
+        f"'{t:.6f}': '{lab}'" for t, lab in zip(ticks, path.tick_labels)
+    )
+    + "}"
+)
 x_axis = alt.X(
     "distance:Q",
     title=None,
     scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
-    axis=alt.Axis(values=[float(t) for t in ticks], labelExpr=f"{label_lookup}[format(datum.value, '.6f')]", grid=True),
+    axis=alt.Axis(
+        values=[float(t) for t in ticks],
+        labelExpr=f"{label_lookup}[format(datum.value, '.6f')]",
+        grid=True,
+    ),
 )
-y_axis = alt.Y("energy:Q", title="Energy (E₀)", scale=alt.Scale(domain=[0, E_MAX]))
+y_axis = alt.Y(
+    "energy:Q", title="Energy (E₀)", scale=alt.Scale(domain=[0, E_MAX])
+)
 colour = alt.Color(
     "source:N",
     title=None,
-    scale=alt.Scale(domain=["computed (jaxdft)", "analytic folded bands"], range=[style.SERIES[0], style.SERIES[1]]),
+    scale=alt.Scale(
+        domain=["computed (jaxdft)", "analytic folded bands"],
+        range=[style.SERIES[0], style.SERIES[1]],
+    ),
 )
 
-line_layer = alt.Chart(lines).mark_line(clip=True).encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
+line_layer = (
+    alt
+    .Chart(lines)
+    .mark_line(clip=True)
+    .encode(x=x_axis, y=y_axis, color=colour, detail="band:N")
+)
 point_layer = (
-    alt.Chart(marks)
+    alt
+    .Chart(marks)
     .mark_point(clip=True, size=40, stroke=style.SURFACE, strokeWidth=1)
     .encode(
         x=x_axis,
@@ -131,11 +155,17 @@ point_layer = (
             alt.Tooltip("band:Q", title="band"),
             alt.Tooltip("energy:Q", title="energy (E₀)", format=".4f"),
             alt.Tooltip("energy_Ha:Q", title="energy (Ha)", format=".6f"),
-            alt.Tooltip("deviation_Ha:Q", title="|computed − analytic| (Ha)", format=".1e"),
+            alt.Tooltip(
+                "deviation_Ha:Q",
+                title="|computed − analytic| (Ha)",
+                format=".1e",
+            ),
         ],
     )
 )
-(line_layer + point_layer).properties(width=style.WIDTH, height=style.HEIGHT).interactive()
+(line_layer + point_layer).properties(
+    width=style.WIDTH, height=style.HEIGHT
+).interactive()
 ```
 
 ## Deviation from the analytic bands
@@ -147,7 +177,8 @@ n_total = deviation.size
 agreement = (
     "bit-for-bit identical"
     if max_dev == 0
-    else f"equal to within {max_dev:.1e} Ha ({max_dev / (eps_mach * ecut):.1f} ε_mach E_cut)"
+    else f"equal to within {max_dev:.1e} Ha "
+    f"({max_dev / (eps_mach * ecut):.1f} ε_mach E_cut)"
 )
 ```
 
@@ -190,27 +221,29 @@ def levels(e, atol=1e-6, n=6):
 
 
 def fmt(levs):
-    return ", ".join(f"{Fraction(v / E0).limit_denominator(8)} ({d})" for v, d in levs)
+    return ", ".join(
+        f"{Fraction(v / E0).limit_denominator(8)} ({d})" for v, d in levs
+    )
 
 
 rows = []
 for label in ["G", "X", "L", "W", "K", "U"]:
     k = np.asarray(points[label])[None]
     b = PlaneWaveBasis.build(lattice, k, ecut)
-    e = np.asarray(band_structure(empty(lattice), b, int(b.n_pw[0])).eigenvalues[0])
+    e = np.asarray(
+        band_structure(empty(lattice), b, int(b.n_pw[0])).eigenvalues[0]
+    )
     e = e[e <= ecut]
     ref = np.asarray(free_electron_bands(lattice, k, len(e))[0])
     got, want = levels(e), levels(ref)
     worst = max(abs(g[0] - w[0]) for g, w in zip(got, want))
-    rows.append(
-        {
-            "point": "Γ" if label == "G" else label,
-            "N_PW": int(b.n_pw[0]),
-            "lowest levels in E₀ (degeneracy)": fmt(got),
-            "degeneracies match": [d for _, d in got] == [d for _, d in want],
-            "max level error (Ha)": f"{worst:.1e}",
-        }
-    )
+    rows.append({
+        "point": "Γ" if label == "G" else label,
+        "N_PW": int(b.n_pw[0]),
+        "lowest levels in E₀ (degeneracy)": fmt(got),
+        "degeneracies match": [d for _, d in got] == [d for _, d in want],
+        "max level error (Ha)": f"{worst:.1e}",
+    })
 # The interpretation below relies on this; a regression must break the render.
 assert all(r["degeneracies match"] for r in rows)
 pd.DataFrame(rows).style.hide(axis="index")
@@ -228,24 +261,28 @@ padded size.
 ```{python}
 #| echo: false
 ks = np.array([np.asarray(points[p]) for p in ["G", "X", "L", "W", "K", "U"]])
-r_bz = float(np.linalg.norm(np.asarray(points["W"]) @ np.asarray(lattice.reciprocal)))
+r_bz = float(
+    np.linalg.norm(np.asarray(points["W"]) @ np.asarray(lattice.reciprocal))
+)
 rows = []
 for E in [5.0, 10.0, 20.0, 40.0]:
     b = PlaneWaveBasis.build(lattice, ks, E)
     shared_radius = np.sqrt(2 * E) + r_bz
-    shared = int(PlaneWaveBasis.build(lattice, np.zeros((1, 3)), 0.5 * shared_radius**2).n_pw[0])
-    n_asym = float(lattice.volume) * (2 * E) ** 1.5 / (6 * np.pi**2)
-    rows.append(
-        {
-            "E_cut (Ha)": f"{E:g}",
-            "N_PW range": f"{int(b.n_pw.min())}–{int(b.n_pw.max())}",
-            "N_asym": f"{n_asym:.1f}",
-            "per-k padded N_pad": b.n_pad,
-            "shared set": shared,
-            "size ratio": f"{shared / b.n_pad:.2f}",
-            "eigh cost ratio": f"{(shared / b.n_pad) ** 3:.1f}×",
-        }
+    shared = int(
+        PlaneWaveBasis.build(
+            lattice, np.zeros((1, 3)), 0.5 * shared_radius**2
+        ).n_pw[0]
     )
+    n_asym = float(lattice.volume) * (2 * E) ** 1.5 / (6 * np.pi**2)
+    rows.append({
+        "E_cut (Ha)": f"{E:g}",
+        "N_PW range": f"{int(b.n_pw.min())}–{int(b.n_pw.max())}",
+        "N_asym": f"{n_asym:.1f}",
+        "per-k padded N_pad": b.n_pad,
+        "shared set": shared,
+        "size ratio": f"{shared / b.n_pad:.2f}",
+        "eigh cost ratio": f"{(shared / b.n_pad) ** 3:.1f}×",
+    })
 pd.DataFrame(rows).style.hide(axis="index")
 ```
 

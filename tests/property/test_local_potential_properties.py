@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from hypothesis import given, settings
+from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as hnp
 
@@ -156,6 +156,8 @@ def test_dense_physical_block_matches_numpy_hamiltonian(si, vloc, k):
 
 @settings(max_examples=examples(10))
 @given(A=cells(), k=kfracs())
+# A cell this small holds only G = 0 at 1 Ha, so V is real and there is no coupling to check.
+@example(A=np.array([[6.0, -1.5, -1.5], [-1.5, 4.5, -1.5], [-1.5, -1.5, 4.5]]), k=np.zeros(3))
 def test_matrix_elements_are_v_of_g_minus_g_prime(A, k):
     """<k+G|V|k+G'> = V(G - G'), checked entry by entry for a structure where V is complex.
     With V real (the symmetric diamond origin) the transpose convention V(G' - G) gives the
@@ -170,7 +172,8 @@ def test_matrix_elements_are_v_of_g_minus_g_prime(A, k):
     m = np.asarray(b.miller)[mask]
     H = np.asarray(dense_matrix(hamiltonian(s, b, (vg,))))[np.ix_(mask, mask)]
     expected = np.asarray(vg.coefficients(s, jnp.asarray(m[:, None, :] - m[None, :, :])))
-    assert np.abs(expected.imag).max() > 1e-6  # the test needs a complex V
+    # The test needs a complex V; tiny bases (e.g. G = 0 only) cannot show the direction.
+    assume(np.abs(expected.imag).max() > 1e-6)
     np.testing.assert_allclose(H, expected, atol=1e-13)
 
 

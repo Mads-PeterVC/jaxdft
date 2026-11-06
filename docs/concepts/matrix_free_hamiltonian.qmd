@@ -1,0 +1,1061 @@
+---
+title: "The matrix-free Hamiltonian"
+description: "Why a plane-wave code never stores its Hamiltonian, how it applies H to a wavefunction instead, and how eigenvectors are found from those applications alone."
+date: 2026-11-05
+bibliography: ../references.bib
+execute:
+  echo: true
+---
+
+::: {.callout-note}
+## About this post
+This is a concept post. The code below implements the physics directly in
+NumPy/SciPy so the mathematics can be read a second way, and it is not part of
+jaxdft or its tests. Where this post and jaxdft's theory or validation
+documents differ, those documents are the authority.
+:::
+
+At one k-point, the Hamiltonian in a plane-wave basis is an $N \times N$
+matrix, with $N$ the number of plane waves below the cutoff. A textbook
+calculation builds that matrix and diagonalises it, and jaxdft did exactly that
+for its first two milestones. Production plane-wave codes never build it. They
+only ever ask "what is $H\psi$ for this $\psi$?", and they answer that question
+without the matrix. This post works out why, and how, on Cohen–Bergstresser
+silicon [@cb1966].
+
+```{python}
+#| code-fold: true
+#| code-summary: "Imports and chart helpers"
+import time
+
+import altair as alt
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+import scipy.fft as sfft
+from scipy.sparse.linalg import LinearOperator, lobpcg
+
+import jaxdft as jd
+from jaxdft.plotting import style
+from jaxdft.pseudo.cohen_bergstresser import silicon
+
+style.enable()
+S = style.SERIES
+
+
+def best_time(f, *args, repeat=5):
+    """Shortest of `repeat` wall-clock times of f(*args), in seconds."""
+    times = []
+    for _ in range(repeat):
+        start = time.perf_counter()
+        f(*args)
+        times.append(time.perf_counter() - start)
+    return min(times)
+```
+
+## The matrix
+
+In the plane-wave basis $\{e^{i\mathbf G\cdot\mathbf r}\}$ (we work at
+$\mathbf k = 0$ throughout; another k-point only shifts the kinetic energies),
+the Hamiltonian with a local potential has matrix elements
+
+$$
+H_{\mathbf G\mathbf G'} = \tfrac12 |\mathbf G|^2\, \delta_{\mathbf G\mathbf G'}
++ V(\mathbf G - \mathbf G'),
+\qquad
+V(\mathbf G) = \frac{1}{\Omega}\sum_j e^{-i\mathbf G\cdot\boldsymbol\tau_j}\,
+\hat v(|\mathbf G|) .
+$$
+
+The kinetic energy is diagonal. The potential couples two plane waves through
+the Fourier component at their *difference*. We need two potentials. One is
+Cohen–Bergstresser silicon, which is non-zero on three shells of $|\mathbf G|$
+only. The other is the local part of the HGH silicon pseudopotential from the
+[pseudopotential post](pseudopotentials.qmd), whose form factor, like that of
+any realistic potential, is non-zero at every $q$.
+
+```{python}
+a = 5.43 / 0.529177210544  # Cohen–Bergstresser lattice constant, Bohr
+A = 0.5 * a * np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]])  # <1>
+B = 2 * np.pi * np.linalg.inv(A).T  # <2>
+omega = abs(np.linalg.det(A))
+tau = a / 8 * np.ones(3)  # <3>
+R_LOC, C1 = 0.44, -7.33610297  # HGH (1998), Si, LDA
+
+
+def V_cb(m):
+    """Cohen–Bergstresser V(G) in Ha, for Miller indices m of shape (..., 3)."""
+    G = m @ B
+    shell = np.rint(np.sum(G**2, axis=-1) / (2 * np.pi / a) ** 2)
+    v_s = np.select([shell == 3, shell == 8, shell == 11], [-0.21, 0.04, 0.08])
+    return 0.5 * v_s * np.cos(G @ tau)  # <4>
+
+
+def V_smooth(m):
+    """The HGH silicon local part, V(G) in Ha, with V(0) = 0."""
+    G = m @ B
+    q = np.linalg.norm(G, axis=-1)
+    q_safe = np.where(q > 0, q, 1.0)
+    gauss = np.exp(-0.5 * (q * R_LOC) ** 2)
+    v_hat = (
+        -16 * np.pi / q_safe**2 + np.sqrt(8 * np.pi**3) * R_LOC**3 * C1
+    ) * gauss
+    return np.where(q > 0, 2 * np.cos(G @ tau) * v_hat / omega, 0.0)  # <5>
+
+
+def basis(ecut):
+    """Miller indices and kinetic energies of the plane waves with ½|G|² ≤ ecut,
+    sorted by kinetic energy."""
+    n = np.ceil(np.sqrt(2 * ecut) * np.linalg.norm(A, axis=1) / (2 * np.pi))
+    axes = [np.arange(-k, k + 1) for k in n.astype(int)]
+    box = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+    T = 0.5 * np.sum((box @ B) ** 2, axis=-1)
+    keep = np.argsort(T, kind="stable")[: np.sum(T <= ecut)]
+    return box[keep], T[keep]
+
+
+def dense_H(m, T, V):
+    return np.diag(T) + V(m[:, None, :] - m[None, :, :])  # <6>
+```
+
+1. The fcc primitive vectors as rows, for a conventional cube of side a.
+2. Reciprocal vectors as rows, with aᵢ · bⱼ = 2π δᵢⱼ, so G = m B for integer
+   Miller indices m.
+3. The two atoms sit at ±τ. With the origin at the bond centre, an inversion
+   centre, the structure factor ½ Σⱼ e^{−iG·τⱼ} is the real cos(G·τ).
+4. The published form factors are in Rydberg; ½ converts them to Hartree. Off
+   the three shells V is zero.
+5. The structure factor is 2cos(G·τ) here because v̂ is per atom. This is the
+   bare ion with no nonlocal part, so it is not a physical silicon Hamiltonian.
+   It is used only as a typical, smooth form factor.
+6. All N² differences G − G′ at once: m[:, None] − m[None, :] has shape
+   (N, N, 3).
+
+Before going further, check that this NumPy matrix is the one jaxdft builds.
+jaxdft orders its basis differently, so we match the rows by Miller index.
+
+```{python}
+m3, T3 = basis(3.0)
+H_cb = dense_H(m3, T3, V_cb)
+
+structure = jd.diamond(5.43, "Si", unit="Angstrom")
+basis_jd = jd.PlaneWaveBasis.build(structure.lattice, jnp.zeros((1, 3)), 3.0)
+local = jd.LocalPotential({"Si": silicon()}).bind(structure)
+ham = jd.hamiltonian(structure, basis_jd[0], (jd.Kinetic(), local))
+H_jd = np.asarray(jd.dense_matrix(ham))
+position = {tuple(x): i for i, x in enumerate(np.asarray(basis_jd.miller[0]))}
+order = [position[tuple(x)] for x in m3]
+assert H_jd.shape == H_cb.shape
+assert np.abs(H_jd[np.ix_(order, order)] - H_cb).max() < 1e-12
+```
+
+Here is the matrix at a cutoff of 3 Ha, rows and columns sorted by kinetic
+energy. Hover over a cell to see which plane waves it couples. Switch the
+potential to see what a smooth potential does.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Interactive matrix chart"
+#| column: page-inset
+H_smooth = dense_H(m3, T3, V_smooth)
+n3 = len(m3)
+i, j = np.meshgrid(np.arange(n3), np.arange(n3), indexing="ij")
+shell = np.rint(
+    np.sum(((m3[:, None] - m3[None, :]) @ B) ** 2, axis=-1)
+    / (2 * np.pi / a) ** 2
+)
+cells = []
+for name, H in {
+    "Cohen–Bergstresser": H_cb,
+    "smooth (HGH local part)": H_smooth,
+}.items():
+    df = pd.DataFrame({
+        "potential": name,
+        "row": i.ravel(),
+        "column": j.ravel(),
+        "|H| (Ha)": np.abs(H).ravel(),
+        "G (Miller)": [str(tuple(x)) for x in m3[i.ravel()]],
+        "G′ (Miller)": [str(tuple(x)) for x in m3[j.ravel()]],
+        "|G − G′|² (2π/a)²": shell.ravel().astype(int),
+    })
+    cells.append(df[df["|H| (Ha)"] > 1e-14])
+cells = pd.concat(cells)
+
+choice = alt.param(
+    name="potential_choice",
+    value="Cohen–Bergstresser",
+    bind=alt.binding_radio(
+        options=["Cohen–Bergstresser", "smooth (HGH local part)"],
+        name="potential ",
+    ),
+)
+(
+    alt
+    .Chart(cells)
+    .mark_rect()
+    .encode(
+        x=alt.X("column:O", axis=None),
+        y=alt.Y("row:O", axis=None),
+        color=alt.Color(
+            "|H| (Ha):Q",
+            scale=alt.Scale(type="log", scheme="blues", domain=[1e-4, 3]),
+            legend=alt.Legend(values=[1e-4, 1e-2, 1], format="~g"),
+            title="|H| (Ha)",
+        ),
+        tooltip=[
+            "G (Miller):N",
+            "G′ (Miller):N",
+            "|G − G′|² (2π/a)²:Q",
+            alt.Tooltip("|H| (Ha):Q", format=".3g"),
+        ],
+    )
+    .transform_filter("datum.potential == potential_choice")
+    .add_params(choice)
+    .properties(
+        width=420,
+        height=420,
+        title=f"|H| at Γ, {n3} plane waves (blank: exactly zero)",
+    )
+)
+```
+
+```{python}
+#| echo: false
+offdiag = ~np.eye(n3, dtype=bool)
+filled_cb = np.mean(np.abs(H_cb[offdiag]) > 1e-14)
+filled_smooth = np.mean(np.abs(H_smooth[offdiag]) > 1e-14)
+G_diff = (m3[:, None, :] - m3[None, :, :])[offdiag] @ B
+allowed = np.abs(np.cos(G_diff @ tau)) > 1e-12  # structure factor non-zero
+assert np.array_equal(np.abs(H_smooth[offdiag]) > 1e-14, allowed)
+assert filled_cb < 0.5 * filled_smooth
+```
+
+The diagonal grows along the matrix, because the kinetic energy does. For
+Cohen–Bergstresser, only `{python} f"{filled_cb:.0%}"` of the off-diagonal
+elements are non-zero: two plane waves couple only if they differ by a vector
+on one of the three shells. For the smooth potential,
+`{python} f"{filled_smooth:.0%}"` are non-zero. The rest are zero because of
+the crystal, not the potential: diamond's structure factor $\cos(\mathbf
+G\cdot\boldsymbol\tau)$ vanishes at those differences, whatever the
+potential. Every other coupling is filled. That is the realistic case. A
+self-consistent potential has Fourier components at every $\mathbf G$ the grid
+can hold, so the matrix is dense.
+
+## What storing it costs
+
+The number of plane waves grows with both the cell and the cutoff,
+$N \approx \Omega\,(2E_\text{cut})^{3/2}/6\pi^2$. A dense complex matrix takes
+$16N^2$ bytes, and diagonalising it takes time proportional to $N^3$. Yet a
+calculation needs only the occupied bands: two per silicon atom, a vanishing
+fraction of $N$. The wavefunctions themselves take only $16 N n_\text{bands}$
+bytes.
+
+The chart scales these costs with the number of silicon atoms in the cell.
+Memory is exact. The diagonalisation time is extrapolated as $cN^3$ from
+timing `numpy.linalg.eigh` on this machine, at sizes up to a few thousand.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Interactive cost chart"
+#| column: page-inset
+rng = np.random.default_rng(0)
+sizes = [250, 500, 1000, 1500]
+eigh_times = []
+for n in sizes:
+    X = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    eigh_times.append(best_time(np.linalg.eigh, X + X.conj().T, repeat=3))
+c_eigh = eigh_times[-1] / sizes[-1] ** 3  # seconds per N³, at the largest N
+
+ecut_options = [10, 20, 40]
+atoms = np.unique(np.geomspace(2, 4000, 80).round().astype(int))
+rows = []
+for e in ecut_options:
+    N = atoms * (omega / 2) * (2 * e) ** 1.5 / (6 * np.pi**2)
+    for label, gb in {
+        "dense H": 16 * N**2 / 1e9,
+        "occupied wavefunctions": 16 * N * 2 * atoms / 1e9,
+    }.items():
+        rows.append(
+            pd.DataFrame({
+                "ecut": e,
+                "atoms": atoms,
+                "N": N,
+                "what": label,
+                "memory (GB)": gb,
+            })
+        )
+    rows.append(
+        pd.DataFrame({
+            "ecut": e,
+            "atoms": atoms,
+            "N": N,
+            "what": "dense diagonalisation",
+            "time (hours)": c_eigh * N**3 / 3600,
+        })
+    )
+cost = pd.concat(rows)
+
+ecut_choice = alt.param(
+    name="ecut_choice",
+    value=20,
+    bind=alt.binding_radio(options=ecut_options, name="E_cut (Ha) "),
+)
+on_ecut = "datum.ecut == ecut_choice"
+atoms_axis = alt.X(
+    "atoms:Q", title="Si atoms in the cell", scale=alt.Scale(type="log")
+)
+tip = [
+    "what:N",
+    alt.Tooltip("atoms:Q"),
+    alt.Tooltip("N:Q", format=",.0f", title="N"),
+]
+memory = (
+    alt
+    .Chart(cost[cost["memory (GB)"].notna()])
+    .mark_line()
+    .encode(
+        x=atoms_axis,
+        y=alt.Y(
+            "memory (GB):Q",
+            scale=alt.Scale(type="log", domain=[1e-4, 1e5]),
+            title="memory (GB)",
+        ),
+        color=alt.Color(
+            "what:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["dense H", "occupied wavefunctions"],
+                range=[S[0], S[1]],
+            ),
+        ),
+        tooltip=[*tip, alt.Tooltip("memory (GB):Q", format=".3g")],
+    )
+    .transform_filter(on_ecut)
+    + alt
+    .Chart(pd.DataFrame({"y": [16], "label": ["16 GB laptop"]}))
+    .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[4, 3])
+    .encode(y="y:Q", tooltip=["label:N"])
+).properties(width=300, height=280, title="Memory")
+hours = (
+    alt
+    .Chart(cost[cost["time (hours)"].notna()])
+    .mark_line(color=S[0])
+    .encode(
+        x=atoms_axis,
+        y=alt.Y(
+            "time (hours):Q",
+            scale=alt.Scale(type="log", domain=[1e-6, 1e5]),
+            title="time (hours)",
+        ),
+        tooltip=[*tip, alt.Tooltip("time (hours):Q", format=".3g")],
+    )
+    .transform_filter(on_ecut)
+    + alt
+    .Chart(pd.DataFrame({"y": [24], "label": ["one day"]}))
+    .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[4, 3])
+    .encode(y="y:Q", tooltip=["label:N"])
+).properties(width=300, height=280, title="One dense diagonalisation")
+alt.hconcat(memory.add_params(ecut_choice), hours)
+```
+
+```{python}
+#| echo: false
+at20 = cost[(cost.ecut == 20) & (cost.what == "dense H")]
+first_over = at20[at20["memory (GB)"] > 16].iloc[0]
+wf_there = cost[
+    (cost.ecut == 20)
+    & (cost.what == "occupied wavefunctions")
+    & (cost.atoms == first_over.atoms)
+]["memory (GB)"].iloc[0]
+assert wf_there < 1
+day_cost = cost[(cost.ecut == 20) & (cost.what == "dense diagonalisation")]
+first_day = day_cost[day_cost["time (hours)"] > 24].iloc[0]
+```
+
+At 20 Ha, a typical cutoff for silicon, the dense matrix outgrows a 16 GB
+laptop at about `{python} f"{first_over.atoms:.0f}"` atoms
+($N \approx$ `{python} f"{first_over.N:,.0f}"`). The occupied wavefunctions of
+that cell take `{python} f"{wf_there * 1e3:.0f}"` MB. The matrix is the
+problem, not the information we want from it. Memory is not the only wall.
+Extrapolated from this machine, one dense diagonalisation passes a day at about
+`{python} f"{first_day.atoms:.0f}"` atoms.
+
+## Applying H without storing it
+
+An iterative eigensolver (below) never needs $H$ itself, only the product
+$H\psi$ for a few vectors $\psi$. Written out,
+
+$$
+(H\psi)_\mathbf G = \tfrac12|\mathbf G|^2\,\psi_\mathbf G
++ \sum_{\mathbf G'} V(\mathbf G - \mathbf G')\, \psi_{\mathbf G'} .
+$$
+
+The first term is a multiplication, $O(N)$. The second is a **convolution** of
+the coefficients $\psi_\mathbf G$ with the potential's Fourier components.
+There are three ways to compute it.
+
+1. **Dense:** build $H$ and multiply. $O(N^2)$ memory and work.
+2. **Gather:** if $V$ is non-zero for only $K$ difference vectors $\mathbf d$,
+   then $(V\psi)_\mathbf G = \sum_\mathbf d V(\mathbf d)\,\psi_{\mathbf G -
+   \mathbf d}$. Look up the index of each $\mathbf G - \mathbf d$ once, and
+   every product afterwards is a gather and a sum: $O(KN)$. This is what
+   jaxdft does today.
+3. **FFT:** a convolution in reciprocal space is a product in real space.
+   Transform $\psi$ to a real-space grid, multiply by $V(\mathbf r)$ point by
+   point, and transform back: $O(N \log N)$, for any potential.
+
+```{python}
+def apply_dense(H, psi):
+    return H @ psi
+
+
+def key(m):
+    return (m[..., 0] * 1000 + m[..., 1]) * 1000 + m[..., 2]  # <1>
+
+
+def gather_setup(m, V):
+    """Coupling vectors d with V(d) ≠ 0, and the index of m − d per row."""
+    d = np.unique((m[:, None, :] - m[None, :, :]).reshape(-1, 3), axis=0)
+    d = d[np.abs(V(d)) > 0]
+    keys = key(m)
+    order = np.argsort(keys)
+    target = key(m[:, None, :] - d[None, :, :])  # (N, K)
+    pos = np.clip(np.searchsorted(keys[order], target), 0, len(m) - 1)
+    found = keys[order][pos] == target
+    return V(d), np.where(found, order[pos], -1)  # <2>
+
+
+def apply_gather(T, values, neighbour, psi):
+    padded = np.vstack([psi, np.zeros((1, psi.shape[1]))])  # <2>
+    return T[:, None] * psi + np.einsum("k,ikn->in", values, padded[neighbour])
+
+
+def fft_setup(m, V, ecut):
+    """FFT grid shape, grid indices of the basis, and V(r) on the grid."""
+    n_max = np.abs(m).max(axis=0)
+    shape = [sfft.next_fast_len(4 * n + 1) for n in n_max]  # <3>
+    axes = [np.fft.fftfreq(n, 1 / n).astype(int) for n in shape]
+    d = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+    inside = 0.5 * np.sum((d @ B) ** 2, axis=-1) <= 4 * ecut
+    V_r = sfft.ifftn(np.where(inside, V(d), 0.0)) * np.prod(shape)  # <4>
+    return shape, tuple((m % shape).T), V_r
+
+
+def apply_fft(T, setup, psi):
+    shape, index, V_r = setup
+    grid = np.zeros((*shape, psi.shape[1]), dtype=complex)
+    grid[index] = psi  # <5>
+    psi_r = sfft.ifftn(grid, axes=(0, 1, 2)) * np.prod(shape)
+    Vpsi = sfft.fftn(V_r[..., None] * psi_r, axes=(0, 1, 2)) / np.prod(shape)
+    return T[:, None] * psi + Vpsi[index]  # <6>
+```
+
+1. A unique integer per Miller index (valid for |mᵢ| < 500), so that "where is
+   G − d in the basis?" becomes a sorted search.
+2. Missing neighbours (G − d outside the cutoff sphere) get index −1, which
+   points at an extra zero row appended to ψ.
+3. Each axis must hold Miller indices from −4n to 4n without wrapping onto each
+   other; the next section shows why. `next_fast_len` rounds up to a size the
+   FFT handles efficiently.
+4. Only the components with |d| ≤ 2G_max can couple two basis vectors, so V is
+   cut there. V(r) = Σ_d V(d) e^{id·r} is then computed once, by an inverse FFT.
+5. Scatter the coefficients onto the grid, with negative Miller indices wrapped
+   to the end of each axis, as the FFT expects.
+6. The forward FFT returns the coefficients of V(r)ψ(r); gather the ones inside
+   the basis.
+
+The three agree to rounding error. The gather needs only the
+Cohen–Bergstresser couplings; jaxdft's `LocalPotential` finds the same ones
+when it is bound to the structure.
+
+```{python}
+ecut = 8.0
+m8, T8 = basis(ecut)
+psi = rng.normal(size=(len(m8), 4)) + 1j * rng.normal(size=(len(m8), 4))
+reference = apply_dense(dense_H(m8, T8, V_cb), psi)
+values, neighbour = gather_setup(m8, V_cb)
+assert (
+    np.abs(apply_gather(T8, values, neighbour, psi) - reference).max() < 1e-12
+)
+assert (
+    np.abs(apply_fft(T8, fft_setup(m8, V_cb, ecut), psi) - reference).max()
+    < 1e-12
+)
+assert len(values) == local.couplings.shape[0]  # jaxdft's coupling vectors
+
+smooth_reference = apply_dense(dense_H(m8, T8, V_smooth), psi)
+smooth_fft = apply_fft(T8, fft_setup(m8, V_smooth, ecut), psi)
+assert np.abs(smooth_fft - smooth_reference).max() < 1e-12
+d_all = np.unique((m8[:, None, :] - m8[None, :, :]).reshape(-1, 3), axis=0)
+K_smooth = int(np.sum(np.abs(V_smooth(d_all)) > 0))
+```
+
+For Cohen–Bergstresser, $K$ = `{python} len(values)` coupling vectors,
+whatever the cutoff. For the smooth potential at the same cutoff
+($N$ = `{python} len(m8)`), every difference vector with a non-zero
+structure factor couples: $K$ = `{python} f"{K_smooth:,}"`, more than $N$
+itself. The gather is then no
+better than the dense product, which is why it only suits potentials with
+finite support. The FFT does not care.
+
+Here is how the three scale on this machine, applying $H$ to a block of 8
+bands at increasing cutoff:
+
+```{python}
+#| code-fold: true
+#| code-summary: "Timing chart"
+#| column: page-inset
+timing = []
+for ecut_t in [4, 6, 9, 13, 19, 27, 40]:
+    m_t, T_t = basis(ecut_t)
+    psi_t = rng.normal(size=(len(m_t), 8)) + 0j
+    H_t = dense_H(m_t, T_t, V_cb)
+    values_t, neighbour_t = gather_setup(m_t, V_cb)
+    setup_t = fft_setup(m_t, V_cb, ecut_t)
+    for method, run in {
+        "dense": lambda: apply_dense(H_t, psi_t),
+        "gather": lambda: apply_gather(T_t, values_t, neighbour_t, psi_t),
+        "FFT": lambda: apply_fft(T_t, setup_t, psi_t),
+    }.items():
+        timing.append({
+            "N": len(m_t),
+            "method": method,
+            "time (ms)": 1e3 * best_time(run),
+        })
+timing = pd.DataFrame(timing)
+fits = {
+    method: np.polyfit(np.log(g.N), np.log(g["time (ms)"]), 1)
+    for method, g in timing.groupby("method")
+}
+slopes = {method: fit[0] for method, fit in fits.items()}
+assert slopes["dense"] > max(slopes["gather"], slopes["FFT"])
+# where the fitted power laws of the dense and FFT products cross
+(p_d, c_d), (p_f, c_f) = fits["dense"], fits["FFT"]
+crossover = np.exp((c_f - c_d) / (p_d - p_f))
+largest = timing[timing.N == timing.N.max()].set_index("method")["time (ms)"]
+base = alt.Chart(timing).encode(
+    x=alt.X(
+        "N:Q",
+        scale=alt.Scale(type="log", nice=False, padding=10),
+        title="plane waves N",
+    ),
+    y=alt.Y(
+        "time (ms):Q", scale=alt.Scale(type="log"), title="H·ψ, 8 bands (ms)"
+    ),
+    color=alt.Color("method:N", title=None, sort=["dense", "gather", "FFT"]),
+)
+(
+    base.mark_line()
+    + base.mark_point().encode(
+        tooltip=["method:N", "N:Q", alt.Tooltip("time (ms):Q", format=".3g")]
+    )
+).properties(width=420, height=300, title="Cost of one application of H")
+```
+
+Fitted over this range, the time grows as $N^{p}$ with $p$ =
+`{python} f"{slopes['dense']:.1f}"` (dense),
+`{python} f"{slopes['gather']:.1f}"` (gather) and
+`{python} f"{slopes['FFT']:.1f}"` (FFT). In absolute terms the dense product
+is fast at these sizes. A matrix–vector product is the operation hardware
+does best, while the FFT works on a grid about 15 times larger than the basis
+(see the next section). But the dense line is the steepest, and the fitted
+lines for dense and FFT cross near $N \approx$
+`{python} f"{crossover:,.0f}"`. Beyond that every doubling of $N$ makes the
+dense product four times slower and the FFT only about twice as slow. The
+dense build, $O(N^2)$ once, is not even included.
+
+## Why the FFT grid is twice the basis
+
+The FFT computes a *cyclic* convolution: on a grid of $M$ points per axis,
+Fourier components whose indices differ by $M$ are the same component. The
+product $V\psi$ contains components up to $|\mathbf G| + |\mathbf d|$. Any of
+them that is $M$ away from a basis vector lands on top of it, and is added to
+the wrong coefficient. This is **aliasing**.
+
+A one-dimensional toy shows the rule. Take a basis of $2K+1$ plane waves,
+$g = -K, \dots, K$, and a potential with components $V_d$ for $|d| \le 2K$
+(every difference two basis vectors can have). Compare the exact convolution
+with the FFT result on a grid of $M$ points:
+
+```{python}
+K = 8
+g = np.arange(-K, K + 1)
+d = np.arange(-2 * K, 2 * K + 1)
+V_d = np.exp(-0.25 * np.abs(d)) * (1 + 0.3 * np.cos(d))
+psi_g = rng.normal(size=g.size) + 1j * rng.normal(size=g.size)
+exact = np.array([np.sum(V_d[(gi - g) + 2 * K] * psi_g) for gi in g])  # <1>
+
+
+def fft_convolution(M):
+    V_grid = np.zeros(M, dtype=complex)
+    np.add.at(V_grid, d % M, V_d)  # <2>
+    psi_grid = np.zeros(M, dtype=complex)
+    psi_grid[g % M] = psi_g
+    product = np.fft.ifft(V_grid) * np.fft.ifft(psi_grid) * M
+    return np.fft.fft(product)[g % M]
+
+
+errors = {
+    M: np.abs(fft_convolution(M) - exact) for M in range(2 * K + 1, 5 * K + 1)
+}
+assert errors[4 * K + 1].max() < 1e-12  # <3>
+assert errors[4 * K].max() > 1e-3  # <3>
+```
+
+1. (Vψ)_g = Σ_{g′} V_{g−g′} ψ_{g′}, with V_d stored at index d + 2K.
+2. On a small grid, components of V itself can share a grid point; the FFT then
+   sees their sum, so add them.
+3. Exact from M = 4K + 1, wrong at M = 4K.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Interactive aliasing chart"
+#| column: page-inset
+per_g = pd.concat([
+    pd.DataFrame({
+        "M": M,
+        "g": g,
+        "error": np.maximum(err, 1e-17),
+        "exact": np.where(err < 1e-12, "exact", "aliased"),
+    })
+    for M, err in errors.items()
+])
+overview = pd.DataFrame({
+    "M": list(errors),
+    "max error": [max(e.max(), 1e-17) for e in errors.values()],
+})
+grid_slider = alt.param(
+    name="grid_M",
+    value=3 * K,
+    bind=alt.binding_range(
+        min=2 * K + 1, max=5 * K, step=1, name="grid points M "
+    ),
+)
+log_err = alt.Scale(type="log", domain=[1e-17, 10])
+per_component = alt.Chart(per_g).encode(
+    x=alt.X("g:O", title="output component g"),
+    y=alt.Y("error:Q", scale=log_err, title="|FFT − exact|"),
+    color=alt.Color(
+        "exact:N",
+        scale=alt.Scale(domain=["exact", "aliased"], range=[S[2], S[1]]),
+        title=None,
+    ),
+    tooltip=["g:O", alt.Tooltip("error:Q", format=".2e")],
+)
+left = (
+    (
+        per_component.mark_rule(strokeWidth=2).encode(y2=alt.datum(1e-17))
+        + per_component.mark_point(size=60, filled=True)
+    )
+    .transform_filter("datum.M == grid_M")
+    .add_params(grid_slider)
+    .properties(width=340, height=260, title="Error per component")
+)
+right = (
+    alt
+    .Chart(overview)
+    .mark_line(point=True, color=S[0])
+    .encode(
+        x=alt.X("M:Q", title="grid points M", scale=alt.Scale(zero=False)),
+        y=alt.Y("max error:Q", scale=log_err, title="largest error"),
+        tooltip=["M:Q", alt.Tooltip("max error:Q", format=".2e")],
+    )
+    + alt
+    .Chart(pd.DataFrame({"M": [4 * K + 1], "label": ["M = 4K + 1"]}))
+    .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[4, 3])
+    .encode(x="M:Q", tooltip=["label:N"])
+    + alt
+    .Chart(overview)
+    .mark_rule(color=S[1])
+    .encode(x="M:Q")
+    .transform_filter("datum.M == grid_M")
+).properties(width=300, height=260, title="Largest error against grid size")
+alt.hconcat(left, right)
+```
+
+The output components are $|g| \le K$ and the product reaches $|g + d| \le
+3K$. A component at $p$ aliases onto $p - M$, which stays outside the basis
+only if $M - 3K > K$. So the grid needs $M \ge 4K + 1$ points per axis: twice
+the diameter of the basis, $2K + 1$. Below that, the components nearest the
+edge of the basis go wrong first, and the error spreads inward as $M$ shrinks.
+
+In three dimensions the same rule holds per axis, which is the
+$4n + 1$ in `fft_setup`. A cube of side twice the basis sphere's diameter holds
+$8 \times 6/\pi \approx 15$ times as many points as the sphere holds plane
+waves. That is the price of the FFT, and it is still $O(N)$ storage. The same
+grid is the one a self-consistent code needs anyway: the electron density
+$|\psi|^2$ has components up to $2G_\text{max}$.
+
+## Finding a few eigenvectors without the matrix
+
+With only $H\psi$ available, eigenvectors are found iteratively. The central
+idea is the **Rayleigh quotient** $\varepsilon(\psi) = \langle\psi|H|\psi\rangle
+/ \langle\psi|\psi\rangle$. It is smallest at the lowest eigenvector, and its
+gradient is the residual $r = H\psi - \varepsilon\psi$, which vanishes exactly
+at an eigenvector. An iterative solver keeps a block of trial vectors and
+repeatedly improves them along their residuals.
+
+LOBPCG, the locally optimal block preconditioned conjugate gradient method
+[@knyazev2001], does this well. Each iteration it takes the block $X$, the
+residuals $R$, and the previous step $P$. It then finds the best vectors in
+their combined span by solving a small dense eigenvalue problem there, of size
+$3n_\text{bands}$, not $N$. Each iteration costs one application of $H$ to a
+block.
+
+Plain residuals converge slowly. Their high-$\mathbf G$ components are huge,
+because $H$ is dominated there by the kinetic energy, which reaches
+$E_\text{cut}$. The standard remedy is a **preconditioner** that damps them by
+dividing each component by roughly its kinetic energy
+[@payne_teter_allan1992]. Below, scipy's `lobpcg` runs on a `LinearOperator`
+wrapped around the FFT product, with and without the simple preconditioner
+$1/(\tfrac12|\mathbf G|^2 + 1\,\text{Ha})$:
+
+```{python}
+ecut = 15.0
+m15, T15 = basis(ecut)
+N15 = len(m15)
+setup15 = fft_setup(m15, V_cb, ecut)
+n_bands = 8
+calls = []
+
+
+def H_block(X):
+    X = X.reshape(N15, -1)
+    calls.append(X.shape[1])  # <1>
+    return apply_fft(T15, setup15, X)
+
+
+H_op = LinearOperator((N15, N15), matvec=H_block, matmat=H_block, dtype=complex)
+precondition = LinearOperator(
+    (N15, N15),
+    matvec=lambda x: x.reshape(N15, -1) / (T15[:, None] + 1.0),  # <2>
+    matmat=lambda X: X / (T15[:, None] + 1.0),
+    dtype=complex,
+)
+X0 = rng.normal(size=(N15, n_bands + 2)) + 0j  # <3>
+runs = {}
+for label, M in {
+    "no preconditioner": None,
+    "kinetic preconditioner": precondition,
+}.items():
+    calls.clear()
+    start = time.perf_counter()
+    eigenvalues, _, residual_history = lobpcg(
+        H_op,
+        X0.copy(),
+        M=M,
+        largest=False,
+        tol=1e-7,
+        maxiter=500,
+        retResidualNormsHistory=True,
+    )
+    seconds = time.perf_counter() - start
+    residuals = [np.abs(r[:n_bands]).max() for r in residual_history]
+    converged = 1 + next(i for i, x in enumerate(residuals) if x < 1e-7)  # <4>
+    runs[label] = {
+        "eigenvalues": np.sort(eigenvalues)[:n_bands],
+        "residuals": residuals[:converged],
+        "applications": sum(calls[:converged]),
+        "seconds": seconds,
+    }
+
+H15 = dense_H(m15, T15, V_cb)
+dense_seconds = best_time(np.linalg.eigvalsh, H15, repeat=3)
+reference = np.linalg.eigvalsh(H15)[:n_bands]
+for run in runs.values():
+    assert np.abs(run["eigenvalues"] - reference).max() < 1e-8
+plain, kin = runs["no preconditioner"], runs["kinetic preconditioner"]
+assert len(kin["residuals"]) < len(plain["residuals"])
+dense_wins = dense_seconds < kin["seconds"]
+comparison = (
+    "At this size the dense route is still faster"
+    if dense_wins
+    else "Even at this size the iterative route is already faster"
+)
+```
+
+1. Record how many vectors H is applied to in each call. LOBPCG makes one call
+   per iteration.
+2. The preconditioner is diagonal in the plane-wave basis, like the kinetic
+   energy it is built from, so it costs O(N).
+3. Two more trial vectors than bands wanted. The extra vectors speed up
+   convergence of the highest wanted band.
+4. LOBPCG keeps going until the two extra vectors converge too. We count the
+   iterations until the 8 wanted bands have converged.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Convergence chart"
+#| column: page-inset
+history = pd.concat([
+    pd.DataFrame({
+        "iteration": np.arange(1, len(run["residuals"]) + 1),
+        "largest residual": run["residuals"],
+        "run": label,
+    })
+    for label, run in runs.items()
+])
+base = alt.Chart(history).encode(
+    x=alt.X("iteration:Q"),
+    y=alt.Y(
+        "largest residual:Q",
+        scale=alt.Scale(type="log"),
+        title="largest residual norm, 8 lowest bands",
+    ),
+    color=alt.Color("run:N", title=None, sort=list(runs)),
+)
+(
+    base.mark_line()
+    + base.mark_point(size=20).encode(
+        tooltip=[
+            "run:N",
+            "iteration:Q",
+            alt.Tooltip("largest residual:Q", format=".2e"),
+        ]
+    )
+).properties(
+    width=460, height=300, title=f"LOBPCG convergence, N = {N15} plane waves"
+)
+```
+
+Both runs reproduce the 8 lowest eigenvalues of the dense matrix to better than
+$10^{-8}$ Ha. To bring all 8 residuals below $10^{-7}$, LOBPCG without the
+preconditioner needs
+`{python} len(plain["residuals"])` iterations
+(`{python} f"{plain['applications']:,}"` vector applications of $H$). With it,
+`{python} len(kin["residuals"])` iterations
+(`{python} f"{kin['applications']:,}"` applications) are enough.
+
+`{python} comparison`:
+`{python} f"{1e3 * dense_seconds:.0f}"` ms for `eigvalsh` against
+`{python} f"{1e3 * kin['seconds']:.0f}"` ms for the preconditioned LOBPCG.
+With $N$ = `{python} N15` the matrix takes only
+`{python} f"{16 * N15**2 / 1e6:.0f}"` MB, and LAPACK is extremely well
+optimised for dense matrices. The iterative route wins by scaling.
+Its cost grows as $n_\text{bands}\, N \log N$ per iteration, against $N^3$, and
+its memory as $n_\text{bands} N$, against $N^2$. The cost chart above shows
+where the dense route stops being possible at all.
+
+### Why it finds the *lowest* eigenvectors
+
+The residual vanishes at every eigenvector, not only the lowest, so a small
+residual alone does not say which eigenvector a solver has found. What singles
+out the lowest is the shape of the Rayleigh quotient around each one. At the
+eigenvector $v_k$, its curvature along another eigenvector $v_j$ is
+proportional to $\varepsilon_j - \varepsilon_k$.
+
+- At $v_0$ every curvature is positive: a minimum.
+- At $v_k$ the $k$ directions $v_0, \dots, v_{k-1}$ curve downwards: a saddle
+  point.
+
+A descent method is repelled by saddles. Any component along a lower
+eigenvector, however small, grows. Rayleigh–Ritz adds a guarantee on top: in
+any subspace, the $j$-th lowest Ritz value is an upper bound on
+$\varepsilon_j$ (the Courant–Fischer theorem), and keeping the lowest Ritz
+vectors means those bounds only fall. For a block of $n$ bands the same holds
+for the sum of the $n$ lowest Ritz values.
+
+So the lowest eigenvectors are reached from almost every start, but not from
+all. A start with *exactly* zero overlap with the ground state sits on the
+saddle's stable side. The smallest example is a particle in a box,
+discretised by finite differences, whose ground state is even about the
+centre. Here, single-vector LOBPCG starts from a random vector, from an exactly
+odd vector, and from the odd vector plus $10^{-12}$ of the random one:
+
+```{python}
+N_box = 60
+H_box = (
+    (
+        np.diag(np.full(N_box, 2.0))
+        - np.diag(np.ones(N_box - 1), 1)
+        - np.diag(np.ones(N_box - 1), -1)
+    )
+    * (N_box + 1) ** 2
+    / 2
+)  # <1>
+eps_box = np.linalg.eigvalsh(H_box)
+
+
+def lobpcg_single(x, iterations):
+    p = None
+    history = []
+    for _ in range(iterations):
+        x = x / np.linalg.norm(x)
+        rq = x @ H_box @ x
+        r = H_box @ x - rq * x
+        history.append((rq, np.linalg.norm(r)))
+        span = [x, r] if p is None else [x, r, p]
+        Q, _ = np.linalg.qr(np.column_stack(span))
+        _, v = np.linalg.eigh(Q.T @ H_box @ Q)
+        x_new = Q @ v[:, 0]  # <2>
+        p = x_new - (x @ x_new) * x
+        x = x_new
+    return np.array(history)
+
+
+box_rng = np.random.default_rng(1)
+x_random = box_rng.normal(size=N_box)
+x_odd = x_random - x_random[::-1]  # <3>
+starts = {
+    "random start": x_random,
+    "exactly odd start": x_odd,
+    "odd + 1e-12 × random": x_odd + 1e-12 * x_random,
+}
+box_runs = {label: lobpcg_single(x, 600) for label, x in starts.items()}
+```
+
+1. $-\tfrac12 \mathrm d^2/\mathrm dx^2$ on 60 interior points of a unit box.
+   The matrix is dense only because the example is tiny; the solver uses it
+   only through products.
+2. Keep the *lowest* Ritz vector of the 2- or 3-dimensional subspace.
+3. An exactly antisymmetric vector has zero overlap with every even
+   eigenvector, the ground state included.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Saddle-point chart"
+#| column: page-inset
+saddle = pd.concat([
+    pd.DataFrame({
+        "iteration": np.arange(1, len(h) + 1),
+        "Rayleigh quotient": h[:, 0],
+        "residual norm": h[:, 1],
+        "start": label,
+    })
+    for label, h in box_runs.items()
+])
+start_colour = alt.Color("start:N", title=None, sort=list(starts))
+levels = pd.DataFrame({
+    "level": [eps_box[0], eps_box[1]],
+    "label": ["ε₀ (even)", "ε₁ (odd)"],
+})
+tooltip = [
+    "start:N",
+    "iteration:Q",
+    alt.Tooltip("Rayleigh quotient:Q", format=".6f"),
+    alt.Tooltip("residual norm:Q", format=".1e"),
+]
+energy = (
+    alt
+    .Chart(saddle)
+    .mark_line()
+    .encode(
+        x=alt.X("iteration:Q"),
+        y=alt.Y(
+            "Rayleigh quotient:Q",
+            scale=alt.Scale(domain=[0, 40], clamp=True),
+            title="Rayleigh quotient (Ha)",
+        ),
+        color=start_colour,
+        tooltip=tooltip,
+    )
+)
+rules = alt.Chart(levels).mark_rule(strokeDash=[4, 4]).encode(y="level:Q")
+rule_labels = (
+    alt
+    .Chart(levels)
+    .mark_text(align="right", dx=-4, dy=-7)
+    .encode(y="level:Q", x=alt.value(style.WIDTH), text="label:N")
+)
+residual = (
+    alt
+    .Chart(saddle)
+    .mark_line()
+    .encode(
+        x=alt.X("iteration:Q"),
+        y=alt.Y(
+            "residual norm:Q",
+            scale=alt.Scale(type="log"),
+            axis=alt.Axis(format=".0e"),
+        ),
+        color=start_colour,
+        tooltip=tooltip,
+    )
+    .properties(width=style.WIDTH, height=180)
+)
+alt.vconcat(
+    (energy + rules + rule_labels).properties(width=style.WIDTH, height=220),
+    residual,
+)
+```
+
+```{python}
+#| echo: false
+def at_saddle(h):
+    """Iterations converged on ε₁: Rayleigh quotient there, residual < 1e-8."""
+    return np.flatnonzero(
+        (np.abs(h[:, 0] - eps_box[1]) < 1e-9) & (h[:, 1] < 1e-8)
+    )
+
+
+def escape(h):
+    """First iteration with the Rayleigh quotient clearly below ε₁."""
+    below = np.flatnonzero(h[:, 0] < eps_box[1] - 1e-3)
+    return int(below[0]) + 1 if below.size else None
+
+
+odd_run = box_runs["exactly odd start"]
+seeded_run = box_runs["odd + 1e-12 × random"]
+random_escape = escape(box_runs["random start"])
+stuck = at_saddle(odd_run)
+odd_escape = escape(odd_run)
+seeded_escape = escape(seeded_run)
+# The odd start converges, by its residual, to the wrong eigenvector.
+assert stuck.size > 0
+# The seeded start escapes and ends at the ground state.
+assert seeded_escape is not None
+assert abs(seeded_run[-1, 0] - eps_box[0]) < 1e-9
+assert random_escape < seeded_escape
+odd_outcome = (
+    f"Rounding error supplies the missing even component, about 10⁻¹⁶, "
+    f"and the descent amplifies it: at iteration {odd_escape} the solver "
+    f"leaves the saddle and goes on to the ground state."
+    if odd_escape is not None
+    else "Within 600 iterations, rounding error never supplied enough of an "
+    "even component for the solver to leave the saddle."
+)
+```
+
+From the random start, the Rayleigh quotient drops below $\varepsilon_1$
+within `{python} random_escape` iterations. The exactly odd start converges to
+$\varepsilon_1$ instead, and by its residual it has *converged*: the residual
+is below $10^{-8}$ from iteration `{python} int(stuck[0]) + 1`, so a solver
+with that tolerance would stop and report $\varepsilon_1$ as the lowest
+eigenvalue. `{python} odd_outcome` With $10^{-12}$ of the random vector mixed
+in, the escape comes earlier, at iteration `{python} seeded_escape`.
+
+The saddle is unstable, which is why iterative solvers work. But being near it
+is not detectable from the residual, which is why codes start from random
+vectors (or random plus atomic orbitals) with every symmetry present, and
+carry a few buffer bands. Certifying that no eigenvalue was missed requires
+something else, such as counting eigenvalues below a shift with a matrix
+factorisation (Sylvester's law of inertia). That is affordable for sparse and
+dense matrices, not for a plane-wave Hamiltonian.
+
+## How this maps onto jaxdft
+
+jaxdft was built matrix-free from the start, even though its first milestones
+diagonalise densely.
+
+- `apply_H(ham, psi)` in `hamiltonian/operator.py` is the only way the code
+  touches $H$. A Hamiltonian is a tuple of *terms*, each of which can
+  `apply` itself to a block of bands. `Kinetic` is diagonal, exactly the
+  `T[:, None] * psi` above.
+- `LocalPotential` in `hamiltonian/local.py` is the gather.
+  `bind(structure)` finds the coupling vectors on the host (the
+  `{python} local.couplings.shape[0]` that matched ours above), and `prepare`
+  builds the neighbour table by a sorted search over integer keys, as
+  `gather_setup` does. A pseudopotential without finite support makes it raise
+  `NotImplementedError`, with a note that it needs the FFT-based local term of
+  the self-consistency milestone. Such a term would do what `apply_fft` does,
+  behind the same `apply` interface.
+- `dense_matrix(ham)` builds the matrix by applying the operator to the
+  identity, column by column. The dense route is derived from the operator, not
+  the other way round, and the tests check that the two agree.
+- `dense_eigensolver(apply, dim, n_bands)` in `solvers/eigen.py` takes the
+  operator as a function. An LOBPCG or Davidson solver will take the same
+  arguments, and nothing about $H$ changes when it does.
+- Padding is decoupled with a sentinel eigenvalue of $2E_\text{cut}$, chosen
+  just above the kinetic spectrum. That keeps the spread of eigenvalues small,
+  which is what the preconditioner chart above is about: an iterative solver
+  converges more slowly the wider the spectrum it has to cover.

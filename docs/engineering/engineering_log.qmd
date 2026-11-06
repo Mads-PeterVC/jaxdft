@@ -565,3 +565,179 @@ creep back. A planted literal confirmed that the guard catches it.
 **Rejected alternatives.** Dropping the per-test counts would run every test at
 the same count, making expensive tests dominate the default run. A pytest
 plugin that rewrites settings would be harder to follow, for no gain.
+
+## 2026-11-05: Concepts section and the rule for its code
+
+**Decision.** A new docs section, `docs/concepts/`, holds teaching explainers.
+The first is on pseudopotentials, and the second will cover the matrix-free
+Hamiltonian. Unlike theory and validation documents, these posts implement the
+physics themselves in NumPy/SciPy, with the code shown. The user's reasoning:
+code is a second representation of the maths, and the package should stay
+clean for its purpose rather than grow functions that only serve teaching.
+`CLAUDE.md` records the rule:
+
+- The code in concept posts is not tested and is not a reference.
+- jaxdft never depends on it or is shaped by it.
+- The posts still assert the claims they make about their own computations.
+
+**Pseudopotential post: two things the computation corrected.**
+
+- **The pseudopotential's repulsive core.** My first draft said the
+  pseudopotential becomes repulsive at the centre for large core radii. The
+  computed potentials show the opposite. The centre is repulsive only in a
+  middle window of r_c, from about 1.1 to 2.1 Bohr. Below that window, near the
+  outermost 3s node, it plunges, and above it, it relaxes into a shallow well.
+- **Transferability against r_c.** The first draft also assumed that
+  transferability worsens monotonically with r_c. The error in the 4s level has
+  a minimum near 1.2 Bohr instead.
+
+The text now states both results from the data, and the document asserts them.
+
+**Numerics.** The logarithmic derivative first came from Numerov integration,
+while the eigenvalues came from the three-point finite-difference matrix. For
+the all-electron atom the two discretisations disagree at the steep core, by
+about 0.02 in D at the reference energy. That broke the comparison, although
+the pseudo channels agreed. The outward integration now uses the same
+three-point recurrence as the eigensolver, so at an eigenvalue it reproduces the
+eigenvector exactly. With that change, the Hamann–Schlüter–Chiang identity
+holds to about 1e-6.
+
+**Sources checked.**
+
+- The HGH Si LDA parameters (r_loc = 0.44, C1 = −7.33610297) and the local
+  form-factor formula: HGH 1998, eq. 5 and Table I, cross-checked against
+  CP2K's `GTH_POTENTIALS` entry `Si GTH-PADE-q4`.
+- The Si core levels: X-ray Data Booklet, Table 1-1.
+- The GTH 1996 Si parameters differ from HGH 1998: four C terms against one.
+  The post uses HGH.
+- An overlay of the Lindhard-screened HGH local part on the Cohen–Bergstresser
+  form factors was dropped as misleading. The empirical local potential absorbs
+  the s and p nonlocal repulsion. The post now shows the mismatch as a table
+  and explains it.
+
+**Test defect fixed (raised and agreed).** Hypothesis drew a 6-Bohr cell with
+k = 0 for `test_matrix_elements_are_v_of_g_minus_g_prime`. At 1 Ha that basis
+is only G = 0, so V is real and the test's precondition failed before anything
+about the code was tested. The precondition is now `assume(...)`, and that
+cell is pinned as an `@example`. The coupling-direction check itself is
+unchanged.
+
+## 2026-11-05: Ruff formats the code in documents; annotations replace comments
+
+The visible code in the documents had lines past 100 columns, so code blocks
+scrolled sideways. Ruff 0.17 can format Python code blocks inside Markdown as a
+preview feature. It handles Quarto's ```` ```{python} ```` fences, leaves `#|`
+cell options alone, and accepts `.qmd` through an `extension = {qmd =
+"markdown"}` mapping in its config. `docs/ruff.toml` holds that config with an
+80-column limit, so the package sources keep their own style and nothing outside
+`docs/` is reformatted. Ruff was added as a dev dependency.
+
+Ruff does not wrap comments, docstrings or strings, and when it splits a
+statement it moves a trailing comment after the closing parenthesis. Both
+needed hand fixes. In the concept post, explanatory comments became Quarto code
+annotations (`code-annotations: hover`, set site-wide), which keeps the code
+short and puts the explanation in prose. Ruff leaves the `# <n>` markers on
+their lines. One validation cell gained a small `parity_sign` helper in place of
+a nested conditional inside an f-string.
+
+## 2026-11-05: Pseudopotential post revised after review
+
+Claude Science reviewed the pseudopotential concept post
+(`docs/concepts/reviews/review_pseudopotentials.md`). Every number it quoted
+reproduced when re-run from the post's code. Changes:
+
+- **Cutoff criterion.** The post measured cost by the norm missing above
+  E_cut. Energy convergence weights each q by an extra q²/2 and needs 2–7×
+  more for the pseudo-orbitals, and about 20–60× more for the all-electron
+  ones. Both criteria are now plotted, and the prose quotes the
+  kinetic-energy numbers. The model pseudo-3s at r_c = 1.6 Bohr needs about
+  27 Ha, which matches the range real silicon pseudopotentials use.
+- **Transform.** The kinetic-energy criterion needs q far beyond the old grid
+  (160 Bohr⁻¹), which the all-electron orbitals ran into. All transformed
+  orbitals are s orbitals, so the Hankel transform is a sine transform, and
+  `scipy.fft.dst(type=1)` gives it exactly for the radial grid function, up to
+  π/h. This also removed the grid dependence the review found in the 1s
+  number. The all-electron kinetic-energy cutoffs are still near the grid's
+  resolution (the bare Coulomb 1s comes out 9% below the analytic value), so
+  they are quoted to one figure, and that check is asserted.
+- **Non-monotonic cutoff.** With the kinetic-energy criterion, the cutoff
+  rises slightly between r_c = 1.3 and 1.4 Bohr. The missing fraction is a
+  tail sum, so this is a property of the pseudo-orbitals, not of the
+  threshold search. A jump in u‴ at r_c (which Kerker does not match) is a
+  plausible cause, but the evidence was mixed, so the post states the bump
+  without a mechanism. The monotonic assert became "no step up larger than
+  10%".
+- **Trade-off chart.** The two charts against r_c became one curve of 4s error
+  against cutoff, parameterised by r_c. The dominated region below the best
+  r_c is asserted.
+- **Real cutoffs.** Added a table of PseudoDojo standard-table hints
+  (ONCVPSP-PBE-PDv0.4, `standard.djson`, `hints.{low,normal,high}.ecut`, in Ha
+  per the PseudoDojo FAQ). These are quoted citations, not computed results.
+- **Text.**
+  - Added screening/unscreening and norm conservation's role for the density.
+  - Corrected the semilocal matrix element to a single radial integral per
+    pair of plane waves.
+  - Added the ghost-state caveat [Gonze, Stumpf and Scheffler 1991].
+  - Described ultrasoft and PAW separately.
+  - Added the other limits of the Lindhard comparison, and the model core
+    being deeper than real Si.
+  - Added the limits of the frozen core, the potential's kink at r_c, and the
+    parameter count of the Kerker form.
+  - Removed a stray BEL byte (`\a` from `\approx`, mangled on the way in). A
+    scan of all tracked files found no other control characters.
+- `ecut_for` now raises when the threshold is never reached, instead of
+  returning the first grid point.
+
+## 2026-11-05: Concept post on the matrix-free Hamiltonian
+
+Second concept post, `docs/concepts/matrix_free_hamiltonian.qmd`. Notes on
+choices made while writing it:
+
+- **Tied to jaxdft.** The post's NumPy H for Cohen–Bergstresser silicon at Γ
+  is asserted equal to `dense_matrix` (rows matched by Miller index), and its
+  gather finds the same 44 coupling vectors as `LocalPotential.bind`. Only
+  the post depends on jaxdft, never the other way round.
+- **Smooth potential.** The contrast to Cohen–Bergstresser is the HGH Si local
+  part from the pseudopotential post. It is used only as a typical form
+  factor; without screening or a nonlocal part it is not a physical
+  Hamiltonian, and the post says so.
+- **Zeros are structural.** The draft claimed a smooth potential fills every
+  coupling. The assert caught that 25% of couplings at 3 Ha vanish because
+  diamond's structure factor cos(G·τ) is zero there. The assert now checks
+  that the smooth potential is non-zero exactly where the structure factor
+  is.
+- **FFT grid.** The FFT product cuts V at |d| ≤ 2G_max and uses 4n + 1 points
+  per axis, which reproduces the dense product to rounding error. A 1D toy
+  asserts that the cyclic convolution is exact from M = 4K + 1 and wrong at
+  4K.
+- **LOBPCG.** `scipy.sparse.linalg.lobpcg` wraps the FFT product in a
+  `LinearOperator`, with a diagonal 1/(T + 1 Ha) preconditioner
+  [Payne et al. 1992]. Two buffer vectors are used, because a block of
+  exactly 8 stalled just above tolerance. Iterations are counted until the
+  8 wanted residuals converge, not until scipy stops, since the buffer
+  vectors otherwise inflate the count. scipy returns residual norms with a
+  complex dtype for complex operators; the post takes their absolute value.
+- **Timing claims.** Timings depend on the machine. The text quotes fitted
+  slopes and the dense–FFT crossover from the measurements. It asserts only
+  that the dense slope is the steepest, and chooses its wording for "dense is
+  still faster at N = 749" from the measured comparison.
+
+## 2026-11-06: Saddle-point example in the matrix-free post
+
+The LOBPCG section of the matrix-free post now explains why iterative solvers
+find the *lowest* eigenvectors, given that the residual vanishes at every
+eigenvector. Every eigenvector above the lowest is a saddle of the Rayleigh
+quotient, and Ritz values are upper bounds (Courant–Fischer). A 60-point
+finite-difference particle in a box shows the failure mode. Started from an
+exactly odd vector, single-vector LOBPCG converges by its residual (below
+1e-8) to the first excited state. It escapes only when rounding error has
+grown an even component. The post asserts that the odd start reaches the
+wrong eigenvector with a converged residual, and that a start seeded with
+1e-12 of a random vector escapes. Whether the purely odd start escapes within
+the run depends on rounding, so the sentence describing it is computed rather
+than asserted.
+
+For jaxdft this means a future iterative solver should start from random
+vectors with every symmetry present, and keep the dense-versus-iterative
+agreement tests at small sizes: a converged residual alone would not catch a
+missed state.
