@@ -872,3 +872,63 @@ behaviour.
 - Unit conversions are added to `units.py` for Å (bond lengths, already
   present) and cm⁻¹ with the proton mass (harmonic frequencies), each with a
   round-trip test.
+
+## 2026-11-06: Milestone 2a acceptance tests, written before implementation
+
+The 2a tests were written from the theory post and the agreed API, and they
+fail until the implementation exists. All 179 earlier tests still pass. The
+tolerances, each with its derivation, are in `tests/support/tolerances.py`.
+Shared H₂ setups, with session-cached SCF runs, are in `tests/support/h2.py`.
+
+Writing the tests fixed some details the API rounds had left open:
+
+- **Grid transforms are unnormalised index operations.**
+  `basis_k.to_grid(c)` is Σ_G c(G) e^{2πi m·j/N}, with no Ω^{-1/2} and no
+  1/N. `from_grid` is its inverse, restricted to the basis and zero on
+  padding. The basis stays lattice-free, as in 1a. Ω enters only in
+  `electron_density(lattice, basis, orbitals, occupations, kweights)`.
+- **A grid below the rule needs `allow_aliasing=True`.** Otherwise `build`
+  raises. That keeps the undersized-grid positive control explicit. A grid
+  too small to hold the basis itself always raises.
+- **`GTH.local(0)` returns α.** The G = 0 entry is then finite, with a finite
+  gradient. `CohenBergstresser` gains `ionic_charge = None` and `alpha = 0`.
+- **`ewald_energy(structure, charges, eta=None)` is a pure function** beside
+  the `Ewald` term, so the Madelung and η tests need no basis.
+- **Energy terms** implement `energy(structure, basis, density)`.
+  `term_potential(term, structure, basis, density)` returns V(r), real and
+  float64. `hamiltonian(...)` and `band_structure(...)` take `density=`, where
+  `None` means a zero density. `AtomicLocal` also exposes `coefficients`
+  (analytic, any Miller indices) and `grid_coefficients`, which are zero on
+  the Nyquist planes.
+- **SCF interface.** `SCFOptions(tol, max_iter, n_bands, mixer, eigensolver,
+  min_gap)`. `scf(structure, basis, terms, options, density0=None)` returns an
+  `SCFResult` carrying `density`, `orbitals`, `eigenvalues`, `occupations`,
+  `energies`, `total_energy`, `residual`, `n_iter`, `converged` and
+  `eigen_residuals`. `total_energy(structure, basis, terms, orbitals,
+  occupations)` returns `(E, breakdown)`. The fixed-point solver is
+  `fixed_point(F, x0, mixer, tol, max_iter, project=None)`, and its `project`
+  hook carries clip-then-renormalise. `aufbau_occupations(n_el, n_bands,
+  side)`.
+- **Eigensolvers** take `(apply, dim, n_bands, *, x0=None, preconditioner=None,
+  ...)`. The SCF computes eigenpair residuals itself, so solvers keep
+  returning `(eigenvalues, vectors)`. LOBPCG's default start is a fixed-seed
+  random block, so runs are reproducible.
+- **XC.** `jaxdft.xc.lda` holds `LDA`, `lda_x` (exchange only, used for the
+  analytic jellium check) and `lda_pw92`. Each returns `(energy density,
+  potential)` when called, and the energy per electron from `.eps`. The PW92
+  parameters are stored as published, in `PW92_UNPOLARISED`. The libxc
+  comparison is deferred (decision 11), so the acceptance check for now is
+  an independent transcription of the PW92 formula in the test.
+- **Units.** The energy unit `"cm-1"`, plus `HARTREE_IN_INVERSE_CM` and
+  `PROTON_MASS_IN_ELECTRON_MASS` (CODATA 2022).
+- **Cross-check values.** Two numbers in `test_scf_h2.py` come from the two
+  independent NumPy implementations written from the post: the throwaway
+  check and the review. They are E = −1.1048807274 Ha (tolerance 1e-7) and the
+  HOMO–LUMO gap 0.347192 Ha (tolerance 1e-6). They are labelled as
+  cross-checks, not reference values: they test the implementation against
+  the same specification, not the physics. The same applies to the H₂-cell
+  Ewald energy, 0.126737138563 Ha.
+- **The vendored HGH file** is pinned by its SHA-256 hash, with provenance in
+  `src/jaxdft/pseudo/data/README.md`.
+- **Slow tests.** The egg-box, grid-rule and derivative tests run many SCFs at
+  the test size and are marked `slow`. They still run in the default suite.

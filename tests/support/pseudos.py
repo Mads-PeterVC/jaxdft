@@ -28,3 +28,18 @@ class UnboundedPseudo:
     def local(self, q):
         q = jnp.asarray(q)
         return jnp.where(q > 0, -4 * jnp.pi / jnp.where(q > 0, q, 1.0) ** 2, 0.0)
+
+
+class PointCharge:
+    """An ionic pseudopotential that is a bare point charge Z: v_hat = -4 pi Z / q^2,
+    alpha = 0. Used for Ewald/Madelung tests, which need only ``ionic_charge``."""
+
+    local_support = None
+    alpha = 0.0
+
+    def __init__(self, charge: float):
+        self.ionic_charge = charge
+
+    def local(self, q):
+        q = jnp.asarray(q)
+        return jnp.where(q > 0, -4 * jnp.pi * self.ionic_charge / jnp.where(q > 0, q, 1.0) ** 2, 0.0)

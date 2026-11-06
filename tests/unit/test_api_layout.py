@@ -45,3 +45,52 @@ def test_non_reexported_modules():
     from jaxdft.analysis.bands import band_minimum_on_segment, valence_band_maximum  # noqa: F401
     from jaxdft.analysis.symmetry import group_levels, inversion_parities  # noqa: F401
     from jaxdft.pseudo.cohen_bergstresser import CohenBergstresser, silicon  # noqa: F401
+
+
+# --- Milestone 2a (engineering log, '2026-11-06: Milestone 2a public API') ----------
+
+
+def test_2a_public_names_live_in_subpackages_and_are_reexported():
+    from jaxdft.hamiltonian.atomic_local import AtomicLocal
+    from jaxdft.hamiltonian.ewald import Ewald
+    from jaxdft.hamiltonian.hartree import Hartree
+    from jaxdft.hamiltonian.model import lda_terms
+    from jaxdft.hamiltonian.xc import Xc
+    from jaxdft.scf.mixing import Anderson
+    from jaxdft.scf.scf import SCFError, SCFOptions, SCFResult, energy, scf, total_energy
+    from jaxdft.solvers.lobpcg import lobpcg
+    from jaxdft.structure.builders.dimer import dimer_in_box
+
+    for obj in [
+        AtomicLocal, Ewald, Hartree, lda_terms, Xc, Anderson, SCFError, SCFOptions,
+        SCFResult, energy, scf, total_energy, lobpcg, dimer_in_box,
+    ]:
+        assert getattr(jaxdft, obj.__name__) is obj
+
+
+def test_2a_builders_subpackage_exports():
+    from jaxdft.structure import builders
+
+    assert builders.dimer_in_box is jaxdft.dimer_in_box
+
+
+def test_2a_non_reexported_modules():
+    """Pseudopotentials, functionals and SCF internals are reached through modules."""
+    from jaxdft.hamiltonian.energy_terms import term_potential  # noqa: F401
+    from jaxdft.hamiltonian.ewald import ewald_energy  # noqa: F401
+    from jaxdft.pseudo.gth import GTH, hgh_lda, hgh_lda_path, parse_hgh  # noqa: F401
+    from jaxdft.scf.density import clip_and_renormalise, electron_density  # noqa: F401
+    from jaxdft.scf.occupations import aufbau_occupations  # noqa: F401
+    from jaxdft.scf.solve import FixedPointResult, fixed_point  # noqa: F401
+    from jaxdft.xc.lda import PW92_UNPOLARISED, LDA, lda_pw92, lda_x  # noqa: F401
+
+
+def test_every_eigensolver_accepts_warm_start_and_preconditioner_keywords():
+    """SCF passes x0 and preconditioner to whichever eigensolver it is given
+    (engineering log: the 1a signature plus optional keywords)."""
+    import inspect
+
+    for solver in (jaxdft.dense_eigensolver, jaxdft.lobpcg):
+        params = inspect.signature(solver).parameters
+        assert list(params)[:3] == ["apply", "dim", "n_bands"]
+        assert "x0" in params and "preconditioner" in params
