@@ -6,7 +6,9 @@ Term protocol. A term is a pytree with
     prepare(structure, basis_k) -> prepared term
 
 where the prepared term is a pytree with ``apply(psi) -> H_term psi`` acting on
-blocks ``psi`` of shape (n_pad, n). Terms never see padding: ``apply_H`` masks
+blocks ``psi`` of shape (n_pad, n). A prepared term that is diagonal in the basis
+may also expose ``diagonal`` (n_pad,), which ``Hamiltonian.diagonal`` sums for
+preconditioners. Terms never see padding: ``apply_H`` masks
 their input and output and puts a sentinel energy on padded components, so a
 new term cannot leak into the physical block by forgetting a mask.
 
@@ -45,6 +47,13 @@ class Hamiltonian:
     terms: tuple
     mask: jax.Array
     sentinel: float = field(metadata=dict(static=True))
+
+    def diagonal(self) -> jax.Array:
+        """Sum of the ``diagonal`` of the prepared terms that expose one (n_pad,): the
+        kinetic energy for the standard terms. Not the full diagonal of H, which would
+        also need the mean of the grid potential."""
+        n_pad = self.mask.shape[0]
+        return sum((t.diagonal for t in self.terms if hasattr(t, "diagonal")), jnp.zeros(n_pad))
 
 
 @jax.tree_util.register_dataclass

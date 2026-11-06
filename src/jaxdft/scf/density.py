@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 
-from jaxdft.basis.planewave import PlaneWaveBasis
+from jaxdft.basis.planewave import PlaneWaveBasis, grid_miller, nyquist_mask
 from jaxdft.structure.lattice import Lattice
+from jaxdft.structure.structure import Structure
 
 
 def electron_density(lattice: Lattice, basis: PlaneWaveBasis, orbitals, occupations, kweights=None) -> jax.Array:
@@ -34,3 +38,22 @@ def clip_and_renormalise(rho: jax.Array, n_electrons, volume) -> jax.Array:
     rho = jnp.maximum(rho, 0.0)
     integral = volume / rho.size * jnp.sum(rho)
     return rho * (n_electrons / integral)
+
+
+@dataclass(frozen=True)
+class AtomicGaussians:
+    """Initial density: normalised Gaussians of width ``width`` (Bohr) on the atoms,
+    carrying ``charges`` electrons each, built in reciprocal space and zero on the
+    Nyquist planes. The default ``SCFOptions.initial_density``; any callable
+    ``(structure, basis, charges) -> rho`` can replace it."""
+
+    width: float = 0.8
+
+    def __call__(self, structure: Structure, basis: PlaneWaveBasis, charges) -> jax.Array:
+        m = grid_miller(basis.fft_shape)
+        g2 = jnp.sum((m @ structure.lattice.reciprocal) ** 2, axis=-1)
+        phases = jnp.exp(-2j * jnp.pi * (m @ structure.positions.T))  # (*N, n_atoms)
+        rho_g = (phases @ charges.astype(jnp.complex128)) * jnp.exp(-0.5 * g2 * self.width**2) / structure.lattice.volume
+        rho_g = jnp.where(nyquist_mask(basis.fft_shape), rho_g, 0)
+        rho = jnp.real(jnp.fft.ifftn(rho_g)) * math.prod(basis.fft_shape)
+        return clip_and_renormalise(rho, jnp.sum(charges), structure.lattice.volume)

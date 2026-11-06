@@ -135,9 +135,11 @@ def grid_ranges(fft_shape, safety: float = 3.0):
 @jax.tree_util.register_pytree_node_class
 class Ewald:
     """Ewald energy term for the point ions of ``pseudos`` (charge lambda_j Z_j).
-    Independent of the density."""
+    Independent of the density. ``ion_ion = True`` declares it the ion-ion energy of
+    the cell (``jaxdft.hamiltonian.energy_terms``, 'Roles')."""
 
     density_dependent = False
+    ion_ion = True
 
     def __init__(self, pseudos: dict):
         self.pseudos = dict(pseudos)

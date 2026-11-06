@@ -11,14 +11,14 @@ engineering log, 2a API).
   is the Hellmann-Feynman derivative. Failures give NaN (value and gradient).
 - ``total_energy(...)``: the direct functional of given orbitals and occupations.
 
-The SCF never imports an XC functional, pseudopotential or basis by name: terms are
-either operator terms (``prepare``) or energy terms (``energy``), and ionic terms say
-so through ``ionic_charges``.
+The SCF never imports an XC functional, pseudopotential or term by name: terms are
+either operator terms (``prepare``) or energy terms (``energy``), and the ionic and
+ion-ion terms are found by the roles they declare (``jaxdft.hamiltonian.energy_terms``).
+The mixer, eigensolver, preconditioner and initial density are ``SCFOptions``.
 """
 
 from __future__ import annotations
 
-import inspect
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,12 +27,17 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-from jaxdft.basis.planewave import PlaneWaveBasis, grid_miller, nyquist_mask
+from jaxdft.basis.planewave import PlaneWaveBasis
 from jaxdft.calculations.bands import bind_terms
-from jaxdft.hamiltonian.energy_terms import is_energy_term, total_potential
-from jaxdft.hamiltonian.kinetic import DiagonalTerm
+from jaxdft.hamiltonian.energy_terms import (
+    is_energy_term,
+    is_ion_ion_term,
+    is_ionic_term,
+    total_potential,
+)
 from jaxdft.hamiltonian.operator import apply_H, hamiltonian
-from jaxdft.scf.density import clip_and_renormalise, electron_density
+from jaxdft.hamiltonian.preconditioners import diagonal_preconditioner
+from jaxdft.scf.density import AtomicGaussians, clip_and_renormalise, electron_density
 from jaxdft.scf.mixing import Anderson, Mixer
 from jaxdft.scf.occupations import aufbau_occupations
 from jaxdft.scf.solve import fixed_point
@@ -56,16 +61,20 @@ class SCFOptions:
     """SCF settings. ``tol`` is on ||F(rho) - rho|| = (int (F(rho) - rho)^2)^(1/2).
     ``n_bands`` defaults to occupied + 1. ``min_gap`` (Ha) guards aufbau filling against
     a degenerate frontier level; it is a numerical criterion, not a physical gap.
-    ``initial_width`` (Bohr) is the width of the atomic Gaussians of the default
-    initial density. ``mixer`` is any ``Mixer`` (``jaxdft.scf.mixing``)."""
+    ``mixer`` is any ``Mixer`` (``jaxdft.scf.mixing``). ``preconditioner`` is a
+    factory ``(Hamiltonian) -> precondition(r, eps)`` (``jaxdft.hamiltonian
+    .preconditioners``), or None for none. ``initial_density(structure, basis,
+    charges) -> rho`` gives the starting density when ``density0`` is not passed;
+    the default is atomic Gaussians of width 0.8 Bohr."""
 
     tol: float = 1e-9
     max_iter: int = 100
     n_bands: int | None = None
     mixer: Mixer = field(default_factory=Anderson)
     eigensolver: Callable = lobpcg
+    preconditioner: Callable | None = diagonal_preconditioner
     min_gap: float = 1e-3
-    initial_width: float = 0.8
+    initial_density: Callable = field(default_factory=AtomicGaussians)
 
 
 @jax.tree_util.register_dataclass
@@ -119,69 +128,42 @@ def total_energy(structure: Structure, basis: PlaneWaveBasis, terms, orbitals, o
 # --- setup checks and static quantities ----------------------------------------------------
 
 
-def _ionic_terms(terms):
-    return [t for t in terms if hasattr(t, "ionic_charges") and getattr(t, "is_ionic", True)]
-
-
 def _check_terms(terms):
-    ionic = _ionic_terms(terms)
+    """The ionic term that fixes the electron count; raises if there is none, or if
+    no term supplies the ion-ion energy (roles: ``jaxdft.hamiltonian.energy_terms``)."""
+    ionic = [t for t in terms if is_ionic_term(t)]
     if not ionic:
         raise ValueError("no term defines ionic charges, so the electron count is unknown")
-    if not any(type(t).__name__ == "Ewald" for t in terms):
+    if not any(is_ion_ion_term(t) for t in terms):
         raise ValueError(
-            "the terms contain ionic pseudopotentials but no Ewald term: without the ion-ion "
-            "energy the total is not the energy of a neutral cell"
+            "the terms contain ionic pseudopotentials but no ion-ion term (e.g. Ewald): "
+            "without the ion-ion energy the total is not the energy of a neutral cell"
         )
     return ionic[0]
-
-
-def _static_charges(ionic_term, structure):
-    """Z_j per atom from static data (pseudopotentials and species), no weights."""
-    return [float(ionic_term.pseudos[s].ionic_charge) for s in structure.species]
-
-
-def initial_density(structure: Structure, basis: PlaneWaveBasis, charges, width: float) -> jax.Array:
-    """Normalised atomic Gaussians of width ``width`` carrying ``charges`` electrons."""
-    m = grid_miller(basis.fft_shape)
-    g2 = jnp.sum((m @ structure.lattice.reciprocal) ** 2, axis=-1)
-    phases = jnp.exp(-2j * jnp.pi * (m @ structure.positions.T))  # (*N, n_atoms)
-    rho_g = (phases @ charges.astype(jnp.complex128)) * jnp.exp(-0.5 * g2 * width**2) / structure.lattice.volume
-    rho_g = jnp.where(nyquist_mask(basis.fft_shape), rho_g, 0)
-    rho = jnp.real(jnp.fft.ifftn(rho_g)) * math.prod(basis.fft_shape)
-    return clip_and_renormalise(rho, jnp.sum(charges), structure.lattice.volume)
-
-
-def _accepts(solver, name):
-    try:
-        return name in inspect.signature(solver).parameters
-    except (TypeError, ValueError):
-        return False
 
 
 # --- the traced SCF ----------------------------------------------------------------------------
 
 
-@partial(jax.jit, static_argnames=("n_bands", "mixer", "eigensolver"))
-def _scf_core(structure, basis, terms, density0, n_el, kweights, tol, max_iter, min_gap, *, n_bands, mixer, eigensolver):
+@partial(jax.jit, static_argnames=("n_bands", "mixer", "eigensolver", "preconditioner"))
+def _scf_core(
+    structure, basis, terms, density0, n_el, kweights, tol, max_iter, min_gap, *, n_bands, mixer, eigensolver, preconditioner
+):
     volume = structure.lattice.volume
     n_tot = math.prod(basis.fft_shape)
     n_k = basis.miller.shape[0]
     occ = jnp.broadcast_to(aufbau_occupations(n_el, n_bands), (n_k, n_bands))
     eig_tol = jnp.maximum(EIGEN_TOL_FRACTION * tol, EIGEN_FLOOR)
-    solver_kwargs = {"tol": eig_tol} if _accepts(eigensolver, "tol") else {}
 
     def diagonalise(potential, X_prev):
         def per_k(basis_k, x0):
             ham = hamiltonian(structure, basis_k, terms, potential=potential)
-            diag = sum((t.diagonal for t in ham.terms if isinstance(t, DiagonalTerm)), jnp.zeros(basis_k.n_pad))
-
-            def precondition(r, eps):
-                return r / (jnp.maximum(diag[:, None] - eps[None, :], 0.0) + 1.0)
+            precondition = None if preconditioner is None else preconditioner(ham)
 
             def apply(psi):
                 return apply_H(ham, psi)
 
-            eps, vecs = eigensolver(apply, basis_k.n_pad, n_bands, x0=x0, preconditioner=precondition, **solver_kwargs)
+            eps, vecs = eigensolver(apply, basis_k.n_pad, n_bands, x0=x0, preconditioner=precondition, tol=eig_tol)
             vecs = jnp.where(basis_k.mask[:, None], vecs, 0)
             res = jnp.linalg.norm(apply(vecs) - vecs * eps[None, :], axis=0)
             return vecs, eps, res
@@ -237,7 +219,7 @@ _total_energy_jit = jax.jit(total_energy)
 
 def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
     if density0 is None:
-        density0 = initial_density(structure, basis, charges, options.initial_width)
+        density0 = options.initial_density(structure, basis, charges)
     n_k = basis.miller.shape[0]
     kweights = jnp.full(n_k, 1.0 / n_k)
     out = _scf_core(
@@ -253,6 +235,7 @@ def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
         n_bands=n_bands,
         mixer=options.mixer,
         eigensolver=options.eigensolver,
+        preconditioner=options.preconditioner,
     )
     return out, kweights
 
@@ -327,7 +310,7 @@ def energy(
         raise ValueError(f"side must be -1 or +1, got {side}")
     terms = bind_terms(structure, tuple(terms))
     ionic = _check_terms(terms)
-    n_bands = options.n_bands or int(math.ceil(sum(_static_charges(ionic, structure)) / 2 - 1e-12)) + 1
+    n_bands = options.n_bands or int(math.ceil(sum(ionic.static_ionic_charges(structure)) / 2 - 1e-12)) + 1
 
     fixed = jax.lax.stop_gradient(structure)
     fixed_charges = ionic.ionic_charges(fixed)

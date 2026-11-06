@@ -74,6 +74,11 @@ class AtomicLocal:
     def ionic_charges(self, structure: Structure) -> jax.Array:
         return ionic_charges(self.pseudos, structure)
 
+    def static_ionic_charges(self, structure: Structure) -> list[float]:
+        """Z_j per atom as Python floats, without weights (host side, for shapes)."""
+        check_species(self.pseudos, structure)
+        return [float(self.pseudos[s].ionic_charge) for s in structure.species]
+
     def coefficients(self, structure: Structure, miller) -> jax.Array:
         """V~(G) for G = m B at any Miller indices (complex128, Ha), alpha at G = 0."""
         check_species(self.pseudos, structure)

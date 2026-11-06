@@ -1141,3 +1141,66 @@ used to test three things:
 
 It lives in the tests, not the package, because nothing yet needs a second
 mixer.
+
+## 2026-11-06: SCF extension points
+
+A review for choices fixed inside the SCF, after the mixer
+(previous entry), found three more that were cheap to open up. The
+results are unchanged. For a distorted H₂ at L = 8 Bohr and 6 Ha, the
+following are bitwise identical before and after:
+
+- energy, density, eigenvalues and iteration count;
+- the forces from `jax.grad(energy)`;
+- a dense-eigensolver run.
+
+**Terms are found by role, not by class name.** The SCF used to require a
+term whose class was literally named `"Ewald"`. It took the static ionic
+charges from an `ionic_term.pseudos` dictionary. Terms now declare two roles
+(documented in `jaxdft.hamiltonian.energy_terms`):
+
+- an *ionic* term provides `ionic_charges`, `static_ionic_charges` and
+  `is_ionic`;
+- an *ion-ion* term sets `ion_ion = True`.
+
+`AtomicLocal` and `Ewald` declare these roles. A truncated-Coulomb ion-ion
+term for isolated systems, for example, now needs no SCF change. The test
+uses wrapper terms with other names and no `pseudos` field. With them the
+SCF energy, density and forces are bitwise equal to those of the standard
+terms.
+
+**The preconditioner is an option.**
+
+- **Before:** the SCF picked out `DiagonalTerm` from the kinetic module by
+  `isinstance` and built its preconditioner inline.
+- **The diagonal moves into the operator:** `Hamiltonian.diagonal()` sums
+  the `diagonal` of the prepared terms that expose one. It is deliberately
+  not the full diagonal of H, since that would add the mean of the grid
+  potential and change the preconditioner.
+- **The formula becomes an option:**
+  `diagonal_preconditioner(ham)` (`jaxdft.hamiltonian.preconditioners`)
+  is the old formula, now the default of `SCFOptions.preconditioner`.
+  `None` turns preconditioning off. The H₂ SCF converges to the same ground
+  state without it, as a test checks.
+- **`tol` joins the eigensolver interface.** The SCF used to look for a
+  `tol` parameter with `inspect.signature`. `dense_eigensolver` now accepts
+  it and ignores it, as it already did `x0` and `preconditioner`.
+
+**The initial density is an option.** `SCFOptions.initial_density` is a
+callable `(structure, basis, charges) -> ρ`. Its default is
+`AtomicGaussians(width=0.8)` in `scf/density.py`, the old Gaussians unchanged.
+It replaces `SCFOptions.initial_width`. In 2b a superposition of atomic
+densities from the pseudopotential can replace it. With this and the
+preconditioner moved out, `scf.py` no longer imports grid helpers from the
+basis or anything from the kinetic module.
+
+**Left for the milestones that need them** (from the same review):
+
+- **Occupations as an interface:** smearing needs a theory post on the free
+  energy and the Fermi level.
+- **k-point weights:** they belong to the 2b k-point design. The SCF still
+  assumes uniform weights.
+- **A basis-independent SCF:** no second basis exists yet.
+
+The energy breakdown is still keyed by class name, so two terms of one
+class share an entry. That is a labelling limitation, and it was not
+changed.

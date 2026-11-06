@@ -11,6 +11,15 @@ because the discrete energies integrate with weight Omega / N_tot per grid point
 potential is therefore the exact derivative of the discrete energy: Janak's theorem,
 the G = 0 terms in H and direct = double-counting energies hold by construction.
 A term whose energy does not depend on the density sets ``density_dependent = False``.
+
+Roles. The SCF finds the terms it needs by what they declare, never by class name:
+
+- An *ionic* term carries the point-ion charges: ``ionic_charges(structure)`` (lambda_j
+  Z_j, traceable), ``static_ionic_charges(structure)`` (Z_j as Python floats, host
+  side, for array shapes) and ``is_ionic`` (False when its models have no point ions,
+  e.g. empirical pseudopotentials). It fixes the electron count.
+- An *ion-ion* term (``ion_ion = True``) supplies the ion-ion energy, without which
+  the total is not the energy of a neutral cell.
 """
 
 from __future__ import annotations
@@ -22,6 +31,14 @@ import jax.numpy as jnp
 
 from jaxdft.basis.planewave import PlaneWaveBasis, grid_miller
 from jaxdft.structure.structure import Structure
+
+
+def is_ionic_term(term) -> bool:
+    return hasattr(term, "ionic_charges") and getattr(term, "is_ionic", True)
+
+
+def is_ion_ion_term(term) -> bool:
+    return bool(getattr(term, "ion_ion", False))
 
 
 def is_energy_term(term) -> bool:
