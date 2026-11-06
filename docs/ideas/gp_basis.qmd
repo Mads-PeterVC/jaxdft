@@ -1,0 +1,728 @@
+---
+title: "A Gaussian-process basis for grid wavefunctions"
+description: "Treating grid values as GP observations turns the posterior mean into a variational basis. A 1D test against finite differences and sinc-DVR, and whether the posterior variance knows the discretisation error."
+date: 2026-11-06
+bibliography: ../references.bib
+execute:
+  echo: true
+---
+
+::: {.callout-warning}
+## About this post
+This is an ideas post: an exploratory test of a speculative idea, not
+background the code depends on. The code implements everything in NumPy/SciPy
+and is untested. The results are for two 1D model problems only and say
+nothing yet about 3D, periodic systems or self-consistency.
+:::
+
+A real-space code stores a wavefunction as its values $\psi_i$ at grid points
+$x_i$ and discretises the kinetic energy with a finite-difference stencil. A
+stencil is the derivative of a local polynomial interpolant, so every grid
+method already assumes something about $\psi$ between the samples. This post
+makes that assumption explicit by choosing it as a Gaussian-process prior, and
+asks two questions:
+
+1. If $\psi$ between the nodes is the GP posterior mean, and the Hamiltonian is
+   projected onto that function space exactly, how does the result compare
+   with finite differences and with sinc-DVR on the same nodes?
+2. The GP also gives a posterior variance. Does it say anything about the
+   eigenvalue error?
+
+```{python}
+#| code-fold: true
+#| code-summary: "Imports and chart helpers"
+import altair as alt
+import numpy as np
+import pandas as pd
+from numpy.polynomial.hermite import hermgauss
+from scipy.linalg import cho_factor, cho_solve
+
+from jaxdft.plotting import style
+
+style.enable()
+METHODS = ("GP Galerkin", "sinc-DVR", "finite differences (8th order)")
+method_colour = alt.Scale(domain=list(METHODS), range=list(style.SERIES[:3]))
+```
+
+## The posterior mean is a basis
+
+Put a zero-mean GP prior [@rasmussen_williams2006] on $\psi$ with the
+squared-exponential kernel
+$k(x, x') = \sigma^2 \exp\!\big(-(x - x')^2 / 2\ell^2\big)$ and condition on
+the values $\psi_i$ at $N$ nodes. The posterior mean is
+
+$$
+\bar\psi(x) = \sum_i \psi_i\, c_i(x), \qquad
+c_i(x) = \sum_j k(x, x_j)\, (K^{-1})_{ji},
+$$
+
+with $K_{ij} = k(x_i, x_j)$. The functions $c_i$ are *cardinal*: $c_i(x_j) =
+\delta_{ij}$, so the unknowns are still grid values, but each set of values now
+defines a smooth function everywhere. Two things follow.
+
+- The span of the $c_i$ is the span of the kernels $k(\cdot, x_j)$: Gaussians
+  of width $\ell$ centred on the nodes. Eigenvalues do not depend on which of
+  the two bases we use, so we compute in the Gaussian one, where every matrix
+  element is a Gaussian integral. This is the distributed Gaussian basis of
+  Hamilton and Light [@hamilton_light1986]; the GP view adds the posterior
+  variance and a reason to pick $\ell$.
+- Projecting $H$ onto that space (Galerkin) gives the generalised eigenproblem
+  $H a = \varepsilon S a$ with $S_{ij} = \int g_i g_j$. Both matrices are
+  symmetric, and by the Rayleigh–Ritz principle every eigenvalue is an upper
+  bound on the exact one, provided the integrals are done accurately.
+
+The choice of prior is the choice of discretisation:
+
+| Assumption between nodes | Method |
+|---|---|
+| Locally a polynomial of degree $2p$ | Finite differences of order $2p$ |
+| Band-limited (sinc kernel) | Sinc-DVR, essentially plane waves on a grid |
+| A squared-exponential GP | The Gaussian Galerkin basis below |
+
+The sinc-DVR and finite-difference methods are *collocation* methods: the
+potential enters as its values at the nodes, and neither is variational.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Cardinal functions for three priors"
+#| column: page-inset
+h = 1.0
+xn = np.arange(-8, 9) * h
+xs = np.linspace(-6, 6, 961)
+
+
+def cardinal_gp(c):
+    ell = c * h
+    K = np.exp(-(np.subtract.outer(xn, xn) ** 2) / (2 * ell**2))
+    kx = np.exp(-(np.subtract.outer(xs, xn) ** 2) / (2 * ell**2))
+    return kx @ np.linalg.solve(K, np.eye(len(xn))[:, 8])
+
+
+curves = {
+    "GP, ℓ = 0.7 h": cardinal_gp(0.7),
+    "GP, ℓ = 1.4 h": cardinal_gp(1.4),
+    "sinc (band-limited)": np.sinc(xs / h),
+}
+assert all(
+    np.allclose(np.interp(xn[2:-2], xs, v), np.eye(len(xn))[8, 2:-2], atol=1e-9)
+    for v in curves.values()
+)
+near = np.abs(xs) <= 4
+gap_sinc = np.abs(curves["GP, ℓ = 1.4 h"] - curves["sinc (band-limited)"])
+gap_sinc = gap_sinc[near].max()
+lobe = {
+    name: np.abs(v[(np.abs(xs) >= 3) & near]).max()
+    for name, v in curves.items()
+}
+df = pd.DataFrame([
+    {"x / h": x, "c₀(x)": v, "prior": name}
+    for name, vals in curves.items()
+    for x, v in zip(xs, vals)
+])
+alt.Chart(df).mark_line().encode(
+    x="x / h:Q",
+    strokeDash=alt.StrokeDash(
+        "prior:N",
+        legend=None,
+        scale=alt.Scale(domain=list(curves), range=[[1, 0], [1, 0], [6, 4]]),
+    ),
+    y=alt.Y("c₀(x):Q", title="cardinal function c₀(x)"),
+    color=alt.Color(
+        "prior:N", title=None, scale=alt.Scale(range=list(style.SERIES[:3]))
+    ),
+    tooltip=[
+        "prior:N",
+        alt.Tooltip("x / h:Q", format=".2f"),
+        alt.Tooltip("c₀(x):Q", format=".3f"),
+    ],
+).properties(width=style.WIDTH, height=260)
+```
+
+Every curve is 1 at its own node and 0 at the others; they differ in how they
+fill the gaps. A narrow kernel ($\ell = 0.7h$) gives side lobes that die out
+within a few nodes: beyond $3h$ they are below
+`{python} f"{lobe['GP, ℓ = 0.7 h']:.3f}"`, against
+`{python} f"{lobe['sinc (band-limited)']:.2f}"` for the sinc. At $\ell = 1.4h$
+the cardinal function is within `{python} f"{gap_sinc:.0e}"` of the sinc
+over $|x| \le 4h$: on this range the squared-exponential prior has become
+practically band-limited.
+
+## Two test wells
+
+Both have exact eigenvalues, so errors are absolute, not relative to a
+reference calculation.
+
+- The harmonic oscillator $V = x^2/2$, with $\varepsilon_n = n + \tfrac12$:
+  smooth everywhere.
+- The Pöschl–Teller well [@poschl_teller1933]
+  $V = -\tfrac12 \alpha^2 \lambda(\lambda + 1)
+  \operatorname{sech}^2(\alpha x)$ with $\alpha = 2$, $\lambda = 4$, which has
+  four bound states $\varepsilon_n = -\tfrac12 \alpha^2 (\lambda - n)^2$. It is
+  40 Ha deep and about 0.5 Bohr wide: a stand-in for the sharp region near a
+  nucleus.
+
+All methods use the same $N$ nodes on a box of length $L = 16$ Bohr, and the
+error reported is the largest over the lowest four eigenvalues.
+
+```{python}
+L = 16.0
+ALPHA, LAM = 2.0, 4.0
+WELLS = {
+    "harmonic oscillator": (
+        lambda x: 0.5 * x**2,
+        np.arange(4) + 0.5,
+    ),
+    "Pöschl–Teller": (
+        lambda x: -0.5 * ALPHA**2 * LAM * (LAM + 1) / np.cosh(ALPHA * x) ** 2,
+        -0.5 * ALPHA**2 * (LAM - np.arange(4)) ** 2,
+    ),
+}
+
+
+def nodes(N):
+    h = L / N
+    return -L / 2 + (np.arange(N) + 0.5) * h, h
+```
+
+### The three discretisations
+
+```{python}
+FD8 = [-205 / 72, 8 / 5, -1 / 5, 8 / 315, -1 / 560]
+
+
+def finite_differences(N, V):
+    x, h = nodes(N)
+    D2 = sum(
+        c * (np.eye(N, k=k) + (np.eye(N, k=-k) if k else 0))
+        for k, c in enumerate(FD8)
+    )
+    return np.linalg.eigvalsh(-0.5 * D2 / h**2 + np.diag(V(x)))  # <1>
+
+
+def sinc_dvr(N, V):
+    x, h = nodes(N)
+    d = np.subtract.outer(np.arange(N), np.arange(N))
+    T = np.where(
+        d == 0, np.pi**2 / 6, (-1.0) ** d / np.where(d == 0, 1, d) ** 2
+    )  # <2>
+    return np.linalg.eigvalsh(T / h**2 + np.diag(V(x)))
+
+
+def midpoint_average(V, mids, ell, n_hermite=None):
+    if n_hermite is not None:  # <5>
+        t, w = hermgauss(n_hermite)
+        return (w * V(mids[:, None] + ell * t)).sum(-1) / np.sqrt(np.pi)
+    dx = min(ell, 0.1) / 40
+    xq = np.arange(mids[0] - 8 * ell, mids[-1] + 8 * ell, dx)
+    weight = np.exp(-(np.subtract.outer(mids, xq) ** 2) / ell**2)
+    return weight @ V(xq) * dx / (np.sqrt(np.pi) * ell)
+
+
+def gp_matrices(N, V, c, n_hermite=None):
+    x, h = nodes(N)
+    ell = c * h
+    d = np.subtract.outer(x, x)
+    S = np.sqrt(np.pi) * ell * np.exp(-(d**2) / (4 * ell**2))  # <3>
+    mu = 1 / (4 * ell**2)
+    T = mu * (1 - 2 * mu * d**2) * S  # <4>
+    mids = -L / 2 + h / 2 + 0.5 * h * np.arange(2 * N - 1)  # <6>
+    i = np.arange(N)
+    Vbar = midpoint_average(V, mids, ell, n_hermite)[np.add.outer(i, i)]
+    return S, T + S * Vbar, x, ell
+
+
+def gp_galerkin(N, V, c, rcond=1e-8, n_hermite=None, vectors=False):
+    S, H, x, ell = gp_matrices(N, V, c, n_hermite)
+    s, U = np.linalg.eigh(S)
+    keep = s > rcond * s.max()  # <7>
+    X = U[:, keep] / np.sqrt(s[keep])
+    e, w = np.linalg.eigh(X.T @ H @ X)
+    return (e, X @ w, x, ell) if vectors else e
+```
+
+1. Collocation: the kinetic stencil plus the potential's values at the nodes.
+2. The sinc-DVR kinetic matrix of Colbert and Miller [@colbert_miller1992]:
+   exact second derivatives of the sinc cardinal functions at the nodes. It is
+   dense, decaying as $1/(i - j)^2$.
+3. The overlap of two Gaussians $e^{-(x - x_i)^2/2\ell^2}$ is analytic.
+4. So is the kinetic matrix, $\tfrac12\int g_i' g_j'$.
+5. $g_i g_j$ is $S_{ij}$ times a normalised Gaussian of width $\ell/\sqrt2$
+   centred at the midpoint $(x_i + x_j)/2$, so the potential matrix needs the
+   average of $V$ under that Gaussian. By default this is the trapezoid rule on
+   a fine grid, which is spectrally accurate for a smooth, decaying integrand.
+   Gauss–Hermite quadrature is the textbook alternative and is kept for the
+   section on $\ell$, where its accuracy turns out to matter.
+6. The midpoints lie on a half-spacing grid, so only $2N - 1$ averages are
+   needed. This is the one matrix that is not analytic for a general $V$.
+7. Wide kernels make $S$ nearly singular. Directions with relative overlap
+   eigenvalue below `rcond` are dropped (canonical orthogonalisation), so the
+   basis can end up with fewer than $N$ functions.
+
+The analytic matrices are checked against brute-force quadrature on a fine
+grid:
+
+```{python}
+S, H, x, ell = gp_matrices(24, WELLS["Pöschl–Teller"][0], 1.4)
+xf = np.linspace(-L / 2 - 6 * ell, L / 2 + 6 * ell, 40001)
+g = np.exp(-(np.subtract.outer(xf, x) ** 2) / (2 * ell**2))
+dg = -np.subtract.outer(xf, x) / ell**2 * g
+Vf = WELLS["Pöschl–Teller"][0](xf)[:, None]
+S_num = np.trapezoid(g[:, :, None] * g[:, None, :], xf, axis=0)
+H_num = np.trapezoid(
+    0.5 * dg[:, :, None] * dg[:, None, :]
+    + Vf[..., None] * g[:, :, None] * g[:, None, :],
+    xf,
+    axis=0,
+)
+assert np.abs(S - S_num).max() < 1e-10
+assert np.abs(H - H_num).max() < 1e-8
+```
+
+## Accuracy at equal node count
+
+The GP length scale is set per $N$ by the variational principle: of a grid of
+values $\ell/h \in [0.6, 2]$, take the one that minimises the sum of the four
+lowest eigenvalues. That uses no knowledge of the exact answer.
+
+```{python}
+C_GRID = np.linspace(0.6, 2.0, 57)
+N_VALUES = {
+    "harmonic oscillator": range(12, 61, 4),
+    "Pöschl–Teller": range(30, 171, 10),
+}
+
+
+FLOOR = 1e-10  # <1>
+
+
+def best_c(N, V):
+    return min(C_GRID, key=lambda c: gp_galerkin(N, V, c)[:4].sum())
+
+
+rows = []
+for well, (V, exact) in WELLS.items():
+    for N in N_VALUES[well]:
+        c = best_c(N, V)
+        for method, e in [
+            ("GP Galerkin", gp_galerkin(N, V, c)),
+            ("sinc-DVR", sinc_dvr(N, V)),
+            ("finite differences (8th order)", finite_differences(N, V)),
+        ]:
+            err = e[:4] - exact
+            rows.append({
+                "well": well,
+                "N": N,
+                "method": method,
+                "max |error| (Ha)": np.abs(err).max(),
+                "below exact": bool((err < -FLOOR).any()),
+                "ℓ/h": c if method == "GP Galerkin" else np.nan,
+            })
+acc = pd.DataFrame(rows)
+```
+
+1. The rounding floor: $\epsilon_\text{mach}\,|\varepsilon|/\sqrt{r_\text{cond}}
+   \approx 2\times10^{-16} \cdot 32 / 10^{-4} \approx 10^{-10}$ Ha, since
+   canonical orthogonalisation scales the smallest kept directions by
+   $1/\sqrt{s}$. Eigenvalues within it of the exact value are not counted as
+   below it.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Chart code"
+#| column: page-inset
+alt.Chart(acc).mark_line(point=alt.OverlayMarkDef(size=60)).encode(
+    x=alt.X("N:Q", title="number of nodes N"),
+    y=alt.Y(
+        "max |error| (Ha):Q",
+        scale=alt.Scale(
+            type="log", domain=[1e-14, 1e1], clamp=True, nice=False
+        ),
+        axis=alt.Axis(format=".0e"),
+        title="largest |ε − exact|, lowest four (Ha)",
+    ),
+    color=alt.Color("method:N", title=None, scale=method_colour),
+    shape=alt.Shape(
+        "below exact:N",
+        title="any eigenvalue below exact",
+        scale=alt.Scale(
+            domain=[False, True], range=["circle", "triangle-down"]
+        ),
+    ),
+    tooltip=[
+        "method:N",
+        "N:Q",
+        alt.Tooltip("max |error| (Ha):Q", format=".2e"),
+        "below exact:N",
+        alt.Tooltip("ℓ/h:Q", format=".2f"),
+    ],
+).properties(width=300, height=300).facet(
+    column=alt.Column("well:N", title=None)
+).resolve_scale(x="independent")
+```
+
+```{python}
+#| echo: false
+gp = acc[acc.method == "GP Galerkin"]
+pt = acc[acc.well == "Pöschl–Teller"].pivot(
+    index="N", columns="method", values="max |error| (Ha)"
+)
+resolved = pt[pt["GP Galerkin"].between(100 * FLOOR, 1e-1)]  # above rounding
+gain = resolved["sinc-DVR"] / resolved["GP Galerkin"]
+# GP Galerkin is a variational method: no eigenvalue below exact.
+assert not gp["below exact"].any()
+# sinc-DVR and finite differences are not.
+assert acc[acc.method == "sinc-DVR"]["below exact"].any()
+# On the resolved Pöschl–Teller points the GP basis beats sinc-DVR.
+assert (gain > 1).all()
+c_pt = gp[(gp.well == "Pöschl–Teller") & (gp.N >= 80)]["ℓ/h"]
+```
+
+Three observations.
+
+- **The GP basis is variational, the others are not.** No GP Galerkin
+  eigenvalue lies below the exact one. Sinc-DVR and finite differences put
+  some below (triangles), because collocation replaces $\int g_i V g_j$ by
+  nodal values.
+- **On the sharp well the GP basis wins at equal $N$.** Once the well is
+  resolved, its error is
+  `{python} f"{gain.min():.0f}"`–`{python} f"{gain.max():.0f}"`
+  times smaller than sinc-DVR's, and both converge exponentially, far faster
+  than eighth-order finite differences. On the harmonic oscillator, sinc-DVR
+  and the GP basis both reach rounding error within a few dozen nodes.
+- **The variational $\ell$ is stable.** For the resolved Pöschl–Teller runs it
+  stays between `{python} f"{c_pt.min():.2f}"` and
+  `{python} f"{c_pt.max():.2f}"` $h$.
+
+Equal $N$ is not equal cost. Finite differences give a banded matrix with 9
+non-zeros per row and no overlap matrix. The GP basis needs $S$ as well as $H$,
+and its entries fall off as $e^{-d^2/4\ell^2}$, so at $\ell = 1.4h$ a row has
+about `{python} f"{2 * int(np.ceil(np.sqrt(4 * 1.4**2 * np.log(1e16)))) + 1}"`
+entries above $10^{-16}$. Sinc-DVR is dense. The comparison here is of
+accuracy per degree of freedom, which is the right first question but not the
+last one.
+
+## Choosing $\ell$: the variational principle and its failure mode
+
+Why does the variational choice of $\ell$ settle near $1.4h$? The chart sweeps
+$\ell$ at fixed $N$ on the Pöschl–Teller well in three configurations: the
+overlap threshold used above, a much looser one, and the loose threshold with
+the potential matrix done by 80-point Gauss–Hermite quadrature instead of the
+fine-grid rule.
+
+```{python}
+N_SWEEP = 60
+V_pt, exact_pt = WELLS["Pöschl–Teller"]
+CONFIGS = {
+    "rcond 1e-8, accurate V": dict(rcond=1e-8),
+    "rcond 1e-13, accurate V": dict(rcond=1e-13),
+    "rcond 1e-13, 80-point Gauss–Hermite V": dict(rcond=1e-13, n_hermite=80),
+}
+sweep = []
+for c in np.linspace(0.5, 3.0, 51):
+    S, _, _, _ = gp_matrices(N_SWEEP, V_pt, c)
+    s = np.linalg.eigvalsh(S)
+    for name, opts in CONFIGS.items():
+        e = gp_galerkin(N_SWEEP, V_pt, c, **opts)
+        sweep.append({
+            "ℓ/h": c,
+            "configuration": name,
+            "basis functions kept": int((s > opts["rcond"] * s.max()).sum()),
+            "error": e[:4].sum() - exact_pt.sum(),
+        })
+sweep = pd.DataFrame(sweep)
+```
+
+```{python}
+#| code-fold: true
+#| code-summary: "Chart code"
+#| column: page-inset
+config_colour = alt.Color(
+    "configuration:N",
+    title=None,
+    scale=alt.Scale(domain=list(CONFIGS), range=list(style.SERIES[:3])),
+    legend=alt.Legend(orient="top", direction="vertical", labelLimit=400),
+)
+base = alt.Chart(sweep).encode(
+    x=alt.X("ℓ/h:Q", title="kernel length scale ℓ / h"),
+    color=config_colour,
+    tooltip=[
+        "configuration:N",
+        alt.Tooltip("ℓ/h:Q", format=".2f"),
+        "basis functions kept:Q",
+        alt.Tooltip("error:Q", title="Σε − Σ exact (Ha)", format=".2e"),
+    ],
+)
+energy = (
+    base
+    .transform_calculate(
+        abs_err="abs(datum.error)",
+        side="datum.error > 0 ? 'above exact' : 'below exact'",
+    )
+    .mark_line(point=True)
+    .encode(
+        y=alt.Y(
+            "abs_err:Q",
+            scale=alt.Scale(type="log"),
+            axis=alt.Axis(format=".0e"),
+            title="|Σε − Σ exact|, lowest four (Ha)",
+        ),
+        shape=alt.Shape(
+            "side:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["above exact", "below exact"],
+                range=["circle", "triangle-down"],
+            ),
+        ),
+    )
+    .properties(width=style.WIDTH, height=240)
+)
+rank = (
+    base
+    .transform_filter("indexof(datum.configuration, 'Gauss') < 0")
+    .mark_line()
+    .encode(y=alt.Y("basis functions kept:Q", title="basis functions kept"))
+    .properties(width=style.WIDTH, height=130)
+)
+alt.vconcat(energy, rank)
+```
+
+```{python}
+#| echo: false
+by = {name: g.set_index("ℓ/h") for name, g in sweep.groupby("configuration")}
+safe, loose, gh = (by[name] for name in CONFIGS)
+# With accurate integrals, both thresholds keep the variational bound.
+assert (safe["error"] > 0).all() and (loose["error"] > 0).all()
+# Gauss–Hermite with the loose threshold breaks it.
+assert (gh["error"] < 0).any()
+worst = gh["error"].min()
+first_break = gh[gh["error"] < 0].index.min()
+c_opt = safe["error"].idxmin()
+c_opt_loose = loose["error"].idxmin()
+onset = safe[safe["basis functions kept"] < N_SWEEP].index.min()
+
+
+def rank_onset(N, rcond=1e-8):
+    for c in C_GRID:
+        S, _, _, _ = gp_matrices(N, V_pt, c)
+        s = np.linalg.eigvalsh(S)
+        if (s > rcond * s.max()).sum() < N:
+            return c
+
+
+resolved_runs = gp[(gp.well == "Pöschl–Teller") & (gp.N >= 80)]
+edge = [abs(r["ℓ/h"] - rank_onset(r.N)) for _, r in resolved_runs.iterrows()]
+step = C_GRID[1] - C_GRID[0]
+# In the resolved runs, the variational optimum sits at the onset of rank
+# loss, to within two steps of the search grid.
+assert max(edge) <= 2 * step + 1e-9
+```
+
+With accurate integrals the error first falls as $\ell$ grows, and no
+eigenvalue goes below the exact one at either threshold. At this deliberately
+coarse $N$ the best energy is at $\ell =$ `{python} f"{c_opt:.2f}"`$h$ for the
+tight threshold and `{python} f"{c_opt_loose:.2f}"`$h$ for the loose one,
+inside the region where all $N$ functions survive; rank loss starts at
+`{python} f"{onset:.2f}"`$h$. On finer grids the optimum moves to the edge. In
+every resolved Pöschl–Teller run of the previous section ($N \ge 80$), the
+variational $\ell$ is within `{python} f"{max(edge):.2f}"`$h$ (two steps of the
+search grid) of the first $\ell$ at which the overlap matrix loses rank. There,
+the variational principle is finding the edge of numerical linear dependence
+rather than a length scale of the wavefunction.
+
+The third curve is the cautionary one. Gauss–Hermite quadrature with 80
+points is accurate for narrow kernels, but its error grows with $\ell$ as
+the Gaussian weight becomes broad compared with the 0.5 Bohr well.
+For small $\ell$ that does not matter. Once the overlap matrix is nearly
+singular, those errors are amplified by $1/s$ for the smallest kept overlap
+eigenvalues $s$, and from $\ell =$ `{python} f"{first_break:.2f}"`$h$ the
+"variational" energy falls below the exact one, by as much as
+`{python} f"{abs(worst):.0e}"` Ha. An optimiser of $\ell$ would walk straight
+into this region. (An earlier draft of this post used Gauss–Hermite throughout
+and made exactly that mistake.) The Rayleigh–Ritz bound needs accurate
+integrals, and a nearly dependent basis is what makes inaccurate ones
+dangerous.
+
+## Does the posterior variance know the error?
+
+The GP prior gives more than a basis. Given node values, the posterior
+variance
+
+$$
+\operatorname{var}(x) = \sigma^2\big(1 - k_x^\top K^{-1} k_x\big)
+$$
+
+measures how uncertain $\psi$ is between the nodes. If it tracks the
+discretisation error, it would be an error estimate from a single calculation,
+which DFT codes do not have: they run convergence tests instead.
+
+There is a trap. With $\ell$ fixed relative to $h$, as in the basis above, the
+bracket depends only on $x/h$, so the variance is the same at every $N$ and
+can say nothing about convergence. Instead, the estimate below fits $\sigma^2$
+and an absolute $\ell$ by maximum marginal likelihood to the calculation's own
+node values (the four bound states, sharing hyperparameters). The fitted
+$\ell$ is then a property of the wavefunctions; the variance falls as the
+nodes get denser relative to it.
+
+```{python}
+def kern(a, b, ell):
+    return np.exp(-(np.subtract.outer(a, b) ** 2) / (2 * ell**2))
+
+
+def neg_log_ml(y, x, ell, nugget=1e-10):
+    K = kern(x, x, ell) + nugget * np.eye(len(x))
+    cf = cho_factor(K)
+    N, B = y.shape
+    s2 = np.einsum("ib,ib->", y, cho_solve(cf, y)) / (N * B)  # <1>
+    return 0.5 * N * B * np.log(s2) + B * np.log(np.diag(cf[0])).sum(), s2
+
+
+def variance_estimate(N, V, c, ells=np.geomspace(0.05, 2, 120)):
+    e, coef, x, ell_basis = gp_galerkin(N, V, c, vectors=True)
+    y = kern(x, x, ell_basis) @ coef[:, :4]  # <2>
+    nll = [neg_log_ml(y, x, l)[0] for l in ells]
+    ell = ells[int(np.argmin(nll))]
+    s2 = neg_log_ml(y, x, ell)[1]
+    xf = np.linspace(-L / 2, L / 2, 4001)
+    K = kern(x, x, ell) + 1e-10 * np.eye(N)
+    kx = kern(xf, x, ell)
+    var = s2 * (1 - np.einsum("fi,if->f", kx, np.linalg.solve(K, kx.T)))
+    return e, ell, np.trapezoid(var, xf)  # <3>
+```
+
+1. With noise-free observations the amplitude has a closed-form maximiser,
+   $\hat\sigma^2 = y^\top K^{-1} y / NB$, so only $\ell$ is searched.
+2. The node values of the Galerkin eigenfunctions: the calculation's own
+   output, with no reference solution involved.
+3. The estimate is the integrated posterior variance.
+
+```{python}
+var_rows = []
+for well, (V, exact) in WELLS.items():
+    for N in N_VALUES[well]:
+        c = best_c(N, V)
+        e, ell, ivar = variance_estimate(N, V, c)
+        err = np.abs(e[:4] - exact).max()
+        if err > FLOOR:  # <1>
+            var_rows.append({
+                "well": well,
+                "N": N,
+                "max |error| (Ha)": err,
+                "integrated posterior variance": ivar,
+                "fitted ℓ (Bohr)": ell,
+            })
+var_df = pd.DataFrame(var_rows)
+```
+
+1. Points at the rounding floor carry no information about the variance.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Chart code"
+#| column: page-inset
+alt.Chart(var_df).mark_line(point=alt.OverlayMarkDef(size=60)).encode(
+    x=alt.X(
+        "integrated posterior variance:Q",
+        scale=alt.Scale(type="log"),
+        axis=alt.Axis(format=".0e"),
+        title="integrated posterior variance",
+    ),
+    y=alt.Y(
+        "max |error| (Ha):Q",
+        scale=alt.Scale(type="log"),
+        axis=alt.Axis(format=".0e"),
+        title="largest |ε − exact|, lowest four (Ha)",
+    ),
+    color=alt.Color(
+        "well:N", title=None, scale=alt.Scale(range=list(style.SERIES[:2]))
+    ),
+    tooltip=[
+        "well:N",
+        "N:Q",
+        alt.Tooltip("max |error| (Ha):Q", format=".2e"),
+        alt.Tooltip("integrated posterior variance:Q", format=".2e"),
+        alt.Tooltip("fitted ℓ (Bohr):Q", format=".3f"),
+    ],
+).properties(width=style.WIDTH, height=360)
+```
+
+```{python}
+#| echo: false
+for well, g in var_df.groupby("well"):
+    g = g.sort_values("N")
+    # Both quantities fall monotonically with N on every resolved point.
+    assert (np.diff(np.log(g["integrated posterior variance"])) < 0).all()
+ELL_SEARCH = (0.05, 2.0)  # the range searched in variance_estimate
+at_bound = var_df[np.isclose(var_df["fitted ℓ (Bohr)"], ELL_SEARCH[0])]
+inside = var_df.drop(at_bound.index)
+assert not np.isclose(inside["fitted ℓ (Bohr)"], ELL_SEARCH[1]).any()
+ell_pt = inside[inside.well == "Pöschl–Teller"]["fitted ℓ (Bohr)"]
+ell_ho = inside[inside.well == "harmonic oscillator"].sort_values("N")
+ell_ho = ell_ho["fitted ℓ (Bohr)"]
+# The narrow-well fit is stable across N; the oscillator fit is not.
+assert ell_pt.max() / ell_pt.min() < 1.15
+assert ell_ho.iloc[-1] / ell_ho.iloc[0] > 1.3
+bound_desc = ", ".join(
+    f"the {r.well} at N = {r.N}" for _, r in at_bound.iterrows()
+)
+slope = {
+    well: np.polyfit(
+        np.log(g["integrated posterior variance"]),
+        np.log(g["max |error| (Ha)"]),
+        1,
+    )[0]
+    for well, g in inside.groupby("well")
+}
+```
+
+On a log–log plot the error is close to a power of the variance. Fitted over
+the points where the length-scale fit is interior, the slope is
+`{python} f"{slope['Pöschl–Teller']:.2f}"` for the Pöschl–Teller well and
+`{python} f"{slope['harmonic oscillator']:.2f}"` for the harmonic oscillator.
+For the narrow well, the fitted length scale is a property of the problem
+rather than the grid: it stays between `{python} f"{ell_pt.min():.2f}"` and
+`{python} f"{ell_pt.max():.2f}"` Bohr at every $N$. For the oscillator it is
+still drifting, from `{python} f"{ell_ho.iloc[0]:.2f}"` to
+`{python} f"{ell_ho.iloc[-1]:.2f}"` Bohr, before the eigenvalues reach the
+rounding floor. The fit for `{python} bound_desc` (left out of the slopes) ran
+into the bottom of the search range: with too few nodes the likelihood prefers
+explaining the values as uncorrelated.
+
+This is the encouraging result, and also the one to treat most carefully.
+
+- The variance is a monotone proxy, not a calibrated estimate: the error is not
+  equal to the variance, and the slope and offset differ between the two wells.
+  A usable estimator would need that relation to be predictable.
+- A squared-exponential prior implies an analytic function, which both test
+  wavefunctions are. A pseudo-wavefunction is smooth but not that smooth, and
+  real-space all-electron wavefunctions have cusps; whether the variance still
+  tracks the error there is untested.
+- The fit uses the eigenvectors of the same calculation. A poorly resolved
+  calculation could produce node values that the GP is confident about but that
+  are wrong.
+
+## What it would take
+
+As an idea for jaxdft this is far from ready, and most of the advantages
+shrink in a periodic plane-wave setting: there the band-limited prior is
+exact, and plane waves are already the sinc row of the table above. The open
+questions, roughly in order:
+
+1. **Cost per degree of freedom.** Compare at equal work, not equal $N$: the GP
+   basis carries an overlap matrix and a wider band.
+2. **Three dimensions.** Product Gaussians separate, so $S$ and $T$ become
+   Kronecker sums on a tensor grid, and a matrix-free $H\psi$ is a sequence of
+   1D banded multiplications. The potential term does not separate and needs a
+   quadrature grid.
+3. **Non-uniform nodes.** Galerkin keeps $H$ symmetric on scattered nodes,
+   which collocation does not, so nodes could cluster near nuclei. The
+   variational choice of $\ell$ would then become a choice of a local length
+   scale.
+4. **The error estimate.** Test it where the answer is unknown in advance:
+   cusps, several atoms, and whether the error–variance relation transfers
+   between systems.
+
+## References
+
+::: {#refs}
+:::

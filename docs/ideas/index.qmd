@@ -1,0 +1,15 @@
+---
+title: "Ideas"
+listing:
+  contents: "*.qmd"
+  sort: "date"
+  type: table
+  fields: [date, title, description]
+---
+
+Exploratory tests of speculative ideas: methods jaxdft does not use and may
+never use, tried on small model problems to see whether they deserve more
+work. Like the concept posts, these implement everything themselves in
+NumPy/SciPy, with the code shown, and that code is untested. A result here is
+a reason to look further, not a validated method; nothing reaches jaxdft
+without going through a milestone.
