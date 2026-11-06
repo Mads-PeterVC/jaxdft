@@ -151,3 +151,25 @@ runs the HGH-pseudopotential H₂ calculation out to 100 Ha and 16 Bohr.
 
 The DFTK, libxc and HelFEM comparisons are still to come (theory post,
 decision 11).
+
+## 2026-11-06: DFTK and jaxdft solve the same discrete H₂ problem
+
+DFTK 0.8.2 was run on the Milestone 2a acceptance problem: the same HGH file,
+LDA, box, cutoff and grid, at a symmetric and a distorted geometry. It agrees
+with jaxdft term by term to about 1e-10 Ha. The total agrees to 1e-14 Ha,
+better than the terms, because it is variational. The terms trade
+first-order SCF errors that cancel in the sum.
+
+The analytic and invariant tests written before implementation had already
+fixed every convention the comparison could have caught: normalisation, the
+G = 0 terms, α, and the Ewald background. They predicted DFTK's
+`PspCorrection` and the 2.6e-6 Ha eigenvalue offset in advance. So the
+decision to defer the reference codes until after implementation
+(decision 11) cost nothing here. The risk it accepted, a self-consistent
+convention error invisible to the invariants, did not materialise.
+
+The libxc comparison agrees to rounding, and it distinguishes `lda_c_pw` from
+`lda_c_pw_mod` by four orders of magnitude. That settles the parameter
+transcription, which the analytic checks could only partly constrain.
+
+HelFEM, for the all-electron bond length, remains.

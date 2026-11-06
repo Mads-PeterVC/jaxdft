@@ -1044,3 +1044,62 @@ page of the site. Every expensive point backs a claim. The top two cutoffs
 show convergence, and the second box-correction cutoff sets the uncertainty
 of the best estimate. If render time becomes a problem, the first thing to
 drop is the 50 Ha point.
+
+## 2026-11-06: Milestone 2a reference data from DFTK and libxc
+
+Decision 11 of the theory post deferred the reference codes until after
+implementation. They are now run, with the tolerances the post fixed
+beforehand.
+
+**DFTK setup** (`reference/dftk_h2/`). The Julia project there pins DFTK 0.8.2,
+Libxc.jl (libxc 7.0.0), JSON and SHA in its `Project.toml` and `Manifest.toml`.
+The script follows decision 5:
+
+- `model_DFT(...; functionals=LDA(), symmetries=false)`;
+- `fft_size=(30, 30, 30)`, Γ only;
+- SCF tolerance 1e-11;
+- `FixedBands(n_bands_converge=2)`, so the LUMO is converged rather than
+  only computed.
+
+Three details came from reading DFTK, each with a specific question:
+
+- `load_psp(path)` in 0.8.2 dispatches on the file extension and knows
+  only `.gth`, not `.hgh` (`src/pseudo/load_psp.jl`). The script therefore
+  calls the HGH parser `PspHgh` directly on jaxdft's vendored file, and
+  records that file's SHA-256 in the output.
+- `energy_psp_correction` (`src/terms/psp_correction.jl`) is
+  N_el Σⱼ αⱼ / Ω. The test checks the reported value against that closed
+  form, so the convention is confirmed by measurement, as the post asked.
+- `FixedBands` (`src/scf/nbands_algorithm.jl`) separates the bands that are
+  converged from the bands that are only computed.
+
+The output JSON stores the fractional positions used. The tests build their
+structures from those, so the distorted geometry cannot drift between the
+Julia and Python definitions.
+
+**libxc setup** (`reference/libxc_lda/`). This uses the same pinned project.
+`lda_x`, `lda_c_pw` and `lda_c_pw_mod` are evaluated on 131 densities from
+1e-10 to 1e3 Bohr⁻³. `lda_c_pw_mod` is a negative control: the test asserts
+that it fails the comparison by more than a factor of 1000 at valence
+densities. A tolerance loose enough to accept the wrong parameter set would
+make the comparison meaningless, and the control guards against that.
+
+**The libxc tolerance was set after seeing the data.** The theory post fixed
+the DFTK tolerances but not a pointwise libxc tolerance. It is 1e-10
+relative. The worst measured difference is 6e-12, in correlation at
+ρ = 1e-10 (r_s ≈ 1300), where libxc and jaxdft round the same closed form
+differently. For ρ ≥ 1e-4 the differences are ~1e-15. The `lda_c_pw_mod`
+control sits at 3e-7 to 6e-6 for those densities.
+
+**Results.** Everything agrees four or more orders of magnitude inside its
+tolerance:
+
+| Quantity | Worst difference | Tolerance |
+|:--|:--:|:--:|
+| Energy terms | 5e-11 Ha | 1e-7 Ha |
+| Total energy | 4e-14 Ha | 1e-7 Ha |
+| Eigenvalues (after the α shift) | 4e-11 Ha | 1e-6 Ha |
+| Forces | 2e-11 Ha/Bohr | 1e-6 Ha/Bohr |
+
+Without the α shift the eigenvalues differ by 2.596e-6 Ha, exactly the
+amount the theory post predicted. No implementation change was needed.

@@ -91,3 +91,22 @@ NET_FORCE_MAX = 1e-8
 
 # Final eigenpair residuals must be below this fraction of the SCF tolerance.
 EIGEN_RESIDUAL_FRACTION = 0.1
+
+# --- Milestone 2a reference codes (theory post 02a, 'Tolerances', decision 11) ---
+# DFTK solves the same discrete problem (same pseudopotential file, functional,
+# box, cutoff and FFT grid), so agreement is limited by the SCF tolerances of the
+# two runs. Fixed in the theory post before either code was run.
+DFTK_ENERGY_ATOL = 1e-7  # Ha, per term and total
+DFTK_EIGENVALUE_ATOL = 1e-6  # Ha, after the explicit alpha shift
+DFTK_FORCE_ATOL = 1e-6  # Ha/Bohr
+# DFTK's PspCorrection against N_el sum_j alpha_j / Omega: a closed form, so only
+# rounding separates them.
+PSP_CORRECTION_ATOL = 1e-12
+
+# libxc lda_x and lda_c_pw evaluate the same closed forms as jaxdft in double
+# precision. Not fixed in the theory post; set when the reference was generated.
+# Measured worst relative difference 6e-12 (lda_c_pw at rho = 1e-10, r_s ~ 1300,
+# rounding in libxc's evaluation), ~1e-15 for rho >= 1e-4. 1e-10 relative leaves
+# a margin of 15 at the worst point and still fails any parameter transcription
+# error (lda_c_pw_mod differs by ~1e-6 relative).
+LIBXC_RTOL = 1e-10

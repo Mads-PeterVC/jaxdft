@@ -1,18 +1,23 @@
 ---
 title: "Milestone 2a: self-consistent LDA for H₂ validation"
-description: "H₂ in a box with the HGH pseudopotential: convergence in cutoff and box, bond length and frequency from forces, the grid rule, and one-sided weight derivatives."
+description: "H₂ in a box with the HGH pseudopotential: agreement with DFTK and libxc, convergence in cutoff and box, bond length and frequency from forces, the grid rule, and one-sided weight derivatives."
 date: 2026-11-06
 bibliography: ../references.bib
 ---
 
 ```{python}
 #| echo: false
+import json
+from pathlib import Path
+
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import altair as alt
 
 from jaxdft import (
+    Lattice,
     PlaneWaveBasis,
     SCFOptions,
     Structure,
@@ -24,6 +29,7 @@ from jaxdft import (
 from jaxdft.basis.planewave import min_fft_shape, rule_fft_shape
 from jaxdft.plotting import style
 from jaxdft.pseudo.gth import hgh_lda
+from jaxdft.xc.lda import lda_pw92, lda_x
 from jaxdft.units import PROTON_MASS_IN_ELECTRON_MASS, convert
 
 style.enable()
@@ -109,13 +115,14 @@ H₂ in a periodic cubic box, at Γ, with the local-only HGH hydrogen
 pseudopotential. The physics, conventions and tolerances are in the
 [theory post](../theory/02a_scf_h2.qmd).
 
-The acceptance tests sit on the first rung of the validation ladder:
-analytic electrostatics, the jellium limit, finite-difference forces and
-exact invariants. This document asks the next question. Are the converged
-numbers physically sensible, and how far are they from the converged limit?
-The code-to-code comparison with DFTK and libxc and the all-electron
-reference from HelFEM come after this round (theory post, decision 11). The
-section [Still to compare](#still-to-compare) lists them.
+The acceptance tests written before implementation sit on the first rung
+of the validation ladder: analytic electrostatics, the jellium limit,
+finite-difference forces and exact invariants. After implementation, the
+third rung was added (theory post, decision 11): DFTK run on the same
+discrete problem, and libxc for the functional. This document shows both
+comparisons. It then asks the next question: are the converged numbers
+physically sensible, and how far are they from the converged limit? The
+all-electron reference from HelFEM is [still to come](#still-to-compare).
 
 ## Setup
 
@@ -804,19 +811,211 @@ is the physical one for a molecule in a box. The right derivative is still the e
 derivative of the discrete problem, which is what the acceptance tests
 check.
 
+## Against DFTK and libxc
+
+```{python}
+#| echo: false
+REFERENCE = Path("../../reference")
+dftk = json.loads((REFERENCE / "dftk_h2" / "dftk_h2.json").read_text())
+libxc = json.loads((REFERENCE / "libxc_lda" / "libxc_lda.json").read_text())
+TOL_DFTK = {"energy": 1e-7, "eigenvalue": 1e-6, "force": 1e-6}  # theory post
+TOL_LIBXC = 1e-10  # relative; tests/support/tolerances.py
+REF_TOL = 1e-10  # our SCF tolerance for the comparison
+
+dftk_rows, dftk_diff = [], {}
+for system in dftk["systems"]:
+    lattice = Lattice(np.asarray(system["lattice_bohr"]))
+    s = Structure(
+        lattice, np.asarray(system["positions_fractional"]), ["H", "H"]
+    )
+    b = PlaneWaveBasis.build(
+        lattice,
+        GAMMA,
+        system["ecut_hartree"],
+        fft_shape=tuple(system["fft_size"]),
+    )
+    assert int(b.n_pw[0]) == system["n_plane_waves"]
+    opts = SCFOptions(tol=REF_TOL)
+    r = scf(s, b, terms, opts)
+    g = jax.grad(lambda st: energy(st, b, terms, opts))(s)
+    forces = -cartesian_gradient(g, s)
+    theirs = system["energies_hartree"]
+    shift = 2 * hydrogen.alpha / abs(np.linalg.det(lattice.vectors))
+    diff = {
+        **{
+            names[k]: float(r.energies[k])
+            - theirs[k]
+            - (theirs["PspCorrection"] if k == "AtomicLocal" else 0.0)
+            for k in names
+        },
+        "total": float(r.total_energy) - system["total_energy_hartree"],
+        "ε_HOMO − α/Ω": float(r.eigenvalues[0, 0])
+        - shift
+        - system["eigenvalues_hartree"][0],
+        "ε_LUMO − α/Ω": float(r.eigenvalues[0, 1])
+        - shift
+        - system["eigenvalues_hartree"][1],
+        "ε_HOMO, no shift": float(r.eigenvalues[0, 0])
+        - system["eigenvalues_hartree"][0],
+        "forces (max)": float(
+            np.abs(forces - np.asarray(system["forces_hartree_per_bohr"])).max()
+        ),
+    }
+    dftk_diff[system["name"]] = diff
+    dftk_diff[system["name"]]["psp"] = theirs["PspCorrection"] - 2 * shift
+tolerance = {
+    **{k: TOL_DFTK["energy"] for k in [*names.values(), "total"]},
+    "ε_HOMO − α/Ω": TOL_DFTK["eigenvalue"],
+    "ε_LUMO − α/Ω": TOL_DFTK["eigenvalue"],
+    "ε_HOMO, no shift": TOL_DFTK["eigenvalue"],
+    "forces (max)": TOL_DFTK["force"],
+}
+for quantity, tol in tolerance.items():
+    dftk_rows.append({
+        "quantity": quantity,
+        **{
+            f"{name} (jaxdft − DFTK)": f"{d[quantity]:+.1e}"
+            for name, d in dftk_diff.items()
+        },
+        "tolerance": f"{tol:.0e}",
+    })
+for name, d in dftk_diff.items():
+    for quantity, tol in tolerance.items():
+        if quantity != "ε_HOMO, no shift":
+            assert abs(d[quantity]) < tol, (name, quantity)
+    assert abs(d["psp"]) < 1e-12
+    assert abs(d["ε_HOMO, no shift"]) > 2e-6  # the shift is real
+worst_dftk = max(
+    abs(d[q])
+    for d in dftk_diff.values()
+    for q in tolerance
+    if q != "ε_HOMO, no shift"
+)
+pd.DataFrame(dftk_rows).style.hide(axis="index")
+```
+
+DFTK [@dftk2021] (version `{python} dftk["versions"]["DFTK"]`, libxc
+`{python} dftk["versions"]["libxc"]`) was run on the same discrete problem. It
+used the same HGH file, identified by its hash, the same box, cutoff and
+`{python} "×".join(map(str, dftk["systems"][0]["fft_size"]))` grid, Γ only and
+no symmetrisation. There are two geometries: the symmetric molecule and the
+distorted, off-centre one of the acceptance tests. The script and its pinned
+Julia environment are in `reference/dftk_h2/`. jaxdft is converged to
+`{python} f"{REF_TOL:.0e}"` for this comparison.
+
+Every energy term, the total energy, both eigenvalues and all force
+components agree to at most `{python} f"{worst_dftk:.0e}"` (Ha or Ha/Bohr).
+That is four or more orders of magnitude inside the tolerances fixed in the
+theory post before DFTK was run. The tolerances were set to be limited by
+the SCF convergence of the two runs, and so is the agreement. The total
+agrees better than the individual terms. It is variational, so its error is
+second order in the residual, while the terms trade first-order errors that
+cancel in the sum.
+
+Two conventions are confirmed by measurement rather than by reading
+source. DFTK's `PspCorrection` equals $N_\text{el}\sum_j\alpha_j/\Omega$ =
+`{python} f"{dftk['systems'][0]['energies_hartree']['PspCorrection']:.3e}"` Ha
+to rounding. It is the $\mathbf{G} = 0$ part of our `AtomicLocal`, so the
+table compares our `AtomicLocal` with DFTK's `AtomicLocal` plus
+`PspCorrection`. DFTK keeps that term out of the Hamiltonian, and we
+include it (decision 3). The row "ε_HOMO, no shift" shows the consequence:
+without the explicit shift of $-\sum_j\alpha_j/\Omega$ =
+`{python} f"{-2 * hydrogen.alpha / L_TEST**3:.3e}"` Ha, the eigenvalues differ by
+exactly that amount. With it, they agree to $10^{-11}$ Ha.
+
+```{python}
+#| column: page-inset
+#| echo: false
+rho_ref = jnp.asarray(libxc["rho"])
+_, v_x = lda_x(rho_ref)
+_, v_xc = lda_pw92(rho_ref)
+eps_x = lda_x.eps(rho_ref)
+eps_c = lda_pw92.eps(rho_ref) - eps_x
+ours = {
+    ("lda_x", "zk"): eps_x,
+    ("lda_x", "vrho"): v_x,
+    ("lda_c_pw", "zk"): eps_c,
+    ("lda_c_pw", "vrho"): v_xc - v_x,
+}
+labels = {"zk": "ε", "vrho": "v"}
+xc_rows = []
+control = ("lda_c_pw_mod", "zk")  # negative control: must be told apart
+for (fn, key), value in [*ours.items(), (control, eps_c)]:
+    rel = np.abs(
+        np.asarray(value) / np.asarray(libxc["functionals"][fn][key]) - 1
+    )
+    if (fn, key) == control:
+        mod_rel = rel
+    else:
+        assert rel.max() < TOL_LIBXC
+    xc_rows += [
+        {
+            "rho": float(x),
+            "quantity": f"{fn} {labels[key]}"
+            + (" (control)" if (fn, key) == control else ""),
+            "relative difference": max(float(y), 1e-17),
+        }
+        for x, y in zip(libxc["rho"], rel)
+    ]
+xc_df = pd.DataFrame(xc_rows)
+alt.Chart(xc_df).mark_line(point=alt.OverlayMarkDef(size=20)).encode(
+    x=alt.X("rho:Q", title="ρ (Bohr⁻³)", scale=alt.Scale(type="log")),
+    y=alt.Y(
+        "relative difference:Q",
+        title="|jaxdft / libxc − 1|",
+        scale=alt.Scale(type="log"),
+    ),
+    color=alt.Color(
+        "quantity:N",
+        title=None,
+        scale=alt.Scale(range=list(style.SERIES[:5])),
+    ),
+    tooltip=[
+        alt.Tooltip("quantity:N"),
+        alt.Tooltip("rho:Q", format=".2e"),
+        alt.Tooltip("relative difference:Q", format=".2e"),
+    ],
+).properties(width=style.WIDTH, height=300)
+```
+
+```{python}
+#| echo: false
+c_rel = xc_df[xc_df.quantity.isin(["lda_c_pw ε", "lda_c_pw v"])]
+c_worst = c_rel.loc[c_rel["relative difference"].idxmax()]
+dense = xc_df[(xc_df.rho >= 1e-4) & ~xc_df.quantity.str.contains("control")][
+    "relative difference"
+].max()
+mod_rho = np.asarray(libxc["rho"])
+mod_above = int((mod_rel > TOL_LIBXC).sum())
+assert mod_rel[mod_rho >= 1e-6].min() > 100 * TOL_LIBXC
+```
+
+The functional is compared pointwise with libxc `lda_x` and `lda_c_pw`
+(version `{python} libxc["versions"]["libxc"]`, `reference/libxc_lda/`). The
+energy per particle and the potential are compared on
+`{python} len(libxc["rho"])` densities from
+`{python} f"{min(libxc['rho']):.0e}"` to `{python} f"{max(libxc['rho']):.0e}"`
+Bohr⁻³. For $\rho \ge 10^{-4}$ every quantity agrees to
+`{python} f"{dense:.0e}"` relative, which is rounding. The largest difference,
+`{python} f"{c_worst['relative difference']:.0e}"`, is in correlation at
+$\rho$ = `{python} f"{c_worst['rho']:.0e}"` ($r_s \approx 1300$), where the two
+evaluations of the same closed form round differently.
+
+The control line compares our correlation with libxc's `lda_c_pw_mod`, the
+variant with more digits in the parameters. It differs by up to
+`{python} f"{mod_rel.max():.0e}"` relative at high density, and by at least
+`{python} f"{mod_rel[mod_rho >= 1e-6].min():.0e}"` for $\rho \ge 10^{-6}$. It
+exceeds the tolerance at `{python} mod_above` of `{python} len(mod_rel)` points.
+So the comparison confirms the parameter set, not only the formula. The two
+variants converge only in the dilute limit, where correlation itself
+vanishes.
+
 ## Still to compare
 
-These comparisons are planned for after the implementation round (theory
-post, decision 11). Their tolerances are fixed in the theory post.
-
-- **DFTK** at the acceptance size, with the same grid and pseudopotential:
-  each energy term and the total to $10^{-7}$ Ha, eigenvalues to $10^{-6}$ Ha
-  (after the $\alpha$ offset), and forces to $10^{-6}$ Ha/Bohr.
-- **libxc** `lda_x` + `lda_c_pw`, pointwise energy densities and potentials
-  over a range of densities.
-- **HelFEM**, all-electron LDA for H₂ with the same functional. Its $r_e$
-  and $\omega_e$ would separate the pseudopotential error from the error of
-  LDA itself in the comparison with experiment above.
+**HelFEM** [@lehtola2019]: all-electron LDA for H₂ with the same functional.
+Its $r_e$ and $\omega_e$ would separate the pseudopotential error from the
+error of LDA itself in the comparison with experiment above. This is for
+interpretation only, not an acceptance test (theory post, decision 6).
 
 ## Interpretation
 
@@ -830,7 +1029,10 @@ the expected behaviour throughout:
   molecule's position relative to the grid.
 
 Every one of these is a property of the discrete equations, so any factor
-or sign error in the energy terms would break at least one.
+or sign error in the energy terms would break at least one. DFTK, an
+independent implementation of the same discrete problem, agrees term by term
+to about $10^{-10}$ Ha. That rules out the remaining class of error the
+invariants cannot see: a convention that is wrong but self-consistent.
 
 Physically, the best-estimate LDA bond length and frequency show the usual
 LDA errors for H₂: a bond a few hundredths of an ångström too long and a
