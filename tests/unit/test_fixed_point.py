@@ -35,7 +35,9 @@ def test_anderson_beats_simple_mixing_on_a_slow_contraction():
     M, b, _ = linear_map()
     F = lambda x: M @ x + b
     fast = fixed_point(F, jnp.zeros(12), Anderson(depth=6, beta=0.7), tol=1e-10, max_iter=500)
-    slow = fixed_point(F, jnp.zeros(12), Anderson(depth=0, beta=0.7), tol=1e-10, max_iter=500)
+    # Simple mixing contracts the slowest mode by 1 - 0.7 * 0.05 = 0.965 per step: ~715
+    # steps to 1e-10, so the cap must allow that.
+    slow = fixed_point(F, jnp.zeros(12), Anderson(depth=0, beta=0.7), tol=1e-10, max_iter=2000)
     assert bool(fast.converged) and bool(slow.converged)
     assert int(fast.n_iter) < int(slow.n_iter) / 3
 

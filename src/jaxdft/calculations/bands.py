@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from jaxdft.basis.planewave import PlaneWaveBasis
+from jaxdft.hamiltonian.energy_terms import total_potential
 from jaxdft.hamiltonian.kinetic import Kinetic
 from jaxdft.hamiltonian.operator import apply_H, hamiltonian
 from jaxdft.solvers.eigen import dense_eigensolver
@@ -45,6 +46,7 @@ def band_structure(
     n_bands: int,
     terms: tuple = (Kinetic(),),
     solver: Callable = dense_eigensolver,
+    density=None,
 ) -> Bands:
     """Lowest ``n_bands`` eigenpairs of H(k) at every k-point of ``basis``.
 
@@ -52,20 +54,28 @@ def band_structure(
     n_bands <= min_k N_PW so that no padding eigenvalue is returned. Only
     eigenvalues below ``basis.ecut`` are guaranteed to lie below the padding
     sentinel when ``terms`` contains more than the kinetic energy.
+
+    Energy terms (local pseudopotential, Hartree, XC) contribute their potentials at the
+    fixed ``density`` on the basis grid (None: zero density), e.g. a converged SCF
+    density for non-self-consistent bands.
     """
     n_bands = int(n_bands)
     min_pw = int(jnp.min(basis.n_pw))
     if not 1 <= n_bands <= min_pw:
         raise ValueError(f"n_bands={n_bands} must be between 1 and min_k N_PW={min_pw}")
     terms = bind_terms(structure, terms)
-    eigenvalues, eigenvectors = _solve(structure, basis, terms, n_bands, solver)
+    if density is not None:
+        density = jnp.asarray(density, dtype=jnp.float64)
+    eigenvalues, eigenvectors = _solve(structure, basis, terms, n_bands, solver, density)
     return Bands(eigenvalues, eigenvectors, basis.kpoints, basis)
 
 
 @partial(jax.jit, static_argnums=(3, 4))
-def _solve(structure, basis, terms, n_bands, solver):
+def _solve(structure, basis, terms, n_bands, solver, density):
+    potential = total_potential(terms, structure, basis, density)
+
     def per_k(basis_k):
-        ham = hamiltonian(structure, basis_k, terms)
+        ham = hamiltonian(structure, basis_k, terms, potential=potential)
         eps, vecs = solver(lambda psi: apply_H(ham, psi), dim=basis_k.n_pad, n_bands=n_bands)
         return eps, jnp.where(basis_k.mask[:, None], vecs, 0)
 

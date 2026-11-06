@@ -11,17 +11,24 @@ import jax.numpy as jnp
 BOHR_IN_ANGSTROM = 0.529177210544  # CODATA 2022
 HARTREE_IN_EV = 27.211386245981  # CODATA 2022
 RYDBERG_IN_HARTREE = 0.5  # exact in atomic units
+HARTREE_IN_INVERSE_CM = 219474.63136314  # CODATA 2022, E_h / hc
+PROTON_MASS_IN_ELECTRON_MASS = 1836.152673426  # CODATA 2022
 
 # Size of one unit in the atomic unit of its dimension.
 _DIMENSIONS = {
     "length": {"Bohr": 1.0, "Angstrom": 1.0 / BOHR_IN_ANGSTROM},
-    "energy": {"Hartree": 1.0, "Rydberg": RYDBERG_IN_HARTREE, "eV": 1.0 / HARTREE_IN_EV},
+    "energy": {
+        "Hartree": 1.0,
+        "Rydberg": RYDBERG_IN_HARTREE,
+        "eV": 1.0 / HARTREE_IN_EV,
+        "cm-1": 1.0 / HARTREE_IN_INVERSE_CM,
+    },
 }
 
 
 def convert(value, from_unit: str, to_unit: str):
     """Convert ``value`` from ``from_unit`` to ``to_unit`` (case-sensitive names:
-    "Bohr", "Angstrom", "Hartree", "Rydberg", "eV"). Returns a float64 JAX array."""
+    "Bohr", "Angstrom", "Hartree", "Rydberg", "eV", "cm-1"). Returns a float64 JAX array."""
     for table in _DIMENSIONS.values():
         if from_unit in table and to_unit in table:
             x = jnp.asarray(value, dtype=jnp.float64)

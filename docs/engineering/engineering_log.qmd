@@ -932,3 +932,88 @@ Writing the tests fixed some details the API rounds had left open:
   `src/jaxdft/pseudo/data/README.md`.
 - **Slow tests.** The egg-box, grid-rule and derivative tests run many SCFs at
   the test size and are marked `slow`. They still run in the default suite.
+
+## 2026-11-06: Milestone 2a implementation
+
+The SCF, energy terms, grid, LOBPCG and differentiable energy are implemented, and
+all 330 tests pass (2 min 13 s on the laptop CPU). These are the decisions made
+during implementation that the API rounds did not settle.
+
+**Static shapes under `jax.grad`.** In JAX 0.12, values are not concrete inside
+`jax.grad`, even without `jit`: `float(x)` raises. So every array size must
+come from static data. Two places were affected.
+
+- **Ewald truncation.** Without a traced cell, `ewald_energy` sizes its sums on
+  the host. The `Ewald` term takes static ranges from the FFT grid instead: the
+  grid's reciprocal box, plus enough real-space images to cover a cell three
+  times more skewed than a cube. η is chosen under tracing to balance the two
+  truncations. A traced check (η r_R ≥ 6.5 and r_G/2η ≥ 6.5) makes the energy
+  NaN if the ranges are insufficient. The failure is loud, consistent with the
+  2a convention.
+- **Band count in `energy()`.** It is ceil(Σ Z/2) + 1 from the *unweighted*
+  charges, so it assumes λ ≤ 1. `scf()` is host-side and uses the actual
+  N_el. Finite differences at λ = 1 + δ go through `scf()`, so they are
+  unaffected.
+
+**XC vacuum threshold.** Below ρ = 1e-40 the functional is set to zero. At
+1e-300 the derivative of r_s ∝ ρ^(-1/3) overflows and the gradient became NaN.
+At 1e-40 everything is finite and ρε is about 1e-53. The smallest density in
+the H₂ boxes is about 5e-14.
+
+**Warm starts without mixing them.** `fixed_point` accepts an F that carries
+auxiliary state, `F(x, aux) -> (f, aux)`. The SCF uses it for the previous
+orbitals (LOBPCG warm starts). The state the solver mixes is still only the
+density, so implicit differentiation can later wrap the same solve. The first
+SCF step starts LOBPCG from a fixed-seed random block, masked to the basis.
+Padding components then stay exactly zero, because `apply_H` decouples them.
+
+**LOBPCG.** Rayleigh–Ritz on [X, W, P]. W and P are orthogonalised against X
+twice, scaled to unit columns, and orthonormalised by the eigendecomposition
+of their Gram matrix. Directions with relative Gram eigenvalue below 1e-12
+are dropped and pushed to a large Ritz value, which keeps shapes fixed. X is
+re-orthonormalised by QR every iteration. The SCF preconditioner is
+r/(max(T_G − ε, 0) + 1), with T from the kinetic diagonal. Eigensolver
+tolerance: 0.05 τ_SCF, floored at 2e-14 (rounding at ‖H‖ ~ 20 Ha). The SCF
+fails if any final residual exceeds 0.1 τ_SCF, floored at 1e-13.
+
+**Ewald self-exclusion.** The real-space sum originally dropped every pair at
+zero distance. A Hypothesis case with three coincident atoms showed that this
+silently gave a finite energy for distinct coincident charges, whose physical
+energy is infinite. Only i = j at R = 0 is excluded now.
+
+**Two corrections to the acceptance tests.** Both were errors in the tests,
+not in the expectations behind them.
+
+- `test_anderson_beats_simple_mixing_on_a_slow_contraction` capped simple
+  mixing at 500 iterations. With β = 0.7 the slowest mode contracts by 0.965
+  per step, so reaching 1e-10 takes about 715 steps. The cap is now 2000. The
+  assertion that Anderson (56 steps) is more than three times faster is
+  unchanged.
+- The Ewald property tests now `assume` a minimum image separation of
+  0.5 Bohr. Coincident point charges lie outside the input domain, because
+  their energy is infinite. That corresponds to the fix above.
+
+**Measured margins** (test size, H₂ at d = 1.45 Bohr):
+
+| Quantity | Measured | Review | Tolerance |
+|:--|:--:|:--:|:--:|
+| Total energy vs. NumPy cross-check | 1e-10 Ha | — | 1e-7 Ha |
+| FD force error, symmetric | 1.8e-7 Ha/Bohr | 1.8e-7 | 1e-6 |
+| FD force error, distorted (worst component) | 4.3e-7 Ha/Bohr | — | 1e-6 |
+| Net force, off-grid placement | 7e-10 Ha/Bohr | 2.5e-11 | 1e-8 |
+| Weight derivative, HOMO side | 2.9e-7 Ha | 2.9e-7 | 1e-5 |
+| Weight derivative, LUMO side | 4.1e-6 Ha | 4.1e-6 | 1e-5 |
+| Egg-box, rule grid (N = 30) | 5e-11 Ha | 2e-11 | < 1e-9 |
+| Egg-box, undersized (N = 24) | 3.2e-6 Ha | 8.4e-6 | > 1e-6 |
+| Max eigenpair residual | 2e-11 Ha | — | < 1e-10 |
+
+The undersized egg-box is 2.6 times smaller than the review measured, probably
+because of where the molecule sits relative to the coarse grid. It still
+clears the threshold by a factor of 3. The LUMO-side weight derivative has the
+thinnest margin, a factor of 2.4, as the post predicted. The fallback if it
+proves fragile remains Richardson extrapolation.
+
+**Timing.** An H₂ SCF at the test size (1503 plane waves, 30³ grid) converges
+in 8 Anderson steps. The first call takes about 1.2 s including compilation;
+repeat calls take 0.15 s. This goes into `performance.qmd` with the
+validation document.

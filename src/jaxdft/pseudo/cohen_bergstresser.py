@@ -24,7 +24,13 @@ SHELL_RTOL = 1e-8  # relative tolerance on q^2 when matching a tabulated shell
 
 
 class CohenBergstresser:
-    """Local-only Cohen-Bergstresser pseudopotential for a homopolar diamond crystal."""
+    """Local-only Cohen-Bergstresser pseudopotential for a homopolar diamond crystal.
+
+    An empirical model without point ions: ``ionic_charge`` is None, and the G = 0
+    limit ``alpha`` is 0 (the V0 = 0 convention)."""
+
+    ionic_charge = None
+    alpha = 0.0
 
     def __init__(self, lattice_constant_angstrom: float, form_factors_ry: dict[int, float]):
         # Publication units, stored as published.
