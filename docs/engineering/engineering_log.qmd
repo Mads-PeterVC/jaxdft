@@ -773,3 +773,102 @@ For jaxdft this means a future iterative solver should start from random
 vectors with every symmetry present, and keep the dense-versus-iterative
 agreement tests at small sizes: a converged residual alone would not catch a
 missed state.
+
+## 2026-11-06: Milestone 2a public API, agreed before implementation
+
+Settled in two question rounds with the project lead after the 2a theory
+post was reviewed, before any 2a test or code was written. The physics is in
+the [2a theory post](../theory/02a_scf_h2.qmd); this entry records the shape of
+the code.
+
+**The FFT grid lives on `PlaneWaveBasis`.** `PlaneWaveBasis.build(...,
+fft_shape=None)` computes the minimal grid from the no-wraparound rule,
+rounded up to 2·3·5-smooth sizes. An explicit `fft_shape` overrides it, for
+the undersized-grid positive control and for matching DFTK later. The shape
+is static. The basis gains transforms between coefficients and grid values.
+`CLAUDE.md` already says the basis owns real/reciprocal transforms. A separate
+grid object was rejected, because nothing would tie a grid to its basis.
+
+**Density-dependent terms define only an energy.** The local pseudopotential,
+Hartree and XC each implement `energy(structure, basis, ρ)`. The potential is
+`(N_tot/Ω) ∂E/∂ρ_j` by `jax.grad` with respect to the grid density. Several
+properties then hold by construction instead of by care: the potential is
+the exact derivative of the discrete energy, the α term is in the
+Hamiltonian, Janak's theorem holds, and direct and double-counting energies
+agree at self-consistency. GGA potentials come for free later. The cost is a
+reverse-mode FFT pair per evaluation. The `CLAUDE.md` wording on XC was
+updated to describe this design. Explicit DFTK-style (energy, potential)
+pairs were rejected: the α finding in the review showed how small, and how
+hard to see, a G = 0 or Ω mismatch between the two would be. Operator terms
+(kinetic now, nonlocal in 2b) keep the 1a/1b `prepare`/`apply` protocol.
+
+**`energy(structure, ...)` runs the SCF inside.** `jax.grad(energy)(structure)`
+gives forces, cell gradients and weight gradients. Inside, the converged
+orbitals are `stop_gradient`ed and the density is rebuilt from them and the
+λ-dependent occupations. A `custom_vjp` for implicit differentiation replaces
+the stop later, without changing the entry point. The SCF loop is therefore
+traceable (`lax.while_loop`). A host-facing `scf(...)` returns the full
+result (density, orbitals, eigenvalues, occupations, energy breakdown,
+iteration count, convergence flag) for runs and inspection. The two-step
+alternative (run `scf`, then differentiate `total_energy(s, result)`) was
+rejected. It silently gives wrong forces if `s` is not the structure the SCF
+ran on, and that cannot be checked under tracing.
+
+**Weight-derivative side: `energy(..., side=-1 | +1)`.** The occupation
+function has a `custom_jvp` whose slope at integer N_el is one-sided, so plain
+`jax.grad` returns the HOMO or the LUMO side, both from the same SCF result. A
+hand-coded `weight_derivatives` adding Z·ε± was rejected as a separately
+implemented derivative.
+
+**Failure under tracing is NaN.** If the SCF does not converge, the
+eigensolver does not converge, or the gap guard trips, `energy` returns NaN
+and its gradients are NaN. `scf()` on the host raises a descriptive error for
+the same conditions, and it is the diagnostic tool. Rejected: `has_aux`,
+whose check every call site could forget, and `checkify`, which is clunky for
+a user-facing function.
+
+**GTH pseudopotentials come from a parser and a vendored file.**
+`parse_hgh(path) -> GTH` reads the HGH/GTH text format. The hydrogen file
+`h-q1.hgh` ships verbatim as package data, copied from JuliaMolSim
+PseudoLibrary (`pseudos/hgh_lda_hgh/`), and a test pins its hash. A file with
+nonlocal projectors raises `NotImplementedError` until 2b extends the
+parser. The protocol gains the ionic charge (`None` for Cohen–Bergstresser,
+which has no point ions) and α (0 for Cohen–Bergstresser, its V₀ = 0
+convention). A typed-in Python builder was rejected because of the
+transcription risk: α is a 0.5 % residue of a cancellation and sensitive to
+the last digits.
+
+**Ewald is a term, and there is a model builder.** `lda_terms(pseudos)`
+returns `(Kinetic(), AtomicLocal(pseudos), Hartree(), Xc(lda_pw92), Ewald(pseudos))`.
+Energies are reported as a dict keyed by term name, mirroring DFTK's
+breakdown. Building the energy raises if the terms include an ionic
+pseudopotential but no `Ewald`, because that total is not the energy of a
+neutral cell.
+
+**Two local-pseudopotential terms.** `LocalPotential` (1b, neighbour gather,
+finite support only) stays as an operator term. `AtomicLocal` is the new FFT
+energy term and accepts any pseudopotential. The gather-versus-FFT test on
+Cohen–Bergstresser bands goes through public APIs. `band_structure` gains an
+optional `density` argument, which evaluates the potentials of energy terms
+at a fixed density. 2b needs it for silicon bands from a converged density.
+A single class switching implementation by support was rejected as hidden
+behaviour.
+
+**Decided without a question round, open to change while writing the tests:**
+
+- SCF settings are a frozen dataclass, `SCFOptions(tol, max_iter, n_bands,
+  mixer, eigensolver)`, static under `jit`. `mixer` is `Anderson(depth,
+  beta)`; simple mixing is `depth=0`. `n_bands` defaults to the occupied count
+  plus one.
+- The eigensolver keeps the 1a signature, `(apply, dim, n_bands)`, with an
+  optional initial block for warm starts. `lobpcg` and `dense_eigensolver`
+  both satisfy it. The first SCF step starts LOBPCG from random vectors (see
+  the saddle-point entry above). Later steps warm-start.
+- Orbitals keep the 1a layout `(n_k, n_pad, n_bands)`, k first. The density is
+  `(N1, N2, N3)` and real.
+- The molecule builder is `structure/builders/dimer.py`:
+  `dimer_in_box(species, bond_length, box, axis=2)`. It puts the bond centre on
+  a grid point at the box centre, for the D4h symmetry tests.
+- Unit conversions are added to `units.py` for Å (bond lengths, already
+  present) and cm⁻¹ with the proton mass (harmonic frequencies), each with a
+  round-trip test.
