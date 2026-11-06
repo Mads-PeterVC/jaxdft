@@ -91,3 +91,28 @@ H from conj(H), so it cannot tell a crystal from its inversion image. The
 convention ⟨G|V|G′⟩ = Ṽ(G − G′) and the structure-factor sign are therefore
 pinned by real-space and matrix-element tests rather than by any band energy.
 That will matter as soon as positions get forces.
+
+## 2026-11-06: A GP-posterior basis in 1D: variational, accurate, and an error proxy
+
+The ideas post `ideas/gp_basis.qmd` tests a Galerkin basis built from the GP
+posterior mean of grid values, with a squared-exponential kernel, on a
+harmonic oscillator and a sharp Pöschl–Teller well. Both wells have exact
+levels.
+
+- At equal node count, it beats sinc-DVR by a factor of a few on the sharp
+  well. Both converge exponentially, far faster than 8th-order finite
+  differences. Unlike the two collocation methods, it never put an eigenvalue
+  below the exact one.
+- Choosing the length scale by minimising the energy lands at the onset of
+  numerical rank loss in the overlap matrix. The variational principle is
+  finding a conditioning limit, not a property of the wavefunction.
+- With the length scale and amplitude fitted by marginal likelihood to the
+  calculation's own node values, the integrated posterior variance falls in
+  step with the true eigenvalue error: the error is roughly a power of the
+  variance. The power and the offset differ between the two wells, so this
+  is a monotone proxy, not a calibrated estimate.
+
+Limits: 1D only, analytic test wavefunctions (which suit a squared-exponential
+prior), accuracy per degree of freedom rather than per unit of work, and no
+periodic system. The cusp case, three dimensions, and non-uniform nodes are
+the obvious next tests.

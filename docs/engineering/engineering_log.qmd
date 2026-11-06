@@ -722,6 +722,38 @@ choices made while writing it:
   that the dense slope is the steepest, and chooses its wording for "dense is
   still faster at N = 749" from the measured comparison.
 
+## 2026-11-06: An Ideas section, and a first post on a GP basis
+
+`docs/ideas/` is a new section for exploratory tests of speculative methods.
+It follows the concept-post rules (its own NumPy/SciPy code, untested, never
+imported by jaxdft, with asserts on its own claims). It adds two rules, now in
+`CLAUDE.md`: each post states the limits of its test, and a promising result
+reaches the package only through a milestone.
+
+The first post, `ideas/gp_basis.qmd`, treats grid values as GP observations
+and uses the posterior mean as a Galerkin basis. It compares this with
+sinc-DVR and finite differences on two 1D wells. Numerical choices made while
+writing it:
+
+- **Basis in the Gaussian form.** The cardinal functions span the same space
+  as Gaussians centred on the nodes, so the post computes in the Gaussian
+  basis, where S and T are analytic. Near-dependence is handled by canonical
+  orthogonalisation with a relative threshold on the overlap eigenvalues.
+- **Potential matrix by fine-grid trapezoid, not Gauss–Hermite.** The first
+  version used 80-point Gauss–Hermite quadrature. Its error grows with the
+  kernel width, and the nearly singular overlap matrix amplifies it, so wide
+  kernels gave energies thousands of Ha *below* the exact values. A
+  variational optimiser of the length scale would have selected exactly
+  those. The averages depend only on the midpoint of each pair, which lies
+  on a half-spacing grid, so only 2N − 1 one-dimensional integrals are
+  needed. The trapezoid rule on a fine grid makes them accurate to rounding,
+  and an assert checks the matrices against brute-force quadrature. The post
+  keeps the Gauss–Hermite run as a cautionary curve.
+- **Rounding floor.** "Below exact" is judged against a floor of 1e-10 Ha,
+  about ε_mach·|ε|/√rcond for the deepest level, because canonical
+  orthogonalisation scales the weakest kept directions by 1/√s. Without it,
+  rounding at the 5e-12 level was flagged as a broken bound.
+
 ## 2026-11-06: Saddle-point example in the matrix-free post
 
 The LOBPCG section of the matrix-free post now explains why iterative solvers

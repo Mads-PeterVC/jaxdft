@@ -43,6 +43,7 @@ jaxdft/
 ├── docs/              # Quarto website
 │   ├── theory/        # one theory post per milestone
 │   ├── concepts/      # pedagogical explainers (see Documentation)
+│   ├── ideas/         # exploratory tests of speculative methods
 │   ├── validation/    # comparisons against references, with interpretation
 │   ├── engineering/   # engineering_log.qmd, performance.qmd
 │   └── research/      # research_log.qmd
@@ -271,6 +272,14 @@ validation documents:
 - Posts still assert the claims they make about their own computations, so a
   broken explainer breaks the render.
 - Interactive charts only where they answer a question a reader would ask.
+
+### Ideas posts
+`docs/ideas/` holds exploratory tests of speculative methods on small model
+problems. Every concept-post rule above applies to them, plus:
+- State the limits of the test (model problem, dimension, what was not
+  checked) in the post itself, and report negative or mixed results as such.
+- A promising result is not a design decision. An idea reaches jaxdft only
+  through the milestone workflow, starting from a theory post.
 
 ### Logs
 - `docs/engineering/engineering_log.qmd`: design decisions, refactors,

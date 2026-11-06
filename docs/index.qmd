@@ -16,6 +16,8 @@ than feature count or peak performance.
   milestone's physics.
 - [Concepts](concepts/index.qmd): pedagogical explainers of background ideas,
   with the code shown.
+- [Ideas](ideas/index.qmd): exploratory tests of speculative methods on small
+  model problems.
 - [Validation](validation/index.qmd): comparisons against analytic limits,
   published results and reference codes, with interpretation.
 - [Engineering](engineering/index.qmd): the engineering log and performance

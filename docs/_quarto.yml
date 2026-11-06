@@ -20,6 +20,8 @@ website:
         text: Theory
       - href: concepts/index.qmd
         text: Concepts
+      - href: ideas/index.qmd
+        text: Ideas
       - href: validation/index.qmd
         text: Validation
       - href: engineering/index.qmd
