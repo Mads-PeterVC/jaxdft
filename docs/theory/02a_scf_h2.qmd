@@ -1,0 +1,949 @@
+---
+title: "Milestone 2a: self-consistent LDA for H₂ in a box"
+description: "Kohn–Sham self-consistency with Hartree, LDA and a local GTH pseudopotential; total energy, Ewald, forces and per-atom weights, for an isolated molecule."
+date: 2026-11-06
+bibliography: ../references.bib
+---
+
+::: {.callout-note}
+## Status: reviewed, not yet implemented
+Reviewed on 2026-11-06. The review is kept at `reviews/review_02a_scf_h2.md`.
+It rebuilt the method independently from this post and found no physics
+error. It changed the design of several tests (the egg-box, the LUMO-side
+weight derivative, the $\alpha$ term, Nyquist planes) and answered the open
+questions. The decisions are recorded at the end of this post. Formulas
+marked *checked* were verified numerically while the post was being
+prepared, and again by the review.
+:::
+
+## Scope
+
+Milestone 2a is the first milestone with self-consistency and a total
+energy. The test system is the hydrogen molecule in a cubic box, at the
+Γ point only, with a spin-unpolarised LDA and the local-only HGH hydrogen
+pseudopotential. The system is chosen so that the new machinery stands
+alone:
+
+- **Closed shell, gapped:** no spin, no smearing, and integer occupations at
+  the physical point.
+- **Local pseudopotential only:** the HGH hydrogen pseudopotential has no
+  nonlocal projectors [@hgh1998]. The pseudopotential protocol needs no new
+  methods.
+- **Γ only:** no k-point sampling. k remains a batch dimension of size 1, so
+  nothing assumes a single k-point.
+
+New in 2a:
+
+- an FFT grid in the basis, with real/reciprocal transforms, and the local
+  potential applied in real space,
+- the electron density, the Hartree potential (FFT Poisson) and LDA
+  exchange–correlation,
+- the GTH analytic form factor, a real pseudopotential with unbounded support,
+- the Ewald ion–ion energy and the consistent treatment of every $\mathbf{G}=0$ term,
+- the Kohn–Sham total energy as a differentiable function of positions, cell
+  and per-atom weights,
+- the SCF as a fixed-point problem, `solve(F, ρ₀)`, with Anderson mixing,
+- forces from `jax.grad`, and one-sided derivatives with respect to the
+  per-atom weights,
+- an iterative eigensolver (LOBPCG), since converged boxes are far beyond
+  dense diagonalisation,
+- the design of the first reference-code comparison (DFTK). The comparison
+  itself runs after implementation (decision 11).
+
+Out of scope: spin polarisation (and so the hydrogen atom), smearing and
+metals, k-point sampling, nonlocal projectors (2b), stress as a physical
+quantity, second derivatives, implicit differentiation through the SCF,
+dipole and multipole corrections for isolated systems, and GGA.
+
+Atomic units throughout. Bond lengths are converted to Å, and vibrational
+frequencies to cm⁻¹, only at the output boundary.
+
+## Kohn–Sham DFT in a plane-wave basis
+
+The Kohn–Sham equations [@kohn_sham1965] replace interacting electrons by
+non-interacting ones in an effective potential that depends on their own
+density:
+
+$$
+\Big(-\tfrac12\nabla^2 + V_\text{eff}[\rho](\mathbf{r})\Big)\psi_{n\mathbf{k}}
+= \varepsilon_{n\mathbf{k}}\psi_{n\mathbf{k}},
+\qquad
+\rho(\mathbf{r}) = \sum_\mathbf{k} w_\mathbf{k}\sum_n f_{n\mathbf{k}}\,|\psi_{n\mathbf{k}}(\mathbf{r})|^2,
+$$
+
+$$
+V_\text{eff} = V_\text{loc} + V_\text{H}[\rho] + V_\text{xc}[\rho].
+$$
+
+Here $w_\mathbf{k}$ are k-point weights summing to 1, and $f_{n\mathbf{k}} \in [0, 2]$
+are occupations including spin. In 2a there is one k-point, Γ, with
+$w = 1$. The orbitals use the plane-wave expansion and normalisation of the
+[1a post](01a_empty_lattice.qmd), with the same cutoff sphere
+$\tfrac12|\mathbf{k}+\mathbf{G}|^2 \le E_\text{cut}$. $V_\text{loc}$ is the local
+pseudopotential with the structure factor of the
+[1b post](01b_cohen_bergstresser.qmd), per-atom weights included.
+
+The density is real, lattice-periodic and non-negative, and
+$\int_\Omega \rho = N_\text{el}$. With the 1a convention
+$\tilde\rho(\mathbf{G}) = \Omega^{-1}\int_\Omega \rho\, e^{-i\mathbf{G}\cdot\mathbf{r}}$,
+normalisation is the single statement $\Omega\,\tilde\rho(\mathbf{0}) = N_\text{el}$.
+
+## The FFT grid
+
+$|\psi|^2$ contains wavevectors $(\mathbf{k}+\mathbf{G}) - (\mathbf{k}+\mathbf{G}')$
+for $\mathbf{G}, \mathbf{G}'$ in the basis, so $|\mathbf{G}-\mathbf{G}'| \le 2G_\text{max}$,
+independent of $\mathbf{k}$. A real-space grid of $N_1\times N_2\times N_3$ points
+represents the Miller indices $-N_i/2 \le m_i < N_i/2$ (as `fftfreq` does).
+The 1a Cauchy–Schwarz argument bounds the Miller indices of the difference
+sphere by $|m_i| \le 2G_\text{max}|\mathbf{a}_i|/2\pi$, so
+
+$$
+N_i \ge 2\left\lfloor \frac{2G_\text{max}|\mathbf{a}_i|}{2\pi}\right\rfloor + 1
+$$
+
+guarantees that every difference $\mathbf{G}-\mathbf{G}'$ is represented on
+the grid without wrapping round. The minimum is then rounded up to the next
+size whose prime factors are 2, 3 and 5, which suits both XLA's FFT and
+DFTK, so the same grid can be passed to both. This is DFTK's default
+`supersampling = 2`, and Quantum ESPRESSO's `ecutrho = 4 ecutwfc`.
+
+With this grid, two operations are **exact**, not approximations. Both rest
+on the same fact: a product on the grid is a *cyclic* convolution of Fourier
+coefficients, with indices taken modulo $N_i$, and the cyclic convolution
+equals the true one whenever no index difference that occurs wraps round.
+
+1. **The density.** $\widetilde{|\psi|^2}(\mathbf{G}) = \Omega^{-1}\sum_{\mathbf{G}'}\overline{c(\mathbf{G}'-\mathbf{G})}\,c(\mathbf{G}')$
+   involves only differences of basis vectors. Computed by an inverse FFT,
+   squared on the grid and transformed back, it is exact: there is no
+   aliasing.
+2. **The local potential applied to an orbital.** For a potential given by
+   its grid coefficients $\tilde V(\mathbf{G})$, the component of
+   $\text{FFT}\big(V(\mathbf{r})\,\psi(\mathbf{r})\big)$ at a basis vector
+   $\mathbf{G}$ is the cyclic sum $\sum_{\mathbf{G}'}\tilde V\big((\mathbf{G}-\mathbf{G}') \bmod N\big)c(\mathbf{G}')$.
+   For $\mathbf{G}, \mathbf{G}'$ both in the basis, the difference does not wrap,
+   so this equals $\sum_{\mathbf{G}'}\tilde V(\mathbf{G}-\mathbf{G}')c(\mathbf{G}')$
+   exactly. Components of $V\psi$ *outside* the basis are aliased, but they
+   are discarded. So the dense matrix built from the FFT operator equals
+   $\tilde V(\mathbf{G}-\mathbf{G}')$ to rounding. That is a test.
+
+Truncating an analytic $\tilde V_\text{loc}$ to the grid is likewise
+harmless. Every basis pair has $|\mathbf{G}-\mathbf{G}'| \le 2G_\text{max}$, inside
+the grid, and $\tilde\rho$ vanishes outside the $2G_\text{max}$ sphere, so
+neither $H$ nor $E_\text{loc}$ sees the discarded components.
+
+**Nyquist planes.** For even $N_i$ the grid holds the index $-N_i/2$ but not
+$+N_i/2$, so the Nyquist planes have no conjugate partner. An analytic form
+factor evaluated there and transformed gives a **complex** $V_\text{loc}(\mathbf{r})$
+whenever the structure is not inversion-symmetric about a grid point. The
+review measured $\max|\operatorname{Im}V| = 3.9\times10^{-4}$ Ha with one atom
+of H₂ displaced by $10^{-3}$ Bohr, which is exactly the finite-difference
+force geometry. The physics never needs those planes: at the test size the
+Hamiltonian uses $|m_i| \le 14$, and the Nyquist index is 15. But `apply_H`
+is no longer Hermitian if they are kept. **Rule:** analytically evaluated
+form factors are zeroed on the Nyquist planes. The Hermiticity test runs on
+a displaced, non-symmetric geometry, where it can fail.
+
+Exactly one thing in the discrete functional is not exact: XC is a nonlinear
+function evaluated pointwise on the grid, so $V_\text{xc}(\mathbf{r})$ on the
+grid is aliased relative to the continuum functional, and $E_\text{xc}$ is a
+quadrature. Every other term (kinetic, local, Hartree, Ewald) is exactly
+covariant under translation. So XC quadrature is the only source of the
+egg-box effect discussed below. This is the standard plane-wave
+approximation. It also means the grid is part of the definition of the
+discrete energy functional, not just a numerical device. Two consequences
+follow:
+
+- **Variational monotonicity needs a fixed grid.** For nested bases (increasing
+  $E_\text{cut}$) the minimised energy is non-increasing only if the
+  functional itself does not change. The monotonicity test therefore fixes
+  the grid at the size needed by the largest cutoff. In practice the effect
+  is tiny. Above the grid-rule threshold the review found the energy
+  insensitive to the grid size below $10^{-9}$ Ha, and the default rule gave
+  a monotone sequence anyway. The fixed grid makes the test correct by
+  construction rather than by luck.
+- **Reference comparisons need the same grid.** DFTK is run with an explicit
+  `fft_size` equal to ours.
+
+**FFT normalisation.** On a grid of $N_\text{tot}$ points,
+$\psi(\mathbf{r}_j) = \Omega^{-1/2}\sum_\mathbf{G} c(\mathbf{G})e^{i(\mathbf{k}+\mathbf{G})\cdot\mathbf{r}_j}
+= \Omega^{-1/2}N_\text{tot}\,\text{IFFT}[c]_j\, e^{i\mathbf{k}\cdot\mathbf{r}_j}$ with
+numpy's convention (the $1/N_\text{tot}$ sits in the inverse transform),
+$\tilde\rho = \text{FFT}[\rho]/N_\text{tot}$, and
+$\int_\Omega g = (\Omega/N_\text{tot})\sum_j g(\mathbf{r}_j)$ for any $g$ with
+components on the grid. Every one of these factors is a round-trip or
+normalisation test, since this is where plane-wave codes lose factors of
+$N_\text{tot}$ and $\Omega$.
+
+The grid, and the transforms between basis coefficients and grid values,
+belong to the basis object, as `CLAUDE.md` requires. Hamiltonian terms ask
+the basis for transforms; they do not call FFTs on index arrays of their own.
+
+### The local term moves to real space
+
+The 1b neighbour gather works only for form factors of finite support. The
+GTH form factor has none. In 2a the local pseudopotential becomes part of
+one real-space effective potential,
+$V_\text{eff}(\mathbf{r}) = V_\text{loc}(\mathbf{r}) + V_\text{H}(\mathbf{r}) + V_\text{xc}(\mathbf{r})$,
+applied with one FFT pair per block of bands. $\tilde V_\text{loc}(\mathbf{G})$ is
+evaluated analytically on every grid vector, then transformed once. As the
+1b post promised, the FFT local term must reproduce the Cohen–Bergstresser
+bands of 1b to $10^{-10}$ Ha (the gather and FFT terms must agree), and the
+gather term stays for finite-support potentials.
+
+## The GTH local pseudopotential
+
+The Goedecker–Teter–Hutter local potential [@gth1996; @hgh1998] is
+
+$$
+v(r) = -\frac{Z}{r}\,\operatorname{erf}\!\Big(\frac{r}{\sqrt2\,r_\text{loc}}\Big)
++ e^{-x^2/2}\big(C_1 + C_2x^2 + C_3x^4 + C_4x^6\big),
+\qquad x = r/r_\text{loc},
+$$
+
+with $Z$ the ionic (valence) charge. It is the Coulomb potential of a
+Gaussian charge plus a short-range Gaussian polynomial, so its Fourier
+transform is analytic. In our convention
+$\hat v(q) = \int v(r)e^{-i\mathbf{q}\cdot\mathbf{r}}d\mathbf{r}$, with $y = (q r_\text{loc})^2$:
+
+$$
+\hat v(q) = -\frac{4\pi Z}{q^2}e^{-y/2}
++ (2\pi)^{3/2} r_\text{loc}^3\, e^{-y/2}\Big[C_1 + C_2(3-y) + C_3(15-10y+y^2)
++ C_4(105-105y+21y^2-y^3)\Big].
+$$
+
+*Checked* against a numerical radial Fourier transform at
+$q = 0.3, 1, 3, 7$ Bohr⁻¹ for arbitrary $C_1\dots C_4$. It agrees to
+$10^{-15}$ relative.
+
+The $-4\pi Z/q^2$ divergence is the Coulomb tail. It is not a property of the
+pseudopotential but of the long range of the Coulomb interaction, and it is
+handled together with the Hartree and Ewald terms (next section). What is
+left at $q\to0$ is
+
+$$
+\alpha \equiv \lim_{q\to0}\Big[\hat v(q) + \frac{4\pi Z}{q^2}\Big]
+= 2\pi Z r_\text{loc}^2 + (2\pi)^{3/2} r_\text{loc}^3\,(C_1 + 3C_2 + 15C_3 + 105C_4),
+$$
+
+which is also *checked* numerically. The pseudopotential object therefore
+exposes the following, all in Ha·Bohr³ and cell-independent:
+
+- the **full form factor** `local(q)`, for $q > 0$;
+- the **ionic charge** $Z$, which the Ewald term needs;
+- the **non-Coulomb $q = 0$ limit** $\alpha$.
+
+`local_support` is `None` (unbounded). The protocol in `jaxdft.pseudo` already
+allows that.
+
+**Hydrogen.** The HGH LDA parameters for H [@hgh1998], as distributed in
+DFTK's PseudoLibrary (`hgh_lda_hgh/h-q1.hgh`) [@pseudolibrary_h] and
+identical to CP2K's `GTH-PADE-q1` entry, are $Z = 1$, $r_\text{loc} = 0.2$ Bohr,
+$C_1 = -4.18023680$ Ha, $C_2 = 0.72507482$ Ha, and $C_3 = C_4 = 0$, with no
+nonlocal projectors. The parameters are already in atomic units, so no
+conversion is needed. The parameter file will store them verbatim, with the
+file as provenance. The review confirmed the same values, to six decimals,
+in ABINIT's HGH file, whose header cites [@hgh1998].
+
+**$\alpha$ for hydrogen is a near-cancellation.**
+$\alpha(\mathrm{H}) = 2\pi r_\text{loc}^2 + (2\pi)^{3/2}r_\text{loc}^3(C_1+3C_2)
+= 0.251\,327 - 0.252\,625 = -0.001\,297\,886$ Ha·Bohr³, a residue of 0.5 %.
+(For comparison, HGH silicon has $\alpha \approx -5$ Ha·Bohr³.) Two consequences
+follow:
+
+- A wrong $\mathbf{G}=0$ convention for the local term is only weakly visible
+  for hydrogen. At $L = 10$ Bohr the eigenvalue shift
+  $\sum_j\lambda_j\alpha_j/\Omega$ is $-2.60\times10^{-6}$ Ha and the energy
+  $N_\text{el}\sum_j\lambda_j\alpha_j/\Omega$ is $-5.19\times10^{-6}$ Ha. Tests
+  therefore assert these **values** rather than an agreement between two
+  codes.
+- Conversely, $\alpha$ is a sharp check of the last digits of $C_1$ and
+  $C_2$ in the parameter file.
+
+Two caveats:
+
+- These parameters were fitted with the Goedecker–Teter–Hutter Padé LDA. We
+  use them with PW92 (next sections), as DFTK does. The Padé is itself a fit
+  to PW92, and its exchange limit is the Slater coefficient below, so the
+  mismatch is small. The review measured it end to end at $L = 12$ Bohr and
+  $E_\text{cut} = 30$ Ha: $\Delta r_e = +0.0004$ Bohr and
+  $\Delta\omega_e = -3$ cm⁻¹, but $\Delta E = +0.49$ mHa in the total energy.
+  That is the same order as the basis-set error at 40 Ha, so total energies
+  must never be compared across the two functionals. A code-to-code
+  comparison with the same functional is unaffected.
+- $r_\text{loc} = 0.2$ Bohr makes hydrogen a **hard** pseudopotential. In the
+  throwaway check, the H₂ total energy at $L = 10$ Bohr was 33 mHa above its
+  50 Ha value at $E_\text{cut} = 10$ Ha, 9 mHa above at 20 Ha, 3.5 mHa above
+  at 30 Ha and still 1.2 mHa above at 40 Ha. Energy *differences* converge faster (see
+  [what to expect](#what-the-results-should-look-like)).
+
+## Electrostatics and the G = 0 terms
+
+The electron–electron, electron–ion and ion–ion Coulomb energies each
+diverge for a periodic system. Only their sum for a neutral cell is finite.
+We use the standard momentum-space scheme [@ihm_zunger_cohen1979]. Each term
+drops its divergent $\mathbf{G}=0$ part, and the finite remainders are kept
+consistently:
+
+**Hartree.**
+
+$$
+E_\text{H} = \frac{\Omega}{2}\sum_{\mathbf{G}\ne0}\frac{4\pi\,|\tilde\rho(\mathbf{G})|^2}{G^2},
+\qquad
+\tilde V_\text{H}(\mathbf{G}) = \frac{4\pi\,\tilde\rho(\mathbf{G})}{G^2}\ (\mathbf{G}\ne0),
+\qquad \tilde V_\text{H}(\mathbf{0}) = 0 .
+$$
+
+**Local pseudopotential.** With the 1b structure factor,
+
+$$
+\tilde V_\text{loc}(\mathbf{G}) = \frac1\Omega\sum_j \lambda_j\, e^{-i\mathbf{G}\cdot\boldsymbol\tau_j}\,\hat v_j(|\mathbf{G}|)\ (\mathbf{G}\ne0),
+\qquad
+\tilde V_\text{loc}(\mathbf{0}) = \frac1\Omega\sum_j\lambda_j\alpha_j,
+$$
+
+$$
+E_\text{loc} = \int_\Omega V_\text{loc}\,\rho = \Omega\sum_\mathbf{G}\overline{\tilde V_\text{loc}(\mathbf{G})}\,\tilde\rho(\mathbf{G}).
+$$
+
+Its $\mathbf{G}=0$ part is $N_\text{el}\sum_j\lambda_j\alpha_j/\Omega$. DFTK
+reports this part separately as `PspCorrection`.
+
+**Ewald.** Point ions of charge $\lambda_jZ_j$ in a uniform neutralising
+background [@ewald1921], with splitting parameter $\eta$:
+
+$$
+\begin{aligned}
+E_\text{Ewald} ={}& \frac12\sum_{i,j}\sum_\mathbf{R}{}^{'}\, q_iq_j\,\frac{\operatorname{erfc}(\eta|\boldsymbol\tau_i-\boldsymbol\tau_j+\mathbf{R}|)}{|\boldsymbol\tau_i-\boldsymbol\tau_j+\mathbf{R}|}
++ \frac{2\pi}{\Omega}\sum_{\mathbf{G}\ne0}\frac{e^{-G^2/4\eta^2}}{G^2}\Big|\sum_j q_je^{i\mathbf{G}\cdot\boldsymbol\tau_j}\Big|^2 \\
+&- \frac{\eta}{\sqrt\pi}\sum_j q_j^2 - \frac{\pi}{2\eta^2\Omega}\Big(\sum_jq_j\Big)^2,
+\qquad q_j = \lambda_jZ_j,
+\end{aligned}
+$$
+
+where the prime omits $i = j$ at $\mathbf{R}=0$. The result is independent of $\eta$.
+The last term is the finite remainder of the background. Without it, $\eta$
+independence fails, so it is a sharp test. The real-space and reciprocal sums
+are truncated on the host for a requested accuracy. The truncation sets fix
+array shapes and stay fixed under differentiation, as the 1b coupling vectors
+did.
+
+**Why this is consistent.** The dropped divergences are, schematically,
+$\tfrac{2\pi}{\Omega G^2}(N_\text{el}^2 - 2N_\text{el}Q + Q^2)$ with
+$Q = \sum_jq_j$, i.e. $\propto (N_\text{el}-Q)^2$. They cancel for a neutral cell.
+The per-atom weights keep the cell neutral by construction, since
+$N_\text{el} = \sum_j\lambda_jZ_j = Q$ (see [per-atom weights](#per-atom-weights)).
+The derivative of $(N_\text{el}-Q)^2$ with respect to either also vanishes at
+neutrality, so derivatives are consistent too.
+
+**Eigenvalues have no absolute zero.** Setting
+$\tilde V_\text{H}(\mathbf{0}) = 0$ and the Coulomb part of $\tilde V_\text{loc}(\mathbf{0})$
+to zero fixes the *average electrostatic potential in the cell* to zero. For a
+molecule in a box, that is not the vacuum level. Eigenvalues are therefore
+defined only up to this convention, and $\varepsilon_\text{HOMO}$ is not an
+ionisation energy without a vacuum alignment, which is out of scope. We
+include $\sum_j\lambda_j\alpha_j/\Omega$ in the Hamiltonian, not only in the
+energy, so that $\partial E/\partial f_n = \varepsilon_n$ holds exactly
+(Janak's theorem [@janak1978]). The weight derivatives rely on that.
+According to its term definition, DFTK's `PspCorrection` is energy-only: it
+contributes no operator. DFTK's eigenvalues should therefore be *higher* than
+ours by exactly $-\sum_j\lambda_j\alpha_j/\Omega = 2.60\times10^{-6}$ Ha at the test
+size. That is only 2.6 times the eigenvalue tolerance, so a comparison that
+forgets the shift nearly passes. The comparison therefore asserts the shift
+as an explicit constant. It also checks DFTK's reported `PspCorrection`
+against $N_\text{el}\sum_j\lambda_j\alpha_j/\Omega$, which pins the convention by
+measurement rather than by reading source.
+
+### Analytic electrostatic checks (*checked*)
+
+- **Madelung constants.** One unit point charge per cell in a neutralising
+  background, energy per ion in units of $1/r_\text{ws}$
+  ($r_\text{ws} = (3\Omega/4\pi)^{1/3}$): sc −0.880 059 442 1, bcc −0.895 929 255 7,
+  fcc −0.895 873 615 2. NaCl (rocksalt, charges ±1, no background term since
+  $Q = 0$): −1.747 564 594 6 per ion pair in units of $1/r_0$. The throwaway
+  Ewald reproduced all four to $10^{-10}$, independently of $\eta$. These
+  test the background term, the self-term and the sign conventions
+  separately.
+- **Gaussian Hartree identity.** For a periodic Gaussian of charge $Z$ and
+  width $\sigma$, $\tilde\rho(\mathbf{G}) = (Z/\Omega)e^{-G^2\sigma^2/2}$, the Hartree
+  energy above and the Ewald energy of a point charge $Z$ in the same cell
+  satisfy
+
+  $$
+  E_\text{H}[\rho_\sigma] = E_\text{Ewald}(Z) + \frac{Z^2}{2\sqrt\pi\,\sigma} + \frac{2\pi Z^2\sigma^2}{\Omega}
+  $$
+
+  up to terms of order $\operatorname{erfc}(L/2\sigma)$. Choose
+  $\eta = 1/2\sigma$ in the Ewald sum and the reciprocal parts coincide; the
+  remainder is the Gaussian self-energy and the background term. The
+  identity ties the Hartree solver to the Ewald sum, and both to an analytic
+  self-energy. It held to $10^{-15}$ for $L = 8$, $\sigma = 0.6$.
+
+## Exchange and correlation
+
+The XC functional is a callable `(density) -> (energy, potential)`, as in
+`CLAUDE.md`. In the LDA,
+
+$$
+E_\text{xc} = \int_\Omega \rho\,\varepsilon_\text{xc}(\rho)
+\approx \frac{\Omega}{N_\text{tot}}\sum_j \rho_j\,\varepsilon_\text{xc}(\rho_j),
+\qquad
+V_\text{xc}(\mathbf{r}) = \frac{d(\rho\varepsilon_\text{xc})}{d\rho}\Big|_{\rho(\mathbf{r})},
+$$
+
+with $\varepsilon_\text{xc} = \varepsilon_\text{x} + \varepsilon_\text{c}$ for the
+unpolarised gas at Wigner–Seitz radius $r_s = (3/4\pi\rho)^{1/3}$:
+
+- **Slater exchange:** $\varepsilon_\text{x} = -\tfrac34(3/\pi)^{1/3}\rho^{1/3}
+  = -\tfrac34(3/2\pi)^{2/3}/r_s = -0.458\,165\,293\,3/r_s$.
+- **PW92 correlation** [@pw1992], unpolarised:
+  $\varepsilon_\text{c} = -2A(1+\alpha_1r_s)\ln\!\Big[1 + \dfrac{1}{2A(\beta_1r_s^{1/2}+\beta_2r_s+\beta_3r_s^{3/2}+\beta_4r_s^{2})}\Big]$
+  with $A = 0.031091$, $\alpha_1 = 0.21370$, $\beta_1 = 7.5957$, $\beta_2 = 3.5876$,
+  $\beta_3 = 1.6382$, $\beta_4 = 0.49294$ (Hartree).
+
+This is libxc's `lda_x` + `lda_c_pw`, which is what DFTK's `LDA()` uses. libxc
+also has `lda_c_pw_mod`, with more digits in the parameters. On the
+converged H₂ density at the test size the two correlation energies differ by
+$2.1\times10^{-7}$ Ha (from the review), twice the per-term DFTK tolerance. The
+choice is recorded. Before implementation, the stored PW92 parameters are
+checked against the paper and the $r_s\to0$ limit against exchange. The
+pointwise comparison with libxc `lda_c_pw`, with the libxc version pinned,
+comes with the reference-code stage (decision 11).
+
+The potential is the derivative of the energy density, so it is computed by
+autodiff of the pointwise $\rho\,\varepsilon_\text{xc}(\rho)$ rather than coded
+separately. The test is the analytic exchange potential,
+$v_\text{x} = \tfrac43\varepsilon_\text{x}$, plus a finite-difference check of
+$v_\text{c}$. libxc's $v_\text{c}$ at reference densities follows with the
+reference-code stage.
+
+**Vacuum.** The density in the box corners is small but positive. Its
+minimum is around $10^{-10}$ to $10^{-8}$ at $L = 10$ Bohr, depending on where
+the molecule sits on the grid (the throwaway check and the review differ in
+placement), and about $5\times10^{-14}$ at $L = 14$ Bohr. The last is close to
+the density thresholds below which libxc sets the functional to zero. Its
+contribution to the energy is negligible, but a term-by-term comparison in
+large boxes should know about it. The density from $|\psi|^2$ is
+non-negative on the grid, but a mixed density need not be. So:
+
+- $\varepsilon_\text{xc}$ must be finite at $\rho = 0$, and so must its
+  derivative. $r_s \to \infty$ and $\rho^{1/3}$ have infinite derivatives at
+  0, so the implementation needs the double-`where` guard, or autodiff
+  returns NaN even where the value is masked.
+- Negative grid densities from mixing are clipped to zero and the density is
+  then **rescaled to $N_\text{el}$**. Clipping alone changes $\int\rho$, and a
+  non-neutral iterate brings back the $\mathbf{G}=0$ divergence that the
+  electrostatics section cancels. The review's SCF misbehaved until it
+  renormalised. Clip-then-renormalise belongs to the SCF solver, not to the
+  functional, and it is what makes "$\int\rho = N_\text{el}$ at every iterate"
+  true rather than merely checkable.
+
+This is the first place where second derivatives (a later milestone) will
+need care: $d^2(\rho\varepsilon_\text{x})/d\rho^2 \propto \rho^{-2/3}$ diverges in
+vacuum.
+
+**Uniform density (the jellium rung).** For a constant density, $E_\text{H} = 0$
+exactly, and the grid quadrature of $E_\text{xc}$ is exact,
+$E_\text{xc} = N_\text{el}\,\varepsilon_\text{xc}(r_s)$. Run through the full
+density-to-energy path, that is an analytic check of exchange and of the
+plumbing at several $r_s$. The free-electron kinetic energy of jellium needs
+metallic occupations, so it is not tested here.
+
+## The total energy
+
+$$
+E = \underbrace{\sum_\mathbf{k} w_\mathbf{k}\sum_n f_{n\mathbf{k}}\sum_\mathbf{G}\tfrac12|\mathbf{k}+\mathbf{G}|^2|c_{n\mathbf{k}}(\mathbf{G})|^2}_{E_\text{kin}}
++ E_\text{loc} + E_\text{H} + E_\text{xc} + E_\text{Ewald}.
+$$
+
+This is the **direct** form, a function of orbitals, occupations and
+structure. It is the one that gets differentiated. At self-consistency it
+equals the **double-counting** form,
+
+$$
+E = \sum_{n\mathbf{k}} w_\mathbf{k}f_{n\mathbf{k}}\varepsilon_{n\mathbf{k}} - E_\text{H} + E_\text{xc} - \int_\Omega V_\text{xc}\,\rho + E_\text{Ewald},
+$$
+
+and the two differ by a term of second order in the SCF residual. Their
+agreement is a self-consistency test.
+
+DFTK reports the same terms as `Kinetic`, `AtomicLocal` (our $E_\text{loc}$
+without its $\mathbf{G}=0$ part), `PspCorrection` (that part), `Hartree`, `Xc`
+and `Ewald`. The comparison is made **term by term**, which localises any
+disagreement.
+
+## Self-consistency as a fixed point
+
+Following `CLAUDE.md`, the SCF is written as `solve(F, ρ₀)` with
+
+$$
+F(\rho_\text{in}) = \rho_\text{out}\big[\psi(V_\text{eff}[\rho_\text{in}])\big]:
+$$
+
+build $V_\text{eff}$ from $\rho_\text{in}$, diagonalise, occupy and build the
+output density. A fixed point $\rho = F(\rho)$ is a Kohn–Sham ground state.
+These are the decisions behind that:
+
+- **The state is the density on the grid,** a real array of shape
+  $(N_1,N_2,N_3)$ with no k or band index. It is small, k-independent and
+  directly physical. Potential mixing is equivalent at the fixed point and
+  needs no clipping. The interface keeps the mixed variable inside the
+  solver, so a later milestone can switch to it without touching `F`.
+- **Mixing belongs to the solver, not to F.** F knows the physics, the solver
+  knows the fixed-point algorithm. 2a uses Anderson acceleration
+  [@anderson1965] (Pulay/DIIS mixing): a damped step on a least-squares
+  combination of the last $m$ residuals $F(\rho)-\rho$. Simple linear mixing
+  is the $m = 0$ special case and the first test of the interface.
+- **No Kerker preconditioning.** It suppresses the long-wavelength charge
+  sloshing of metals and large cells. A small molecule in a 10–14 Bohr box
+  converged in about 10 iterations without it, in both the throwaway check
+  and the review.
+- **The convergence criterion** is
+  $\|F(\rho)-\rho\| = \big(\int_\Omega(F(\rho)-\rho)^2\big)^{1/2} < \tau_\text{SCF}$.
+  The energy error is second order in the residual and the force error first
+  order. The forces set the tolerance, not the energy.
+- **Jit and control flow.** One SCF iteration is one jitted function. The
+  loop is a `lax.while_loop`, or a host loop around the jitted iteration (an
+  engineering choice that is revisited if it matters). A run that has not
+  converged returns a flag that the caller checks on the host. Unconverged
+  results are never returned silently. That covers the eigensolver as well
+  as the SCF loop (see below).
+- **Initial density.** A sum of normalised Gaussians, one per atom, carrying
+  $\lambda_jZ_j$ electrons, with default width $\sigma = 0.8$ Bohr. The converged
+  result must not depend on it, or on the mixing parameters.
+
+`F` never imports a functional, pseudopotential or basis by name. It receives
+the structure, the basis and a tuple of terms.
+
+### Occupations
+
+$N_\text{el} = \sum_j\lambda_jZ_j$, which is 2 for H₂ at $\lambda = 1$. Bands are
+filled from the bottom, two electrons each, with a fractional remainder in
+the last band: $f_n = \min(2, \max(0, N_\text{el} - 2n))$ for $n = 0, 1, \dots$
+This is exact for closed shells and well defined for fractional $N_\text{el}$
+(non-unit weights). The SCF computes at least one band above the highest
+occupied one. That band is the LUMO the weight derivatives need, and its gap
+to the HOMO is checked. If the gap is below a threshold, the run raises
+rather than proceed: aufbau filling of a degenerate partially occupied level
+breaks symmetry arbitrarily, and smearing is out of scope. The guard is a
+numerical criterion, not a physical one. For a molecule in a box the LUMO is
+a box state (see [the isolated molecule](#the-isolated-molecule)).
+
+### The eigensolver
+
+At the test size ($L = 10$ Bohr, $E_\text{cut} = 10$ Ha) the basis has 1503
+plane waves, and dense `eigh` of the operator-built matrix is affordable in
+each SCF step. The converged physics ($L \approx 12$ Bohr, $E_\text{cut} \ge 30$ Ha)
+needs about $1.35\times10^4$ plane waves, so a dense complex matrix takes
+2.7 GB, and an $O(N^3)$ diagonalisation runs at every SCF step. Only one or
+two bands are needed. 2a therefore adds an iterative block eigensolver
+(LOBPCG with the kinetic-energy preconditioner of Teter, Payne and Allan
+[@payne_teter_allan1992]). It goes behind the existing solver interface and
+is tested against dense `eigh` at the test size. In the review, a full SCF
+at the test size took 0.4 s with LOBPCG against 9 s with dense `eigh`. The
+two agreed to $7\times10^{-16}$ Ha in the energy and $2\times10^{-13}$ Ha in the
+eigenvalues.
+
+- **It need not be differentiable.** Forces stop the gradient on the
+  converged orbitals, so no derivative ever passes through the eigensolver.
+  This is a consequence of the design, not an extra assumption, and it lets
+  the solver be chosen purely on numerics. It is also why we write our own
+  rather than use `jax.experimental.sparse.linalg.lobpcg_standard`. That
+  routine targets the *largest* eigenvalues, and the usual workaround, the
+  spectrum of $\sigma I - H$, destroys the relative gap ($\sigma \approx 2E_\text{cut}$
+  against a 0.35 Ha gap). It also has no place for the preconditioner.
+- **The hard part is the conditioning of the $[X, R, P]$ block,** not the
+  algorithm. The solver plans explicit re-orthonormalisation with a fallback
+  that drops near-dependent directions. It warm-starts from the previous SCF
+  step's orbitals, which is what makes it cheap. The padding sentinel stays a
+  small multiple of $E_\text{cut}$, as in 1a.
+- **Its tolerance is tied to $\tau_\text{SCF}$.** An eigensolver with a fixed
+  tolerance silently floors the SCF residual. The final eigenpair residuals
+  $\|H\psi-\varepsilon\psi\|$ are asserted to be below a fixed fraction of
+  $\tau_\text{SCF}$, and an eigensolver that does not converge is reported,
+  never ignored.
+
+## Forces and other derivatives
+
+`CLAUDE.md` asks for the total energy as a differentiable function of
+positions, cell and per-atom weights, with forces from `jax.grad`. In 2a the
+energy function is
+
+$$
+E(\text{structure}) = E_\text{direct}\big[\,\operatorname{sg}(\psi^\ast),\ f(\lambda),\ \text{structure}\,\big],
+$$
+
+where $\psi^\ast$ are the converged orbitals and $\operatorname{sg}$ is
+`stop_gradient`. The density is rebuilt from the stopped orbitals and the
+occupations **inside** the differentiated function. Stopping the gradient on
+the orbitals rather than on the density is deliberate: it lets the
+occupations' dependence on $\lambda$ through $N_\text{el}$ reach the gradient.
+
+**Why the stopped gradient is exact.** The KS energy is stationary with
+respect to orbital variations at self-consistency, and the plane-wave basis
+does not depend on atomic positions. So the total derivative with respect to
+$\boldsymbol\tau_j$ equals the explicit partial derivative
+(Hellmann–Feynman), with no Pulay term. The explicit dependence is in
+$E_\text{loc}$ (through the structure factor) and $E_\text{Ewald}$. The force is
+then the exact derivative of the *discrete* energy, grid and quadrature
+included, so a central finite difference of the converged energy must agree
+with it to the FD truncation and SCF errors. The egg-box effect does not
+spoil this agreement; it is part of the same discrete function. The review
+measured the FD error falling from $7.1\times10^{-5}$ to $7.1\times10^{-7}$
+Ha/Bohr as $h$ went from $10^{-2}$ to $10^{-3}$ Bohr, a clean $h^2$.
+
+**Net force and the egg-box effect.** Translating every atom by $\mathbf{t}$
+multiplies $\tilde V_\text{loc}$ by $e^{-i\mathbf{G}\cdot\mathbf{t}}$. If $\mathbf{t}$ is
+a grid vector, every grid quantity shifts by whole grid points, and the
+energy is invariant exactly. For a general $\mathbf{t}$ only the XC quadrature
+changes, so $E$ depends slightly on the molecule's position relative to the
+grid, and $\sum_j\mathbf{F}_j \ne 0$ by the same amount.
+
+The review measured how slightly: with the grid rule satisfied, the
+peak-to-peak variation under translation is $2\times10^{-11}$ Ha at the test size
+and $10^{-13}$ or less at larger cutoffs, with net forces of the same order.
+That is at the level of SCF noise. A smooth pseudo-density at
+supersampling 2 makes the quadrature error negligible. **The egg-box effect
+is a test of the grid rule, not a physical quantity to report.** Crossing the
+no-wraparound threshold changes it by orders of magnitude. At the test size
+(rule minimum $N = 29$):
+
+| $N$ | 20 | 24 | 29 | 30 | 36 |
+|:--|:--:|:--:|:--:|:--:|:--:|
+| egg-box peak-to-peak (Ha) | $1.1\times10^{-4}$ | $8.4\times10^{-6}$ | $5.9\times10^{-11}$ | $2.1\times10^{-11}$ | $1.8\times10^{-12}$ |
+
+(from the review). The tests are as follows:
+
+- exact invariance, to the SCF tolerance, under grid-vector translations;
+- an egg-box variation at the noise level for a grid that satisfies the
+  rule, and a variation orders of magnitude larger for an undersized grid
+  ($N = 24$), as the positive control;
+- the net force of an off-grid, *non-symmetric* placement, where it is a real
+  (and tiny) quantity. For the centred molecule it vanishes by symmetry, and
+  testing it there tests nothing.
+
+### Per-atom weights
+
+Weight $\lambda_j$ scales atom $j$'s
+local potential (including its Coulomb tail and $\alpha_j$), its ionic charge
+in the Ewald sum, and its $\lambda_jZ_j$ electrons. The cell stays neutral
+for every $\lambda$. By Janak's theorem [@janak1978] and the Hellmann–Feynman
+argument above,
+
+$$
+\frac{\partial E}{\partial\lambda_j}\bigg|_\pm = \frac{\partial E_\text{direct}}{\partial\lambda_j}\bigg|_{\psi,f\ \text{fixed}} + Z_j\,\varepsilon_\pm,
+\qquad
+\varepsilon_- = \varepsilon_\text{HOMO},\ \varepsilon_+ = \varepsilon_\text{LUMO},
+$$
+
+at integer $N_\text{el}$. The left derivative removes charge from the HOMO; the
+right adds it to the LUMO. The occupation function is piecewise linear in
+$N_\text{el}$, so autodiff at the kink returns one side, depending on how the
+`min`/`max` are written. The energy function therefore takes the side
+explicitly, and **both** one-sided derivatives come from the single SCF at
+$\lambda = 1$, as `CLAUDE.md` asks. $\lambda = 0$ (a lone, open-shell H atom in an
+unpolarised calculation) is out of scope.
+
+**The two sides are not equally easy to check.** Each side is tested
+against a one-sided finite difference built from separate SCF runs at
+$\lambda_j = 1 \mp \delta, 1 \mp 2\delta$. The review found the left (HOMO) side
+cleanly second order ($2.9\times10^{-7}$ Ha at $\delta = 10^{-3}$). The right
+(LUMO) side converges more slowly and with an observed order of only about
+1.6: $3.8\times10^{-5}$ at $\delta = 10^{-3}$, $4.1\times10^{-6}$ at
+$\delta = 2.5\times10^{-4}$. The formula is not at fault. At $\lambda_1 = 1.01$,
+where everything is smooth, a central difference agrees with it as
+$\delta^2$. The cause is that $E$ is strongly curved just above integer
+$N_\text{el}$. $\varepsilon_\text{LUMO}$ moves at $-0.80$ Ha per unit $\lambda$
+as $\delta\to0^+$, but at only $-0.57$ by $\delta = 5\times10^{-3}$. That is
+plausibly the diffuse box-state LUMO contracting onto the molecule once it
+holds charge, but this is an interpretation, not a measurement. The right
+side therefore uses a smaller $\delta$ and its own tolerance (below). The
+structural check is the sharp one: the two sides differ by
+$Z_j(\varepsilon_\text{LUMO}-\varepsilon_\text{HOMO})$, which held to $10^{-9}$ in
+the review and needs no reference.
+
+**The right derivative is a box artefact.** $\varepsilon_\text{LUMO}$ is the
+antibonding $\sigma_u^*$ level. It is unbound in free space, so in a box it
+is a particle-in-a-box state whose energy is set by $L$ (next section). So
+$\partial E/\partial\lambda_j|_+$ is not converged in $L$ at the 10 mHa
+level, while $\partial E/\partial\lambda_j|_-$ is physical. The structural check
+is unaffected, since both sides inherit the same $\varepsilon_\text{LUMO}$.
+
+### Cell and second derivatives
+
+**Cell.** At fixed Miller-index sets and fixed grid shape, every term is a
+smooth function of the lattice vectors, so `jax.grad` with respect to the
+cell must exist, be finite and agree with finite differences at the same
+fixed basis. That is the stress of a *fixed-basis* calculation, without the
+Pulay correction. Nothing physical is concluded from it in 2a. The test only
+guards the differentiable path for a later stress milestone.
+
+**Vibrational frequency.** The harmonic frequency comes from finite
+differences of the analytic forces, not from an autodiff Hessian. Second
+derivatives may not stop the gradient (`CLAUDE.md`), and implicit
+differentiation through the SCF is a later milestone.
+
+## The isolated molecule
+
+A molecule in a periodic box interacts with its images. H₂ is neutral and has
+no dipole, so the leading electrostatic image interaction is
+quadrupole–quadrupole, $O(L^{-5})$ [@makov_payne1995]. Overlap of density
+tails between images decays exponentially. The throwaway check at
+$E_\text{cut} = 20$ Ha and $d = 1.45$ Bohr gave:
+
+| $L$ (Bohr) | 8 | 10 | 12 | 14 |
+|:--|:--:|:--:|:--:|:--:|
+| $E - E(14)$ (mHa) | −12.6 | −2.2 | 0.03 | 0 |
+| $\varepsilon_\text{HOMO}$ (Ha) | −0.3745 | −0.3660 | −0.3658 | −0.3670 |
+| $\varepsilon_\text{LUMO}$ (Ha) | −0.0034 | −0.0139 | −0.0123 | −0.0095 |
+
+The small boxes are *lower* in energy. Tail overlap with the images
+stabilises the molecule, which is a reminder that convergence in $L$ is not
+variational. At $L = 12$ Bohr the energy is within 0.1 mHa of $L = 14$, and
+the HOMO within about 1 mHa. The LUMO wanders over 10 mHa, not
+monotonically, because it is a box state (see above). Eigenvalues are also
+subject to the absolute-zero caveat of the electrostatics section. The
+validation document recomputes this table from the library, adding the
+bond length and the gap as functions of $L$. No multipole correction is
+applied.
+
+The molecule is placed along a cube axis with its centre on a grid point.
+That makes the symmetry operations of the molecule that also map the cubic
+grid to itself ($D_{4h}$) exact symmetries of the discrete problem.
+
+## What the results should look like
+
+From the throwaway NumPy check (Slater + PW92, HGH H, Γ only, grid by the
+rule above):
+
+| | $E_\text{cut}$ = 10 | 20 | 30 | 40 Ha |
+|:--|:--:|:--:|:--:|:--:|
+| $E$ at $d = 1.44$ Bohr, $L = 12$ (Ha) | −1.1030 | −1.1266 | −1.1330 | −1.1353 |
+| $r_e$ (Bohr) | 1.510 | 1.475 | 1.454 | 1.453 |
+| $\omega_e$ (cm⁻¹), from the review | 3728 | 4171 | 4155 | 4109 |
+
+The review reproduced every entry to the digits shown, with a five-point
+quartic fit for $r_e$ and $\omega_e$. At $E_\text{cut} = 10$ Ha, $L = 10$ Bohr and
+$d = 1.45$ Bohr, the HOMO–LUMO gap is 0.347 Ha, and the SCF converges to
+$\|F(\rho)-\rho\| < 10^{-10}$ in about 10 Anderson steps.
+
+Interpretation, to be confirmed in the validation document:
+
+- The bond length converges to about 1.453 Bohr (0.769 Å) by 30–40 Ha,
+  faster than the total energy, as expected for an energy difference.
+  Experiment gives $r_e = 0.7414$ Å and $\omega_e = 4401$ cm⁻¹
+  [@huber_herzberg1979]. The LDA is known to overestimate the H₂ bond
+  slightly, at about 0.765 Å all-electron. A pseudopotential value within
+  about 0.005 Å of that is the expected outcome. The functional-matched
+  all-electron reference is planned from HelFEM [@lehtola2019], after
+  implementation (decisions 6 and 11).
+- The harmonic frequency is 4100–4200 cm⁻¹ and still moving with the cutoff
+  at the 50 cm⁻¹ level. Its spread across fits came from the fitting, not
+  from the grid. The validation document computes it from finite
+  differences of the forces.
+- The validation document covers $d$ near $r_e$ only. Spin-unpolarised LDA is
+  qualitatively wrong for a stretched bond (beyond about 2.5 Bohr), so a
+  Morse fit over a wide range would be meaningless.
+
+None of these numbers is an acceptance value. Before implementation, the
+acceptance values are the analytic checks and the invariants below. DFTK
+adds code-to-code acceptance values after implementation, with the
+tolerances already fixed in this post.
+
+## Invariants and checks
+
+**Grid and transforms**
+
+- Round trips basis → grid → basis are the identity, and
+  $\Omega N_\text{tot}^{-1}\sum_j|\psi_j|^2 = 1$ for normalised coefficients.
+- $\int\rho = N_\text{el}$ to $10^{-12}$ relative, for any orbitals and occupations.
+- $\rho \ge 0$ on the grid. The density from $|\psi|^2$ has no aliasing:
+  its Fourier coefficients agree with the direct convolution of the
+  coefficients.
+- The FFT local operator, built densely, equals $\tilde V(\mathbf{G}-\mathbf{G}')$,
+  is Hermitian, and agrees with `apply_H` on random blocks. Hermiticity is
+  tested on a geometry that is not inversion-symmetric about a grid point.
+  Analytic form factors are zero on the Nyquist planes.
+- The FFT local term reproduces the 1b Cohen–Bergstresser bands to
+  $10^{-10}$ Ha (the gather and FFT terms agree).
+- The grid size satisfies the no-wraparound bound, has prime factors in
+  {2, 3, 5}, and is the minimal such size.
+- **The grid rule matters:** with the rule satisfied, the egg-box variation
+  and the dependence of $E$ on $N$ are at noise level. With an undersized grid
+  ($N = 24$ at the test size) both are orders of magnitude larger.
+
+**Electrostatics and XC**
+
+- Madelung constants (sc, bcc, fcc, NaCl) to $10^{-10}$, at two values of $\eta$.
+- Ewald is $\eta$-independent to $10^{-10}$, and invariant under translating
+  all ions and under permuting identical ions.
+- The Gaussian Hartree identity to $10^{-10}$.
+- Hartree of a single cosine density: $\tilde V_\text{H} = 4\pi\tilde\rho/G^2$,
+  $E_\text{H}$ analytic.
+- The GTH form factor against numerical quadrature, and $\alpha$ against the
+  $q\to0$ limit. $\alpha(\mathrm{H}) = -0.001\,297\,886$ Ha·Bohr³ from the stored
+  parameters.
+- Exchange: $\varepsilon_\text{x}(r_s)$ and $v_\text{x} = \tfrac43\varepsilon_\text{x}$ to
+  $10^{-14}$. PW92: the stored parameters equal the published ones,
+  $\varepsilon_\text{c} < 0$ and increasing in $r_s$, and $v_\text{c}$ agrees with a
+  finite difference of $\rho\varepsilon_\text{c}$. Later, against libxc
+  `lda_c_pw` values in `reference/`, to $10^{-12}$ (decision 11).
+- Uniform density through the full path: $E_\text{H} = 0$,
+  $E_\text{xc} = N_\text{el}\varepsilon_\text{xc}(r_s)$.
+- XC value and derivative are finite at $\rho = 0$.
+
+**SCF and energy**
+
+- The converged density integrates to $N_\text{el}$ and is a fixed point:
+  $\|F(\rho)-\rho\| < \tau_\text{SCF}$.
+- Direct and double-counting energies agree to $O(\tau_\text{SCF}^2)$.
+- Variational in the orbitals: perturbing the converged orbitals (and
+  re-orthonormalising) raises the energy, quadratically in the perturbation.
+  This holds because the gapped aufbau solution is a *minimum* of
+  $E[\{\psi\}]$ on the orthonormality manifold, not merely a stationary
+  point.
+- Every SCF iterate integrates to $N_\text{el}$ (clip-then-renormalise).
+- Final eigenpair residuals below a fixed fraction of $\tau_\text{SCF}$.
+- Monotone decrease with $E_\text{cut}$ at a fixed grid.
+- Independence of the initial density, of the mixing depth and of the damping.
+- Exact invariance under grid-vector translations and under the axis
+  permutations that map the cubic grid to itself (H₂ along $x$, $y$ or $z$).
+- The converged density has the $D_{4h}$ symmetry of the placed molecule.
+- Exchanging the two atoms leaves $E$ and $\rho$ unchanged. Explicit
+  $\lambda = (1, 1)$ equals the default.
+- A converged run with $\lambda_1 \ne 1$ (fractional $N_\text{el}$, a neutral cell),
+  so that the weight path is covered by an SCF test and not only by the
+  derivative checks.
+- Iterative and dense eigensolvers give the same SCF result.
+- All physical arrays are float64 or complex128.
+
+**Derivatives**
+
+- Forces against central finite differences of the converged energy, at the
+  equilibrium-region and a distorted bond length.
+- The net force of an off-grid, non-symmetric placement is at the egg-box
+  noise level.
+- One-sided $\partial E/\partial\lambda_j$ at $\lambda = 1$ against one-sided finite
+  differences, each side with its own step and tolerance. The difference of
+  the two sides equals $Z_j$ times the gap.
+- Cell gradient finite, and equal to finite differences at a fixed basis.
+
+**Against references** (after implementation; decision 11)
+
+1. DFTK [@dftk2021], run with `LDA()`, the same box, $E_\text{cut}$, explicit
+   `fft_size`, Γ only, the same positions, and `symmetries=false`. Without
+   that, DFTK symmetrises the density, and for distorted or off-centre
+   configurations the two codes would solve slightly different discrete
+   problems. Compared: every energy term, the total energy, the HOMO and
+   LUMO eigenvalues (with the asserted $\alpha$ shift), and the forces. Runs:
+   the test size ($L = 10$ Bohr, $E_\text{cut} = 10$ Ha) at a symmetric
+   geometry and at a distorted, off-centre one. DFTK's `PspCorrection` must
+   equal $N_\text{el}\sum_j\lambda_j\alpha_j/\Omega = -5.19\times10^{-6}$ Ha. Script
+   and outputs live in `reference/dftk_h2/`, with the DFTK and libxc
+   versions recorded and the pseudopotential identified by family and file
+   hash.
+
+### Tolerances
+
+- **Exact identities** (transforms, Madelung, Ewald $\eta$-independence, the
+  Gaussian identity, gather vs FFT): $10^{-10}$ in the relevant unit. Lattice
+  sums are converged to $10^{-12}$, so this leaves a margin of 100.
+- **SCF tolerance:** $\tau_\text{SCF} = 10^{-9}$ (the $L^2$ density residual, in
+  $e\,\text{Bohr}^{-3/2}$). Energy errors are then of order $10^{-12}$ Ha or
+  below, and force errors of order $10^{-8}$ Ha/Bohr or below, with
+  prefactors to be confirmed when the tests are written.
+- **Finite-difference forces:** a central difference with a single-atom step
+  $h$ has truncation error $h^2E'''/6$. The review measured
+  $E''' \approx 1.06$ Ha/Bohr³ along the bond at $d = 1.45$ Bohr, giving
+  $1.8\times10^{-7}$ Ha/Bohr at $h = 10^{-3}$. The tolerance is $10^{-6}$ Ha/Bohr.
+  $E'''$ is larger at the distorted bond length, so the test computes
+  $E'''$ there from its own FD energies and asserts that the bound still
+  leaves a margin.
+- **Weight derivatives:** a second-order one-sided stencil. Left (HOMO)
+  side: $\delta = 10^{-3}$, tolerance $10^{-5}$ Ha (measured $2.9\times10^{-7}$).
+  Right (LUMO) side: $\delta = 2.5\times10^{-4}$, tolerance $10^{-5}$ Ha (measured
+  $4.1\times10^{-6}$). The right side's margin is thin by nature, as explained
+  above. If it proves fragile, the fallback is Richardson extrapolation over
+  $\delta$, not a looser tolerance. The SCF for these runs is converged to
+  $\tau_\text{SCF} = 10^{-12}$, so that SCF noise divided by $\delta$ stays far
+  below the tolerance. Sides differ by $Z_j\times$gap to $10^{-8}$ Ha.
+- **DFTK:** $10^{-7}$ Ha per energy term and in total, $10^{-6}$ Ha for
+  eigenvalues and $10^{-6}$ Ha/Bohr for forces. Both codes solve the same
+  discrete problem, so the agreement is limited only by the SCF tolerances
+  of the two runs. A wrong factor of $\Omega$, a missing Hartree or Ewald
+  background term, or `lda_c_pw_mod` instead of `lda_c_pw` ($2\times10^{-7}$ Ha)
+  each fails. The $\alpha$ convention for hydrogen is too small to be caught
+  by agreement alone (about $5\times10^{-6}$ Ha), which is why its value is
+  asserted separately.
+
+## Decisions from review
+
+1. **Iterative eigensolver: in 2a, our own LOBPCG** with the kinetic
+   preconditioner, warm starts, robust re-orthonormalisation, and a
+   tolerance tied to $\tau_\text{SCF}$. It need not be differentiable, because
+   forces stop the gradient on the orbitals.
+2. **Functional: Slater + PW92 (`lda_c_pw`)**, matching DFTK's `LDA()`. The
+   mismatch with the Padé LDA the HGH parameters were fitted with is
+   0.0004 Bohr in $r_e$ and 3 cm⁻¹ in $\omega_e$, but 0.5 mHa in $E$. Total
+   energies are never compared across the two.
+3. **$\alpha$ goes into the Hamiltonian**, so $\varepsilon_n = \partial E/\partial f_n$
+   exactly. The DFTK eigenvalue offset ($+2.60\times10^{-6}$ Ha at the test
+   size) and `PspCorrection` ($-5.19\times10^{-6}$ Ha) are asserted values,
+   confirmed by measurement when the reference data is generated.
+4. **Density mixing** with clip-then-renormalise. The mixed variable lives
+   in the solver, so potential mixing can replace it later without changing
+   `F`.
+5. **DFTK**, when it is run (decision 11), via juliaup and a pinned project
+   in `reference/dftk_h2/`:
+   explicit `fft_size`, `symmetries=false`, DFTK and libxc versions recorded,
+   pseudopotential by family and hash.
+6. **All-electron reference for interpretation: HelFEM** [@lehtola2019], a
+   finite-element diatomic solver with libxc, run with `lda_x` + `lda_c_pw`.
+   It is free of basis-set error and matched in functional, so the
+   remaining difference is the pseudopotential error. NIST CCCBDB's "LSDA"
+   is Slater + VWN5, a different correlation functional, so it is not used.
+   If HelFEM proves impractical to install, this falls back to a cited
+   literature value with its functional stated. Validation only; never an
+   acceptance test. Deferred along with DFTK (decision 11).
+7. **Test size $L = 10$ Bohr, $E_\text{cut} = 10$ Ha** (1503 plane waves, a 30³ grid),
+   with three cheap additions: a displaced, non-symmetric geometry (the
+   Nyquist/Hermiticity path and a non-trivial net force), an undersized grid
+   ($N = 24$) as the positive control for the grid rule, and an SCF run with
+   $\lambda_1 \ne 1$.
+8. **The egg-box effect is a grid-rule test**, not a reported physical
+   quantity. Above the rule it is SCF noise ($\lesssim 10^{-11}$ Ha); below,
+   it is orders of magnitude larger.
+9. **The weight-derivative checks are split by side**, each with its own
+   step and tolerance. The structural $Z\times$gap check is the sharp test.
+   The LUMO side is documented as a box artefact in $L$.
+10. **The exactness argument for the FFT operator.** The review suggested
+    that "no difference $\mathbf{G}-\mathbf{G}'$ wraps" proves the density
+    claim but not the operator claim, and it gave a separate bound
+    ($N_i \ge 4\max|m_i|+1$). I kept the difference argument, made explicit
+    through the cyclic convolution in the FFT-grid section. The operator's
+    output at a basis vector involves only $\tilde V$ at differences of
+    basis vectors, so the same condition covers both. The aliasing of $V\psi$
+    beyond $2G_\text{max}$ that the review's bound guards against lands only
+    on components outside the basis, which are discarded. At Γ the
+    difference bound implies the review's, since
+    $\lfloor 2x\rfloor \ge 2\lfloor x\rfloor$. Unlike it, the difference form
+    also holds at general $\mathbf{k}$, where the basis sphere is not centred
+    on $\mathbf{G}=0$.
+11. **Reference codes after implementation.** No reference code (DFTK,
+    HelFEM, libxc) is installed for the acceptance-test stage. The acceptance
+    tests written before implementation are the analytic checks and
+    invariants above. They already fix the normalisation and $\mathbf{G}=0$
+    conventions without a reference code: Madelung, the Gaussian Hartree
+    identity, $\alpha$, the jellium rung, FD forces and the $Z\times$gap
+    check. The DFTK and libxc comparisons are added as tests after
+    implementation, with the tolerances, run settings and expected
+    $\alpha$-convention values fixed in this post *now*. When they disagree, the
+    disagreement is investigated, never resolved by changing a tolerance.
+    HelFEM serves the validation document only. The risk accepted: a
+    convention error that the analytic checks cannot see (for example an
+    XC parameter transcription, or a sign that cancels in every invariant)
+    surfaces only at that later stage.
+
+## References
+
+::: {#refs}
+:::
