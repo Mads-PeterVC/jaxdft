@@ -19,7 +19,9 @@ The [validation document](../validation/02a_scf_h2.qmd) corrects two
 expectations in this post. $r_e$ and $\omega_e$ are not converged at
 30–40 Ha but only at about 80 Ha. At the millibohr level, $L = 12$ Bohr
 also limits the bond length. DFTK and libxc agree with the implementation
-far inside the tolerances fixed below. HelFEM is still to come (decision 11).
+far inside the tolerances fixed below. The HelFEM all-electron reference
+(decision 6) was dropped after implementation: it served interpretation only,
+and the DFTK comparison already settles correctness.
 :::
 
 ## Scope

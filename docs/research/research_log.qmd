@@ -173,3 +173,19 @@ The libxc comparison agrees to rounding, and it distinguishes `lda_c_pw` from
 transcription, which the analytic checks could only partly constrain.
 
 HelFEM, for the all-electron bond length, remains.
+
+## 2026-11-06: No all-electron reference for H₂
+
+The HelFEM all-electron LDA calculation planned in decision 6 of the 2a theory
+post is dropped. It was for interpretation only. It would have split the gap
+to experiment, about 24 mÅ in $r_e$, into an LDA part and a pseudopotential
+part. It never bore on correctness, which the DFTK comparison settles to
+1e-10 Ha. Installing HelFEM is heavy for that one number.
+
+The consequence is that the 2a validation document reports the gap to
+experiment as a combined LDA and pseudopotential error. The theory post's
+expectation, a pseudopotential bond within about 5 mÅ of an all-electron LDA
+bond of about 0.765 Å, stays an expectation. Nothing measured contradicts it.
+The decision 6 fallback, a cited literature value, is not taken either:
+without a functional-matched source, it would add a number with an unknown
+error.

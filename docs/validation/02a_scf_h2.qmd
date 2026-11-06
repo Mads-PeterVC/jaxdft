@@ -121,8 +121,7 @@ finite-difference forces and exact invariants. After implementation, the
 third rung was added (theory post, decision 11): DFTK run on the same
 discrete problem, and libxc for the functional. This document shows both
 comparisons. It then asks the next question: are the converged numbers
-physically sensible, and how far are they from the converged limit? The
-all-electron reference from HelFEM is [still to come](#still-to-compare).
+physically sensible, and how far are they from the converged limit?
 
 ## Setup
 
@@ -578,8 +577,10 @@ frequency `{python} f"{EXPT['omega_e'] - w_best:.0f}"` cm⁻¹ too low. That is
 the familiar pattern of LDA for H₂: a slightly too long and too soft bond.
 The theory post expected an all-electron LDA bond of about 0.765 Å and a
 pseudopotential value within about 5 mÅ of that. The value here is
-consistent with that expectation. A functional-matched all-electron value
-from HelFEM will turn this into a measurement of the pseudopotential error.
+consistent with that expectation. It is not a measurement: no
+functional-matched all-electron calculation was run. The deviation from
+experiment therefore combines the LDA error and the pseudopotential error,
+and this document does not separate them.
 
 ## The grid rule and the egg-box effect
 
@@ -1009,13 +1010,6 @@ exceeds the tolerance at `{python} mod_above` of `{python} len(mod_rel)` points.
 So the comparison confirms the parameter set, not only the formula. The two
 variants converge only in the dilute limit, where correlation itself
 vanishes.
-
-## Still to compare
-
-**HelFEM** [@lehtola2019]: all-electron LDA for H₂ with the same functional.
-Its $r_e$ and $\omega_e$ would separate the pseudopotential error from the
-error of LDA itself in the comparison with experiment above. This is for
-interpretation only, not an acceptance test (theory post, decision 6).
 
 ## Interpretation
 
