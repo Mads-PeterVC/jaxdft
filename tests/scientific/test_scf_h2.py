@@ -45,6 +45,7 @@ from support.h2 import (
     run,
     translated,
 )
+from support.mixers import AdaptiveLinear
 from support.tolerances import (
     DOUBLE_COUNTING_ATOL,
     EIGEN_RESIDUAL_FRACTION,
@@ -182,6 +183,15 @@ def test_independent_of_mixing_parameters():
     for mixer in (Anderson(depth=3, beta=0.4), Anderson(depth=0, beta=0.5)):
         other = run(s, b, mixer=mixer, max_iter=300)
         np.testing.assert_allclose(float(other.total_energy), float(res.total_energy), atol=SCF_ENERGY_ATOL)
+
+
+def test_independent_of_the_mixing_scheme():
+    """The SCF accepts any Mixer, not only Anderson, and the ground state does not
+    depend on which one (engineering log, 'Mixing behind a protocol')."""
+    s, b, res = converged_small()
+    other = run(s, b, mixer=AdaptiveLinear(), max_iter=300)
+    np.testing.assert_allclose(float(other.total_energy), float(res.total_energy), atol=SCF_ENERGY_ATOL)
+    np.testing.assert_allclose(other.density, res.density, atol=SCF_DENSITY_ATOL)
 
 
 def test_dense_and_lobpcg_give_the_same_scf():

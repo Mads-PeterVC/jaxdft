@@ -33,7 +33,7 @@ from jaxdft.hamiltonian.energy_terms import is_energy_term, total_potential
 from jaxdft.hamiltonian.kinetic import DiagonalTerm
 from jaxdft.hamiltonian.operator import apply_H, hamiltonian
 from jaxdft.scf.density import clip_and_renormalise, electron_density
-from jaxdft.scf.mixing import Anderson
+from jaxdft.scf.mixing import Anderson, Mixer
 from jaxdft.scf.occupations import aufbau_occupations
 from jaxdft.scf.solve import fixed_point
 from jaxdft.solvers.lobpcg import lobpcg
@@ -57,12 +57,12 @@ class SCFOptions:
     ``n_bands`` defaults to occupied + 1. ``min_gap`` (Ha) guards aufbau filling against
     a degenerate frontier level; it is a numerical criterion, not a physical gap.
     ``initial_width`` (Bohr) is the width of the atomic Gaussians of the default
-    initial density."""
+    initial density. ``mixer`` is any ``Mixer`` (``jaxdft.scf.mixing``)."""
 
     tol: float = 1e-9
     max_iter: int = 100
     n_bands: int | None = None
-    mixer: Anderson = field(default_factory=Anderson)
+    mixer: Mixer = field(default_factory=Anderson)
     eigensolver: Callable = lobpcg
     min_gap: float = 1e-3
     initial_width: float = 0.8

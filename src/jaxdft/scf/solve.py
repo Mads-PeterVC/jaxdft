@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 import jax
 import jax.numpy as jnp
 
-from jaxdft.scf.mixing import Anderson
+from jaxdft.scf.mixing import Mixer
 
 
 class FixedPointResult(NamedTuple):
@@ -29,12 +29,13 @@ def _l2(r):
     return jnp.sqrt(jnp.sum(r**2))
 
 
-def fixed_point(F, x0, mixer: Anderson, tol, max_iter, project=None, norm=None, aux0=None) -> FixedPointResult:
-    """Iterate to x = F(x) with Anderson mixing.
+def fixed_point(F, x0, mixer: Mixer, tol, max_iter, project=None, norm=None, aux0=None) -> FixedPointResult:
+    """Iterate to x = F(x), with ``mixer`` proposing each next input.
 
     Each step evaluates f = F(x) and r = f - x. If norm(r) < tol it stops with x;
-    otherwise it mixes a new x from the history, applies ``project`` (e.g.
-    clip-then-renormalise) and counts one update, up to ``max_iter`` updates.
+    otherwise ``mixer.update`` proposes a new x from (x, r) and its history,
+    ``project`` (e.g. clip-then-renormalise) is applied, and one update is counted,
+    up to ``max_iter`` updates.
 
     If ``aux0`` is given, F has the signature F(x, aux) -> (f, aux): the aux state
     (e.g. orbitals for warm starts) is carried along and is not mixed.
@@ -44,46 +45,24 @@ def fixed_point(F, x0, mixer: Anderson, tol, max_iter, project=None, norm=None, 
     carries_aux = aux0 is not None
     Fa = F if carries_aux else (lambda x, a: (F(x), a))
     x0 = project(jnp.asarray(x0))
-    shape, dtype = x0.shape, x0.dtype
-    m = max(int(mixer.depth), 1)
-    size = x0.size
-    beta = mixer.beta
 
     def evaluate(x, aux):
         f, aux = Fa(x, aux)
         return f, aux, norm(f - x)
 
     f0, a0, res0 = evaluate(x0, aux0 if carries_aux else 0)
-    # History of the last m + 1 (x, r) pairs, newest last, flattened.
-    xs = jnp.zeros((m + 1, size), dtype).at[-1].set(x0.ravel())
-    rs = jnp.zeros((m + 1, size), dtype).at[-1].set((f0 - x0).ravel())
-    state = (x0, f0, a0, res0, jnp.asarray(0), xs, rs, jnp.asarray(1))
+    state = (x0, f0, a0, res0, jnp.asarray(0), mixer.init(x0))
 
     def cond(state):
-        _, _, _, res, it, _, _, _ = state
+        _, _, _, res, it, _ = state
         return (res >= tol) & (it < max_iter)
 
     def body(state):
-        x, f, aux, _, it, xs, rs, count = state
-        r = (f - x).ravel()
-        if mixer.depth == 0:
-            x_new = x.ravel() + beta * r
-        else:
-            dX = xs[1:] - xs[:-1]  # (m, size)
-            dR = rs[1:] - rs[:-1]
-            valid = jnp.arange(m) >= m - (count - 1)  # columns with two real entries
-            dX = jnp.where(valid[:, None], dX, 0)
-            dR = jnp.where(valid[:, None], dR, 0)
-            gamma = jnp.linalg.lstsq(dR.T, r)[0]
-            gamma = jnp.where(valid, gamma, 0)
-            x_bar = x.ravel() - gamma @ dX
-            r_bar = r - gamma @ dR
-            x_new = x_bar + beta * r_bar
-        x_new = project(x_new.reshape(shape))
+        x, f, aux, _, it, mix_state = state
+        x_new, mix_state = mixer.update(mix_state, x, f - x)
+        x_new = project(x_new)
         f_new, aux_new, res_new = evaluate(x_new, aux)
-        xs = jnp.roll(xs, -1, axis=0).at[-1].set(x_new.ravel())
-        rs = jnp.roll(rs, -1, axis=0).at[-1].set((f_new - x_new).ravel())
-        return (x_new, f_new, aux_new, res_new, it + 1, xs, rs, jnp.minimum(count + 1, m + 1))
+        return (x_new, f_new, aux_new, res_new, it + 1, mix_state)
 
-    x, f, aux, res, it, _, _, _ = jax.lax.while_loop(cond, body, state)
+    x, f, aux, res, it, _ = jax.lax.while_loop(cond, body, state)
     return FixedPointResult(x, f, res, it, res < tol, aux if carries_aux else None)

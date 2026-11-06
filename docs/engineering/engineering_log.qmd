@@ -1103,3 +1103,41 @@ tolerance:
 
 Without the α shift the eigenvalues differ by 2.596e-6 Ha, exactly the
 amount the theory post predicted. No implementation change was needed.
+
+## 2026-11-06: Mixing behind a protocol
+
+`fixed_point` used to contain the Anderson algorithm itself. `Anderson`
+was only a container for `depth` and `beta`, so the solver could not take
+any other scheme without being edited. CLAUDE.md asks for approximations
+and algorithms behind abstractions, so this was a gap, even though 2a needs
+only Anderson. Kerker or Broyden mixing for silicon in 2b would have hit it.
+
+**The protocol.** `Mixer` (`jaxdft.scf.mixing`) has two methods:
+
+- `init(x0) -> state`;
+- `update(state, x, r) -> (x_next, state)`, called once per evaluated
+  iterate with the projected input `x` and its residual `r = F(x) − x`.
+
+The solver keeps evaluation, projection, the norm and the stopping test.
+The mixer only proposes the next input. The state is any pytree with fixed
+shapes, since it is carried through `lax.while_loop`. The mixer must be
+hashable because it is a static `jit` argument. `Anderson` now implements
+the protocol and owns its history; `depth = 0` carries no state at all.
+
+**No change in results.** Iterates and iteration counts on the
+fixed-point unit problems are bitwise identical before and after, for
+depths 0, 3 and 6. The order of operations (record the pair, then mix) is
+the same as before, and the full suite passes unchanged.
+
+**Tests.** `tests/support/mixers.py` defines `AdaptiveLinear`, linear
+mixing with adaptive damping. It is deliberately unlike Anderson: its state
+is a damping factor and the previous residual norm, not a history. It is
+used to test three things:
+
+- the solver converges with it;
+- the solver hands the mixer every evaluated input, after projection, with
+  its residual;
+- the H₂ SCF reaches the same ground state with it as with Anderson.
+
+It lives in the tests, not the package, because nothing yet needs a second
+mixer.

@@ -2,6 +2,8 @@
 fixed point'): solve(F, x0) with mixing in the solver, traceable, never silently
 unconverged."""
 
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -10,6 +12,7 @@ import pytest
 from jaxdft import Anderson
 from jaxdft.scf.density import clip_and_renormalise
 from jaxdft.scf.solve import FixedPointResult, fixed_point
+from support.mixers import AdaptiveLinear
 
 
 def linear_map(n=12, radius=0.95, seed=0):
@@ -106,3 +109,39 @@ def test_clip_and_renormalise():
     pos = np.asarray(rho) > 0
     ratio = np.asarray(out)[pos] / np.asarray(rho)[pos]
     np.testing.assert_allclose(ratio, ratio[0], rtol=1e-15)
+
+
+def test_any_mixer_slots_in():
+    """fixed_point knows only the Mixer protocol (init, update): a mixer with
+    different state from Anderson's converges to the same fixed point."""
+    M, b, x_star = linear_map()
+    res = fixed_point(lambda x: M @ x + b, jnp.zeros(12), AdaptiveLinear(), tol=1e-10, max_iter=2000)
+    assert bool(res.converged)
+    np.testing.assert_allclose(res.x, x_star, atol=1e-8)
+
+
+def test_mixer_sees_each_evaluated_iterate_once_and_projected():
+    """update receives every input F was evaluated at, after projection, with its
+    residual F(x) - x, and nothing else."""
+    evaluated, offered = [], []
+
+    @dataclass(frozen=True)
+    class Recording:
+        def init(self, x0):
+            return jnp.asarray(0)
+
+        def update(self, state, x, r):
+            jax.debug.callback(lambda y, s: offered.append((np.asarray(y), np.asarray(s))), x, r)
+            return x + 0.5 * r + 0.1, state + 1  # leaves the simplex; project restores it
+
+    def F(x):
+        jax.debug.callback(lambda y: evaluated.append(np.asarray(y)), x)
+        return 0.5 * x + jnp.asarray([0.5, 0.0, 0.0, 0.0])
+
+    project = lambda x: x / jnp.sum(x)
+    fixed_point(F, jnp.full(4, 0.25), Recording(), tol=0.0, max_iter=4, project=project)
+    assert len(evaluated) == 5 and len(offered) == 4
+    for x_eval, (x_seen, r_seen) in zip(evaluated, offered):
+        np.testing.assert_array_equal(x_seen, x_eval)
+        np.testing.assert_allclose(x_seen.sum(), 1.0, atol=1e-15)
+        np.testing.assert_allclose(r_seen, 0.5 * x_seen + np.array([0.5, 0, 0, 0]) - x_seen, atol=1e-15)
