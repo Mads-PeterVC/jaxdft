@@ -721,3 +721,23 @@ choices made while writing it:
   slopes and the dense–FFT crossover from the measurements. It asserts only
   that the dense slope is the steepest, and chooses its wording for "dense is
   still faster at N = 749" from the measured comparison.
+
+## 2026-11-06: Saddle-point example in the matrix-free post
+
+The LOBPCG section of the matrix-free post now explains why iterative solvers
+find the *lowest* eigenvectors, given that the residual vanishes at every
+eigenvector. Every eigenvector above the lowest is a saddle of the Rayleigh
+quotient, and Ritz values are upper bounds (Courant–Fischer). A 60-point
+finite-difference particle in a box shows the failure mode. Started from an
+exactly odd vector, single-vector LOBPCG converges by its residual (below
+1e-8) to the first excited state. It escapes only when rounding error has
+grown an even component. The post asserts that the odd start reaches the
+wrong eigenvector with a converged residual, and that a start seeded with
+1e-12 of a random vector escapes. Whether the purely odd start escapes within
+the run depends on rounding, so the sentence describing it is computed rather
+than asserted.
+
+For jaxdft this means a future iterative solver should start from random
+vectors with every symmetry present, and keep the dense-versus-iterative
+agreement tests at small sizes: a converged residual alone would not catch a
+missed state.

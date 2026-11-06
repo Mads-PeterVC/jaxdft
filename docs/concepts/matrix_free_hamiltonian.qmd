@@ -836,6 +836,202 @@ Its cost grows as $n_\text{bands}\, N \log N$ per iteration, against $N^3$, and
 its memory as $n_\text{bands} N$, against $N^2$. The cost chart above shows
 where the dense route stops being possible at all.
 
+### Why it finds the *lowest* eigenvectors
+
+The residual vanishes at every eigenvector, not only the lowest, so a small
+residual alone does not say which eigenvector a solver has found. What singles
+out the lowest is the shape of the Rayleigh quotient around each one. At the
+eigenvector $v_k$, its curvature along another eigenvector $v_j$ is
+proportional to $\varepsilon_j - \varepsilon_k$.
+
+- At $v_0$ every curvature is positive: a minimum.
+- At $v_k$ the $k$ directions $v_0, \dots, v_{k-1}$ curve downwards: a saddle
+  point.
+
+A descent method is repelled by saddles. Any component along a lower
+eigenvector, however small, grows. Rayleigh–Ritz adds a guarantee on top: in
+any subspace, the $j$-th lowest Ritz value is an upper bound on
+$\varepsilon_j$ (the Courant–Fischer theorem), and keeping the lowest Ritz
+vectors means those bounds only fall. For a block of $n$ bands the same holds
+for the sum of the $n$ lowest Ritz values.
+
+So the lowest eigenvectors are reached from almost every start, but not from
+all. A start with *exactly* zero overlap with the ground state sits on the
+saddle's stable side. The smallest example is a particle in a box,
+discretised by finite differences, whose ground state is even about the
+centre. Here, single-vector LOBPCG starts from a random vector, from an exactly
+odd vector, and from the odd vector plus $10^{-12}$ of the random one:
+
+```{python}
+N_box = 60
+H_box = (
+    (
+        np.diag(np.full(N_box, 2.0))
+        - np.diag(np.ones(N_box - 1), 1)
+        - np.diag(np.ones(N_box - 1), -1)
+    )
+    * (N_box + 1) ** 2
+    / 2
+)  # <1>
+eps_box = np.linalg.eigvalsh(H_box)
+
+
+def lobpcg_single(x, iterations):
+    p = None
+    history = []
+    for _ in range(iterations):
+        x = x / np.linalg.norm(x)
+        rq = x @ H_box @ x
+        r = H_box @ x - rq * x
+        history.append((rq, np.linalg.norm(r)))
+        span = [x, r] if p is None else [x, r, p]
+        Q, _ = np.linalg.qr(np.column_stack(span))
+        _, v = np.linalg.eigh(Q.T @ H_box @ Q)
+        x_new = Q @ v[:, 0]  # <2>
+        p = x_new - (x @ x_new) * x
+        x = x_new
+    return np.array(history)
+
+
+box_rng = np.random.default_rng(1)
+x_random = box_rng.normal(size=N_box)
+x_odd = x_random - x_random[::-1]  # <3>
+starts = {
+    "random start": x_random,
+    "exactly odd start": x_odd,
+    "odd + 1e-12 × random": x_odd + 1e-12 * x_random,
+}
+box_runs = {label: lobpcg_single(x, 600) for label, x in starts.items()}
+```
+
+1. $-\tfrac12 \mathrm d^2/\mathrm dx^2$ on 60 interior points of a unit box.
+   The matrix is dense only because the example is tiny; the solver uses it
+   only through products.
+2. Keep the *lowest* Ritz vector of the 2- or 3-dimensional subspace.
+3. An exactly antisymmetric vector has zero overlap with every even
+   eigenvector, the ground state included.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Saddle-point chart"
+#| column: page-inset
+saddle = pd.concat([
+    pd.DataFrame({
+        "iteration": np.arange(1, len(h) + 1),
+        "Rayleigh quotient": h[:, 0],
+        "residual norm": h[:, 1],
+        "start": label,
+    })
+    for label, h in box_runs.items()
+])
+start_colour = alt.Color("start:N", title=None, sort=list(starts))
+levels = pd.DataFrame({
+    "level": [eps_box[0], eps_box[1]],
+    "label": ["ε₀ (even)", "ε₁ (odd)"],
+})
+tooltip = [
+    "start:N",
+    "iteration:Q",
+    alt.Tooltip("Rayleigh quotient:Q", format=".6f"),
+    alt.Tooltip("residual norm:Q", format=".1e"),
+]
+energy = (
+    alt
+    .Chart(saddle)
+    .mark_line()
+    .encode(
+        x=alt.X("iteration:Q"),
+        y=alt.Y(
+            "Rayleigh quotient:Q",
+            scale=alt.Scale(domain=[0, 40], clamp=True),
+            title="Rayleigh quotient (Ha)",
+        ),
+        color=start_colour,
+        tooltip=tooltip,
+    )
+)
+rules = alt.Chart(levels).mark_rule(strokeDash=[4, 4]).encode(y="level:Q")
+rule_labels = (
+    alt
+    .Chart(levels)
+    .mark_text(align="right", dx=-4, dy=-7)
+    .encode(y="level:Q", x=alt.value(style.WIDTH), text="label:N")
+)
+residual = (
+    alt
+    .Chart(saddle)
+    .mark_line()
+    .encode(
+        x=alt.X("iteration:Q"),
+        y=alt.Y(
+            "residual norm:Q",
+            scale=alt.Scale(type="log"),
+            axis=alt.Axis(format=".0e"),
+        ),
+        color=start_colour,
+        tooltip=tooltip,
+    )
+    .properties(width=style.WIDTH, height=180)
+)
+alt.vconcat(
+    (energy + rules + rule_labels).properties(width=style.WIDTH, height=220),
+    residual,
+)
+```
+
+```{python}
+#| echo: false
+def at_saddle(h):
+    """Iterations converged on ε₁: Rayleigh quotient there, residual < 1e-8."""
+    return np.flatnonzero(
+        (np.abs(h[:, 0] - eps_box[1]) < 1e-9) & (h[:, 1] < 1e-8)
+    )
+
+
+def escape(h):
+    """First iteration with the Rayleigh quotient clearly below ε₁."""
+    below = np.flatnonzero(h[:, 0] < eps_box[1] - 1e-3)
+    return int(below[0]) + 1 if below.size else None
+
+
+odd_run = box_runs["exactly odd start"]
+seeded_run = box_runs["odd + 1e-12 × random"]
+random_escape = escape(box_runs["random start"])
+stuck = at_saddle(odd_run)
+odd_escape = escape(odd_run)
+seeded_escape = escape(seeded_run)
+# The odd start converges, by its residual, to the wrong eigenvector.
+assert stuck.size > 0
+# The seeded start escapes and ends at the ground state.
+assert seeded_escape is not None
+assert abs(seeded_run[-1, 0] - eps_box[0]) < 1e-9
+assert random_escape < seeded_escape
+odd_outcome = (
+    f"Rounding error supplies the missing even component, about 10⁻¹⁶, "
+    f"and the descent amplifies it: at iteration {odd_escape} the solver "
+    f"leaves the saddle and goes on to the ground state."
+    if odd_escape is not None
+    else "Within 600 iterations, rounding error never supplied enough of an "
+    "even component for the solver to leave the saddle."
+)
+```
+
+From the random start, the Rayleigh quotient drops below $\varepsilon_1$
+within `{python} random_escape` iterations. The exactly odd start converges to
+$\varepsilon_1$ instead, and by its residual it has *converged*: the residual
+is below $10^{-8}$ from iteration `{python} int(stuck[0]) + 1`, so a solver
+with that tolerance would stop and report $\varepsilon_1$ as the lowest
+eigenvalue. `{python} odd_outcome` With $10^{-12}$ of the random vector mixed
+in, the escape comes earlier, at iteration `{python} seeded_escape`.
+
+The saddle is unstable, which is why iterative solvers work. But being near it
+is not detectable from the residual, which is why codes start from random
+vectors (or random plus atomic orbitals) with every symmetry present, and
+carry a few buffer bands. Certifying that no eigenvalue was missed requires
+something else, such as counting eigenvalues below a shift with a matrix
+factorisation (Sylvester's law of inertia). That is affordable for sparse and
+dense matrices, not for a plane-wave Hamiltonian.
+
 ## How this maps onto jaxdft
 
 jaxdft was built matrix-free from the start, even though its first milestones
