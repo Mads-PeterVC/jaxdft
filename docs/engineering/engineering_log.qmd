@@ -1017,3 +1017,30 @@ proves fragile remains Richardson extrapolation.
 in 8 Anderson steps. The first call takes about 1.2 s including compilation;
 repeat calls take 0.15 s. This goes into `performance.qmd` with the
 validation document.
+
+## 2026-11-06: Milestone 2a validation document
+
+**The grid bound separated from its rounding.** `rule_fft_shape` returned
+the no-wraparound bound already rounded up to a 2·3·5-smooth size, and
+`PlaneWaveBasis.build` checked user grids against that rounded value. A
+grid of exactly the bound ($N$ = 29 at the acceptance size) was rejected
+unless the caller passed `allow_aliasing=True`, which says the opposite of
+what is true. The bound is now `min_fft_shape`. `rule_fft_shape` rounds it,
+and the build check uses the bound itself. A unit test pins 29, 30 and the
+rejection of 28. The validation document needs this to mark the bound on
+its egg-box scan without restating the formula.
+
+**Bond length and frequency from forces.** The document finds $r_e$ by
+Newton's method on $\partial E/\partial d$ from `jax.grad(energy)`. The force
+constant comes from central differences of that derivative with a step of
+$2\times10^{-3}$ Bohr. At 30 Ha it agrees with a second difference of SCF
+energies to $10^{-4}$ relative, which the document asserts. The reduced mass is
+$m_p/2$, which reproduces the review's frequencies to the wavenumber.
+
+**Render cost.** The document runs about a hundred SCF and force
+calculations, up to 100 Ha (120³ grid) and to $L$ = 16 Bohr at 60 Ha. It
+takes about four minutes to render on the development laptop, the slowest
+page of the site. Every expensive point backs a claim. The top two cutoffs
+show convergence, and the second box-correction cutoff sets the uncertainty
+of the best estimate. If render time becomes a problem, the first thing to
+drop is the 50 Ha point.

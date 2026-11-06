@@ -116,3 +116,38 @@ Limits: 1D only, analytic test wavefunctions (which suit a squared-exponential
 prior), accuracy per degree of freedom rather than per unit of work, and no
 periodic system. The cusp case, three dimensions, and non-uniform nodes are
 the obvious next tests.
+
+## 2026-11-06: Self-consistent LDA H₂: bond converges later than expected
+
+The [validation document](../validation/02a_scf_h2.qmd) for Milestone 2a
+runs the HGH-pseudopotential H₂ calculation out to 100 Ha and 16 Bohr.
+
+- **Bond length and frequency.** The best estimate for HGH + Slater/PW92 is
+  $r_e \approx 1.447$ Bohr (0.766 Å) and $\omega_e \approx 4170$ cm⁻¹, against
+  0.7414 Å and 4401 cm⁻¹ in experiment. The bond is about 24 mÅ too long and
+  too soft, the usual LDA pattern. The theory post's expected all-electron LDA
+  value was about 0.765 Å. HelFEM will make that a measured pseudopotential
+  error rather than an expectation.
+- **The cutoff convergence was misjudged in the theory post.** Its table
+  (1.454 and 1.453 Bohr at 30 and 40 Ha) is reproduced exactly, but it is a
+  plateau. $r_e$ drops by another 4 mBohr by 80 Ha. $\omega_e$ is not monotone
+  in the cutoff: 40 Ha sits in a 50 cm⁻¹ dip. Only around 80 Ha is the
+  frequency converged to a wavenumber. HGH hydrogen ($r_\text{loc}$ = 0.2
+  Bohr) is hard, and 2b should expect the same for its pseudopotentials.
+- **The box matters more for geometry than for energy.** At $L$ = 12 Bohr
+  the energy is within 0.1 mHa of $L$ = 16, but the bond is 1–2 mBohr too
+  long and $\omega_e$ 12–17 cm⁻¹ too low. The box correction depends on the
+  cutoff at the 1 mBohr level, because at fixed cutoff a different box is a
+  different basis. That coupling sets the uncertainty of the best estimate.
+- **The LUMO is a box state.** It rises steadily towards zero from $L$ = 10 to 16
+  Bohr, and the right-hand weight derivative follows it. The left-hand
+  derivative is about three times more stable. Janak's theorem in the
+  form "left − right = $Z$ × gap" holds to $2\times10^{-11}$ Ha.
+- **The grid rule is sufficient, not sharp.** On $N$ = 28, one below the
+  bound, the egg-box variation is still only $2\times10^{-10}$ Ha. It reaches
+  $3\times10^{-6}$ Ha at $N$ = 24 and $10^{-4}$ Ha at $N$ = 20. Only the
+  corners of the density's Fourier sphere wrap just below the bound, and
+  they are small.
+
+The DFTK, libxc and HelFEM comparisons are still to come (theory post,
+decision 11).

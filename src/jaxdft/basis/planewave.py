@@ -32,12 +32,17 @@ def _smooth_235(n: int) -> int:
         n += 1
 
 
-def rule_fft_shape(lattice: Lattice, ecut: float) -> tuple[int, int, int]:
-    """The minimal grid on which no difference G - G' of basis vectors wraps round:
-    N_i >= 2 floor(2 Gmax |a_i| / 2 pi) + 1 (Cauchy-Schwarz), rounded up to 2-3-5."""
+def min_fft_shape(lattice: Lattice, ecut: float) -> tuple[int, int, int]:
+    """The no-wraparound bound itself: the smallest N_i on which no difference G - G'
+    of basis vectors wraps round, N_i = 2 floor(2 Gmax |a_i| / 2 pi) + 1 (Cauchy-Schwarz)."""
     gmax = math.sqrt(2.0 * ecut)
     norms = np.linalg.norm(np.asarray(lattice.vectors), axis=1)
-    return tuple(_smooth_235(2 * math.floor(2 * gmax * float(a) / (2 * math.pi)) + 1) for a in norms)
+    return tuple(2 * math.floor(2 * gmax * float(a) / (2 * math.pi)) + 1 for a in norms)
+
+
+def rule_fft_shape(lattice: Lattice, ecut: float) -> tuple[int, int, int]:
+    """The default grid: ``min_fft_shape`` rounded up to 2-3-5-smooth sizes."""
+    return tuple(_smooth_235(n) for n in min_fft_shape(lattice, ecut))
 
 
 def grid_miller(fft_shape) -> jax.Array:
@@ -189,8 +194,8 @@ class PlaneWaveBasis:
             mask = jnp.pad(mask, ((0, 0), (0, extra)))
         miller = jnp.where(mask[..., None], miller, 0)
 
-        rule = rule_fft_shape(lattice, ecut)
-        shape = rule if fft_shape is None else tuple(int(n) for n in fft_shape)
+        bound = min_fft_shape(lattice, ecut)
+        shape = rule_fft_shape(lattice, ecut) if fft_shape is None else tuple(int(n) for n in fft_shape)
         if len(shape) != 3 or min(shape) < 1:
             raise ValueError(f"fft_shape must be three positive integers, got {fft_shape}")
         span = np.zeros(3, dtype=int)
@@ -199,9 +204,9 @@ class PlaneWaveBasis:
             span = np.maximum(span, m.max(axis=0) - m.min(axis=0))
         if np.any(np.asarray(shape) <= span):
             raise ValueError(f"fft_shape {shape} cannot hold the basis (Miller span {tuple(span)})")
-        if any(n < r for n, r in zip(shape, rule)) and not allow_aliasing:
+        if any(n < r for n, r in zip(shape, bound)) and not allow_aliasing:
             raise ValueError(
-                f"fft_shape {shape} is below the no-wraparound rule {rule}: the density would alias. "
+                f"fft_shape {shape} is below the no-wraparound bound {bound}: the density would alias. "
                 "Pass allow_aliasing=True only to test the rule itself."
             )
         return cls(miller, mask, kpoints, float(ecut), n_pad, shape)

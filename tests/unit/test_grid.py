@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from jaxdft import Lattice, PlaneWaveBasis
+from jaxdft.basis.planewave import min_fft_shape, rule_fft_shape
 from jaxdft.scf.density import electron_density
 
 GAMMA = np.zeros((1, 3))
@@ -71,6 +72,17 @@ def test_undersized_shape_needs_explicit_opt_in():
         PlaneWaveBasis.build(lat, GAMMA, 10.0, fft_shape=(24, 24, 24))
     b = PlaneWaveBasis.build(lat, GAMMA, 10.0, fft_shape=(24, 24, 24), allow_aliasing=True)
     assert b.fft_shape == (24, 24, 24)
+
+
+def test_the_bound_itself_is_accepted_without_opt_in():
+    """The check is against the bound (29 at L = 10, Ecut = 10, theory post), not its
+    2-3-5 rounding (30): a grid of exactly the bound does not alias."""
+    lat = Lattice(10.0 * np.eye(3))
+    assert min_fft_shape(lat, 10.0) == (29, 29, 29)
+    assert rule_fft_shape(lat, 10.0) == (30, 30, 30)
+    assert PlaneWaveBasis.build(lat, GAMMA, 10.0, fft_shape=(29, 29, 29)).fft_shape == (29, 29, 29)
+    with pytest.raises(ValueError):
+        PlaneWaveBasis.build(lat, GAMMA, 10.0, fft_shape=(28, 28, 28))
 
 
 def test_shape_too_small_for_the_basis_itself_always_raises():
