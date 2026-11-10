@@ -11,3 +11,7 @@ wheels/
 
 # Copyrighted source papers, kept locally only
 sources/
+
+# Logs written by the example scripts
+examples/*.log
+*.log
