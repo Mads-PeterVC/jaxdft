@@ -2,6 +2,15 @@
 
 # Must be imported before anything else creates a JAX array.
 from jaxdft import _config  # noqa: F401
+
+import logging as _logging
+
+from jaxdft.output.log import LOGGER_NAME as _LOGGER_NAME
+from jaxdft.output.log import log_to_file, log_to_stream
+
+# A library emits log records but does not decide where they go.
+_logging.getLogger(_LOGGER_NAME).addHandler(_logging.NullHandler())
+
 from jaxdft.analytic.free_electron import free_electron_bands
 from jaxdft.basis.planewave import PlaneWaveBasis
 from jaxdft.calculations.bands import Bands, band_structure
@@ -37,6 +46,8 @@ __all__ = [
     "energy",
     "lda_terms",
     "lobpcg",
+    "log_to_file",
+    "log_to_stream",
     "scf",
     "total_energy",
     "Hamiltonian",

@@ -145,3 +145,65 @@ def test_mixer_sees_each_evaluated_iterate_once_and_projected():
         np.testing.assert_array_equal(x_seen, x_eval)
         np.testing.assert_allclose(x_seen.sum(), 1.0, atol=1e-15)
         np.testing.assert_allclose(r_seen, 0.5 * x_seen + np.array([0.5, 0, 0, 0]) - x_seen, atol=1e-15)
+
+
+# --- history and the per-step hook (engineering log, 'SCF observability') -------------
+
+
+def test_history_records_every_evaluated_iterate():
+    M, b, _ = linear_map()
+    F = lambda x: M @ x + b
+    res = fixed_point(
+        F, jnp.zeros(12), Anderson(depth=6, beta=0.7), tol=1e-10, max_iter=50, record=lambda x, f, aux: {"x0": x[0]}
+    )
+    n = int(res.n_iter)
+    h = {k: np.asarray(v) for k, v in res.history.items()}
+    assert set(h) == {"residual", "projection", "x0"}
+    assert all(v.shape == (51,) for v in h.values())
+    assert np.all(np.isfinite(h["residual"][: n + 1])) and np.all(np.isnan(h["residual"][n + 1 :]))
+    assert h["residual"][0] == pytest.approx(float(jnp.linalg.norm(F(jnp.zeros(12)))), rel=1e-14)
+    assert h["residual"][n] == float(res.residual)
+    assert h["x0"][n] == float(res.x[0])
+    np.testing.assert_array_equal(h["projection"][: n + 1], 0.0)  # no projection given
+
+
+def test_recording_does_not_change_the_iterates():
+    M, b, _ = linear_map()
+    F = lambda x: M @ x + b
+    plain = fixed_point(F, jnp.zeros(12), Anderson(depth=6, beta=0.7), tol=1e-10, max_iter=50)
+    recorded = fixed_point(
+        F, jnp.zeros(12), Anderson(depth=6, beta=0.7), tol=1e-10, max_iter=50, record=lambda x, f, aux: {}
+    )
+    assert plain.history is None
+    np.testing.assert_array_equal(plain.x, recorded.x)
+    assert int(plain.n_iter) == int(recorded.n_iter)
+
+
+def test_projection_change_is_recorded():
+    """Clipping a negative proposal shows up as a nonzero projection entry."""
+    F = lambda x: jnp.array([1.2, -0.2, 0.5, 0.5])  # a target outside the feasible set
+    project = lambda x: clip_and_renormalise(x, 2.0, 1.0 * x.size)
+    res = fixed_point(
+        F, jnp.full(4, 0.5), Anderson(depth=0, beta=1.0), tol=1e-12, max_iter=3, project=project, record=lambda *a: {}
+    )
+    assert float(np.nanmax(np.asarray(res.history["projection"]))) > 0.1
+
+
+def test_on_step_sees_each_iterate_in_order():
+    M, b, _ = linear_map()
+    seen = []
+
+    def on_step(i, values):
+        jax.debug.callback(lambda i, r: seen.append((int(i), float(r))), i, values["residual"], ordered=True)
+
+    res = jax.jit(
+        lambda x0: fixed_point(lambda x: M @ x + b, x0, Anderson(depth=6, beta=0.7), 1e-10, 50, on_step=on_step)
+    )(jnp.zeros(12))
+    n = int(res.n_iter)
+    assert [i for i, _ in seen] == list(range(n + 1))
+    np.testing.assert_array_equal([r for _, r in seen], np.asarray(res.history["residual"])[: n + 1])
+
+
+def test_recording_needs_a_static_max_iter():
+    with pytest.raises(TypeError, match="static"):
+        fixed_point(lambda x: x, jnp.zeros(2), Anderson(), 1e-10, jnp.asarray(5), record=lambda *a: {})

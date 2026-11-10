@@ -94,3 +94,27 @@ def test_every_eigensolver_accepts_warm_start_and_preconditioner_keywords():
         params = inspect.signature(solver).parameters
         assert list(params)[:3] == ["apply", "dim", "n_bands"]
         assert "x0" in params and "preconditioner" in params
+
+
+# --- observability (engineering log, '2026-11-10: SCF observability') -----------------
+
+
+def test_logging_helpers_are_reexported_and_the_package_is_silent_by_default():
+    import logging
+
+    from jaxdft.output.log import LOGGER_NAME, log_to_file, log_to_stream
+
+    assert jaxdft.log_to_file is log_to_file and jaxdft.log_to_stream is log_to_stream
+    handlers = logging.getLogger(LOGGER_NAME).handlers
+    assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+
+def test_every_eigensolver_can_report_its_iterations():
+    """The SCF logs eigensolver iterations: ``return_iterations=True`` appends a count."""
+    import jax.numpy as jnp
+
+    H = jnp.diag(jnp.arange(1.0, 7.0))
+    for solver in (jaxdft.dense_eigensolver, jaxdft.lobpcg):
+        eps, vecs, n_iter = solver(lambda x: H @ x, 6, 2, return_iterations=True)
+        assert vecs.shape == (6, 2) and int(n_iter) >= 0
+        assert len(solver(lambda x: H @ x, 6, 2)) == 2

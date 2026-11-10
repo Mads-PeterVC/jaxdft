@@ -141,6 +141,157 @@ physically sensible, and how far are they from the converged limit?
 - SCF tolerance $\|F(\rho)-\rho\|$ < `{python} f"{SCF_TOL:.0e}"` (Anderson mixing).
   The eigensolver is LOBPCG. Forces come from `jax.grad` of `energy`.
 
+## A single-point calculation
+
+This is the acceptance-size calculation written as a user would write it. The
+script is `examples/h2_single_point.py`, shown verbatim:
+
+```{python}
+#| echo: false
+#| output: asis
+import subprocess
+import sys
+import tempfile
+
+script = Path("../../examples/h2_single_point.py").resolve()
+print(f'```{{.python filename="examples/{script.name}"}}')
+print(script.read_text().rstrip())
+print("```")
+```
+
+The public API in the script is small:
+
+- A `Structure` is a lattice, fractional positions, species labels and
+  per-atom weights. `dimer_in_box` is one builder for it.
+- A `PlaneWaveBasis` is built from the lattice, a batch of fractional
+  k-points and a cutoff in Hartree. Its FFT grid defaults to the
+  no-wraparound rule.
+- The model is a plain tuple of energy terms. `lda_terms` is a convenience
+  for the standard five. The SCF finds the ionic and ion–ion terms by the
+  roles they declare, not by name.
+- `SCFOptions` holds every numerical choice: tolerance, mixer, eigensolver,
+  preconditioner and initial density.
+- `scf` returns an `SCFResult` or raises `SCFError`. Derivatives go through
+  `energy` instead (see below), which runs the same SCF.
+
+`jaxdft.log_to_file` is the only logging call. The library writes to the
+standard-library logger `jaxdft` and is silent unless that logger is
+configured. This post runs the script in a fresh process, and it writes the
+following log:
+
+```{python}
+#| echo: false
+#| output: asis
+#| column: page-inset
+with tempfile.TemporaryDirectory() as tmp:
+    log_path = Path(tmp) / "h2_single_point.log"
+    run = subprocess.run(
+        [sys.executable, str(script), str(log_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    log_text = log_path.read_text()
+# The script is the acceptance-size calculation of this post: same iterations,
+# same energy.
+assert f"converged in {int(ref.n_iter)} iterations" in log_text
+assert f"{float(ref.total_energy):+.12f}" in log_text
+timing = {
+    key.strip(): float(value.split()[0])
+    for key, value in (
+        line.split(":", 1)
+        for line in log_text.split("== Timing")[1].splitlines()
+        if ":" in line
+    )
+}
+assert timing["compile"] > timing["SCF"]  # claimed below
+print("```text")
+print(log_text.rstrip())
+print("```")
+```
+
+How to read the log:
+
+- The header records what is needed to reproduce the run. It gives the git
+  commit (`+dirty` marks uncommitted changes), the JAX version, backend and
+  devices, and any Slurm/XLA environment variables that are set. It also
+  lists every term with its parameters, including the pseudopotential file,
+  and every SCF setting.
+- Each SCF row is one evaluation of the SCF map $F$ on an input density
+  $\rho_i$. The converged quantity is $\|F(\rho)-\rho\|$, and the run
+  stops when it falls below the tolerance. $E$ is the Kohn–Sham energy of the
+  orbitals of $H[\rho_i]$, and dE is its change since the previous row. The
+  energy converges roughly quadratically in the density error. That is why
+  dE reaches rounding level several rows before the residual meets the
+  tolerance.
+- `proj` is how much clipping negative values and renormalising changed the
+  mixed density. A value that stays well above rounding would mean that the
+  mixer keeps proposing unphysical densities.
+- `eig res` and `eig it` are the worst LOBPCG residual and iteration count
+  over k-points. Warm starts make the iteration count fall as the SCF
+  converges. If it stays at its cap, the eigensolver, not the mixing, is the
+  bottleneck.
+- The timing block separates compilation from the SCF itself. In this
+  render, compilation took `{python} f"{timing['compile']:.2f}"` s and the
+  SCF `{python} f"{timing['SCF']:.2f}"` s, so compilation dominates a
+  calculation this small.
+
+The same numbers are returned in `SCFResult.history` and attached to
+`SCFError` when a run fails, so convergence can be plotted without parsing
+the log:
+
+```{python}
+#| column: page-inset
+#| echo: false
+hist = {k: np.asarray(v) for k, v in ref.history.items()}
+assert hist["residual"][-1] < SCF_TOL <= hist["residual"][-2]
+# Claims in the text: |dE| below the residual, warm starts cut LOBPCG
+# iterations, and the projection only removes rounding.
+assert np.all(np.abs(hist["delta_energy"][1:]) < hist["residual"][1:])
+assert hist["eig_iters"][-1] < hist["eig_iters"][0]
+assert hist["projection"].max() < 1e-12
+conv_df = pd.concat([
+    pd.DataFrame({
+        "iteration": np.arange(len(hist["residual"])),
+        "value": hist["residual"],
+        "quantity": "‖F(ρ) − ρ‖",
+    }),
+    pd.DataFrame({
+        "iteration": np.arange(1, len(hist["energy"])),
+        "value": np.abs(hist["delta_energy"][1:]),
+        "quantity": "|ΔE| (Ha)",
+    }),
+])
+lines = (
+    alt
+    .Chart(conv_df)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X(
+            "iteration:Q", title="SCF iteration", axis=alt.Axis(tickMinStep=1)
+        ),
+        y=alt.Y("value:Q", title="value", scale=alt.Scale(type="log")),
+        color=alt.Color("quantity:N", title=None),
+        tooltip=[
+            "iteration:Q",
+            "quantity:N",
+            alt.Tooltip("value:Q", format=".2e"),
+        ],
+    )
+)
+tol_rule = (
+    alt
+    .Chart(pd.DataFrame({"tol": [SCF_TOL]}))
+    .mark_rule(strokeDash=[4, 4], color=style.TEXT_SECONDARY)
+    .encode(y="tol:Q")
+)
+(lines + tol_rule).properties(height=280)
+```
+
+Convergence of the acceptance-size SCF, from `SCFResult.history`. The dashed
+line is the tolerance on $\|F(\rho)-\rho\|$. Note that $|\Delta E|$ falls
+far below the residual.
+
 ## The ground state at the acceptance size
 
 ```{python}

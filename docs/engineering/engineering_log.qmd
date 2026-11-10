@@ -1204,3 +1204,86 @@ basis or anything from the kinetic module.
 The energy breakdown is still keyed by class name, so two terms of one
 class share an entry. That is a labelling limitation, and it was not
 changed.
+
+## 2026-11-10: SCF observability
+
+Before 2b, the SCF was a black box. `scf` ran one jitted `lax.while_loop`
+and returned only the converged state. When a run failed, `SCFError` held a
+single message. Silicon with k-points will bring convergence problems that
+cannot be diagnosed that way. This entry adds a log and a per-iteration
+history. The 2a validation post now shows a complete single-point script
+(`examples/h2_single_point.py`) and the log it writes.
+
+**Two channels, one source.** Iterations happen inside the jitted loop, so
+Python cannot see them as they run. Both channels are fed from the same
+per-iteration values:
+
+- **History (always, pure).** `fixed_point` takes an optional
+  `record(x, f, aux) -> dict` and writes its values, together with
+  `residual` and `projection`, into buffers of length `max_iter + 1` that
+  are carried through the loop. Entries past the last iterate are NaN. `scf`
+  truncates them and returns them as `SCFResult.history`. They are also
+  attached to `SCFError`, so a failed run can still be inspected.
+- **Live lines (only when logging is on).** `fixed_point` also takes a
+  traced hook, `on_step(i, values)`. The SCF uses it to issue
+  `jax.debug.callback(..., ordered=True)`, which writes one log line per
+  iteration while the run is in progress. A run that hangs on HPC therefore
+  still shows how far it got. `scf` decides at call time with
+  `logger.isEnabledFor(INFO)`. `live` is a static argument, so when logging
+  is off the callback is never traced.
+
+**What is recorded per iterate ρᵢ:**
+
+- the Kohn–Sham energy of the orbitals of H[ρᵢ] (the direct functional,
+  `total_energy`) and its change from the previous iterate;
+- ‖F(ρ) − ρ‖, the quantity actually converged;
+- `projection`, the norm of the change made by clip-and-renormalise to the
+  mixed density. Anderson combinations conserve charge, so this measures
+  clipping. It is rounding-level for H₂;
+- HOMO, LUMO and gap over all k;
+- the worst eigensolver residual and iteration count over k.
+
+The energy costs one direct-functional evaluation per step. `energy()` (the
+differentiable path) neither records nor logs, so forces pay nothing.
+
+**Design points.**
+
+- **stdlib `logging`, library conventions.** The package logs to the
+  `jaxdft` logger and attaches a `NullHandler`, so it is silent unless the
+  application configures logging. `jaxdft.log_to_file` and
+  `log_to_stream` are conveniences. Formatting is in pure functions
+  (`jaxdft.output.report`) that are tested without running an SCF. Machine
+  details are in `jaxdft.output.environment`.
+- **`max_iter` is now static.** It sizes the history buffers, so changing
+  it recompiles `_scf_core`. A tolerance change still does not.
+- **Compile time is reported separately.** `scf` now calls
+  `_scf_core.lower(...).compile()` and then the compiled executable. JAX
+  caches both steps (a second `lower().compile()` costs microseconds), so
+  repeated calls do not recompile. The log can therefore report
+  compilation and the SCF itself separately, which matters on GPU.
+- **Wall time without host state.** The live line shows wall time since
+  the SCF started. The start time is passed into the compiled function as
+  an ordinary argument, `t0`, and handed to the callback. The callback is a
+  module-level function, so the jit cache key is stable across calls and no
+  mutable timing state is needed.
+- **The eigensolver reports iterations** through an additive keyword,
+  `return_iterations=True`, which appends the count to the result.
+  `dense_eigensolver` returns 0. It is a keyword rather than a new return
+  signature, so existing callers (band structures, tests) are unchanged. As
+  with `tol`, a custom eigensolver used in the SCF must accept it.
+- **Provenance in the header.** The header gives the git commit with
+  `+dirty` (cached per process: the running code is the code that was
+  imported), the jax/jaxlib versions, backend and devices, process
+  index/count, and Slurm/XLA environment variables if set. Every term and
+  option is printed through `describe`, which never prints a memory
+  address. For that, `GTH` gained a `source` field holding the parsed file.
+  The field is excluded from equality and hashing, so it never changes a
+  jit cache key.
+- **Not done:** a machine-readable JSON-lines sidecar. `SCFResult.history`
+  already gives structured access. It can be revisited once runs are
+  managed on HPC.
+
+**Cost.** The live lines add a few percent to a steady-state H₂ SCF at
+the acceptance size (`performance.qmd`, 'Observability'). The first
+version cost 45 %. Profiling traced the extra time to two `git`
+subprocesses per call, now cached.

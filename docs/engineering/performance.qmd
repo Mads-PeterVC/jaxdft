@@ -239,3 +239,47 @@ gradient stops at the converged orbitals. The
 [validation document](../validation/02a_scf_h2.qmd) runs about a hundred of
 these calculations, up to 100 Ha, and takes several minutes to render. It
 is the slowest page of the site.
+
+## Observability: cost of the SCF log
+
+Every `scf` call records a per-iteration history, which adds one Kohn–Sham
+energy evaluation per SCF step. When the `jaxdft` logger is enabled at INFO,
+the SCF also makes a host callback per step to write the live iteration
+line. The table compares steady-state `scf` wall time at the acceptance
+size, with the logger silent and with it writing to an in-memory stream.
+The history is recorded in both cases. Each time is the median of five
+repeats after a warm-up call.
+
+```{python}
+#| echo: false
+import io
+import logging
+
+import jaxdft
+
+h2 = dimer_in_box("H", 1.45, 10.0)
+b = PlaneWaveBasis.build(h2.lattice, jnp.zeros((1, 3)), 10.0)
+run_scf = lambda: scf(h2, b, h2_terms, SCFOptions()).total_energy
+
+
+def steady(n=5):
+    wall(run_scf)
+    return statistics.median(wall(run_scf) for _ in range(n))
+
+
+quiet = steady()
+handler = jaxdft.log_to_stream(io.StringIO())
+try:
+    logged = steady()
+finally:
+    logging.getLogger("jaxdft").removeHandler(handler)
+    logging.getLogger("jaxdft").setLevel(logging.NOTSET)
+pd.DataFrame([
+    {"logger": "silent", "SCF steady (s)": f"{quiet:.3f}"},
+    {"logger": "INFO, live lines", "SCF steady (s)": f"{logged:.3f}"},
+]).style.hide(axis="index")
+```
+
+Both times include writing the setup block and the final energy, so the
+difference is an upper bound on the cost of the live lines. At this size,
+the two times differ by `{python} f"{100 * (logged / quiet - 1):+.0f}"` %.
