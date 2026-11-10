@@ -40,6 +40,7 @@ jaxdft/
 │   ├── property/      # hypothesis tests of mathematical invariants
 │   └── scientific/    # physical correctness against references
 ├── reference/         # scripts and stored outputs from reference codes
+├── examples/          # runnable user scripts (shown in docs, run by tests)
 ├── docs/              # Quarto website
 │   ├── theory/        # one theory post per milestone
 │   ├── concepts/      # pedagogical explainers (see Documentation)
@@ -82,6 +83,14 @@ A broken validation document is a failing test.
 - All physical fields are JAX arrays, never NumPy arrays, inside the package.
 - No global mutable state.
 - Physics functions are pure functions of their inputs.
+
+### Observability
+- The package logs through the stdlib logger `jaxdft` (silent by default via a
+  `NullHandler`); never `print` inside the package.
+- Iterative solvers return their per-iteration history in the result (and in
+  the error on failure); the log is a view of that data, not the only record.
+- Live per-iteration output from inside `jit` uses `jax.debug.callback` and is
+  traced only when logging is enabled, so it costs nothing otherwise.
 
 ## Physics invariants
 

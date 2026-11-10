@@ -49,7 +49,8 @@ def lobpcg(
     tol: float = 1e-10,
     max_iter: int = 300,
     seed: int = 0,
-) -> tuple[jax.Array, jax.Array]:
+    return_iterations: bool = False,
+):
     """Lowest ``n_bands`` eigenpairs of ``apply`` on C^dim: eigenvalues (n_bands,)
     ascending and orthonormal eigenvectors (dim, n_bands).
 
@@ -58,7 +59,8 @@ def lobpcg(
     saddle point). ``preconditioner(r, eps)`` maps residuals (dim, n) to search
     directions. Stops when every residual norm ||A x - eps x|| is below ``tol``
     (absolute, in the units of A) or after ``max_iter`` iterations; the caller checks
-    the residuals.
+    the residuals. With ``return_iterations`` it also returns the number of iterations
+    taken (the SCF logs it).
     """
     k = int(n_bands)
     if x0 is None:
@@ -116,5 +118,5 @@ def lobpcg(
         return X_new, AX_new, P_new, eps_new, rnorm, it + 1
 
     state = (X, AX, P, eps, rnorm, jnp.asarray(0))
-    X, AX, P, eps, rnorm, _ = jax.lax.while_loop(cond, body, state)
-    return eps, X
+    X, AX, P, eps, rnorm, it = jax.lax.while_loop(cond, body, state)
+    return (eps, X, it) if return_iterations else (eps, X)

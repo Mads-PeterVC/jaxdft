@@ -21,11 +21,13 @@ _DATA = Path(__file__).resolve().parent / "data"
 @dataclass(frozen=True)
 class GTH:
     """Local GTH pseudopotential: ionic charge ``zion``, ``rloc`` (Bohr) and the four
-    coefficients ``c`` = (C1, C2, C3, C4) in Ha (missing ones are zero)."""
+    coefficients ``c`` = (C1, C2, C3, C4) in Ha (missing ones are zero). ``source`` is
+    the file it was parsed from, if any: provenance for logs, ignored by equality."""
 
     zion: float
     rloc: float
     c: tuple = field(default=(0.0, 0.0, 0.0, 0.0))
+    source: str | None = field(default=None, compare=False)
     local_support = None  # unbounded: the Coulomb tail
 
     def __post_init__(self):
@@ -86,7 +88,7 @@ def parse_hgh(path) -> GTH:
         raise ValueError(f"{path}: n_exp = {nexp} but {len(coeffs)} local coefficients given")
     if nprj != 0:
         raise NotImplementedError(f"{path}: nonlocal projectors ({nprj} channels) arrive with Milestone 2b")
-    return GTH(zion, rloc, coeffs)
+    return GTH(zion, rloc, coeffs, source=str(path))
 
 
 def hgh_lda_path(element: str) -> Path:

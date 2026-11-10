@@ -15,11 +15,18 @@ The SCF never imports an XC functional, pseudopotential or term by name: terms a
 either operator terms (``prepare``) or energy terms (``energy``), and the ionic and
 ion-ion terms are found by the roles they declare (``jaxdft.hamiltonian.energy_terms``).
 The mixer, eigensolver, preconditioner and initial density are ``SCFOptions``.
+
+Observability (engineering log, 'SCF observability'): ``scf`` records a per-iteration
+history in its result (and in ``SCFError``), and when the ``jaxdft`` logger is enabled
+at INFO it logs the machine, the setup, one line per iteration as it happens, and the
+result. ``energy`` neither records nor logs.
 """
 
 from __future__ import annotations
 
+import logging
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -37,6 +44,8 @@ from jaxdft.hamiltonian.energy_terms import (
 )
 from jaxdft.hamiltonian.operator import apply_H, hamiltonian
 from jaxdft.hamiltonian.preconditioners import diagonal_preconditioner
+from jaxdft.output import report
+from jaxdft.output.environment import machine_info, peak_memory_bytes
 from jaxdft.scf.density import AtomicGaussians, clip_and_renormalise, electron_density
 from jaxdft.scf.mixing import Anderson, Mixer
 from jaxdft.scf.occupations import aufbau_occupations
@@ -50,10 +59,18 @@ EIGEN_TOL_FRACTION = 0.05
 EIGEN_CHECK_FRACTION = 0.1
 EIGEN_FLOOR = 2e-14
 
+logger = logging.getLogger(__name__)
+
 
 class SCFError(RuntimeError):
     """The SCF did not produce a valid ground state (not converged, eigensolver not
-    converged, or HOMO-LUMO gap below ``min_gap``)."""
+    converged, or HOMO-LUMO gap below ``min_gap``). ``history`` and ``n_iter`` are
+    those of the failed run (see ``SCFResult``), for diagnosis."""
+
+    def __init__(self, message: str, history: dict | None = None, n_iter: int | None = None):
+        super().__init__(message)
+        self.history = history
+        self.n_iter = n_iter
 
 
 @dataclass(frozen=True)
@@ -83,7 +100,15 @@ class SCFResult:
     """Converged SCF. ``density`` is built from ``orbitals`` and ``occupations``; the
     orbitals are eigenvectors of H at the last input density. ``energies`` maps term
     names to energies (Ha); ``total_energy`` is their sum. ``eigen_residuals`` are
-    ||H psi - eps psi|| per band."""
+    ||H psi - eps psi|| per band.
+
+    ``history`` maps names to arrays of length ``n_iter + 1``, one entry per evaluated
+    input density rho_i (i = 0 is the initial guess): ``energy`` (Kohn-Sham energy of
+    the orbitals of H[rho_i], Ha), ``delta_energy`` (change from i - 1; NaN at 0),
+    ``residual`` (||F(rho_i) - rho_i||, the converged quantity), ``projection`` (norm
+    of the change clipping and renormalising made to the mixed density), ``homo``,
+    ``lumo``, ``gap`` (Ha, over all k), ``eig_residual_max`` and ``eig_iters`` (worst
+    eigensolver residual and iteration count over k)."""
 
     density: jax.Array
     orbitals: jax.Array
@@ -95,6 +120,7 @@ class SCFResult:
     n_iter: jax.Array
     converged: jax.Array
     eigen_residuals: jax.Array
+    history: dict
 
 
 # --- the direct energy functional ------------------------------------------------------
@@ -145,9 +171,33 @@ def _check_terms(terms):
 # --- the traced SCF ----------------------------------------------------------------------------
 
 
-@partial(jax.jit, static_argnames=("n_bands", "mixer", "eigensolver", "preconditioner"))
+def _log_iteration(it, values, t0):
+    """Host callback (``jax.debug.callback``): one live iteration line."""
+    logger.info(report.iteration_line(int(it), values, elapsed=time.perf_counter() - float(t0)))
+
+
+_STATIC = ("n_bands", "max_iter", "mixer", "eigensolver", "preconditioner", "history", "live")
+
+
+@partial(jax.jit, static_argnames=_STATIC)
 def _scf_core(
-    structure, basis, terms, density0, n_el, kweights, tol, max_iter, min_gap, *, n_bands, mixer, eigensolver, preconditioner
+    structure,
+    basis,
+    terms,
+    density0,
+    n_el,
+    kweights,
+    tol,
+    min_gap,
+    t0,
+    *,
+    n_bands,
+    max_iter,
+    mixer,
+    eigensolver,
+    preconditioner,
+    history,
+    live,
 ):
     volume = structure.lattice.volume
     n_tot = math.prod(basis.fft_shape)
@@ -163,26 +213,48 @@ def _scf_core(
             def apply(psi):
                 return apply_H(ham, psi)
 
-            eps, vecs = eigensolver(apply, basis_k.n_pad, n_bands, x0=x0, preconditioner=precondition, tol=eig_tol)
+            eps, vecs, its = eigensolver(
+                apply, basis_k.n_pad, n_bands, x0=x0, preconditioner=precondition, tol=eig_tol, return_iterations=True
+            )
             vecs = jnp.where(basis_k.mask[:, None], vecs, 0)
             res = jnp.linalg.norm(apply(vecs) - vecs * eps[None, :], axis=0)
-            return vecs, eps, res
+            return vecs, eps, res, its
 
         return jax.vmap(per_k)(basis, X_prev)
 
+    top = jnp.sum(occ[0] > 0) - 1  # highest (partially) occupied band
+    has_next = top + 1 < n_bands
+    nxt = jnp.minimum(top + 1, n_bands - 1)
+
     def F(rho, aux):
-        X_prev = aux[0]
+        X_prev, e_prev = aux[0], aux[4]
         potential = total_potential(terms, structure, basis, rho)
-        X, eps, res = diagonalise(potential, X_prev)
+        X, eps, res, its = diagonalise(potential, X_prev)
         rho_out = electron_density(structure.lattice, basis, X, occ, kweights)
-        return rho_out, (X, eps, res)
+        e = total_energy(structure, basis, terms, X, occ, kweights)[0] if history else e_prev
+        return rho_out, (X, eps, res, its, e, e - e_prev)
+
+    def record(rho, rho_out, aux):
+        _, eps, res, its, e, de = aux
+        homo = jnp.max(jnp.take(eps, jnp.maximum(top, 0), axis=1))
+        lumo = jnp.where(has_next, jnp.min(jnp.take(eps, nxt, axis=1)), jnp.nan)
+        return {
+            "energy": e,
+            "delta_energy": de,
+            "homo": homo,
+            "lumo": lumo,
+            "gap": lumo - homo,
+            "eig_residual_max": jnp.max(res),
+            "eig_iters": jnp.max(its),
+        }
 
     key = jax.random.PRNGKey(0)
     kr, ki = jax.random.split(key)
     shape = (n_k, basis.n_pad, n_bands)
     X0 = jax.random.normal(kr, shape) + 1j * jax.random.normal(ki, shape)
     X0 = jnp.where(basis.mask[..., None], X0, 0)
-    aux0 = (X0, jnp.zeros((n_k, n_bands)), jnp.zeros((n_k, n_bands)))
+    nan = jnp.asarray(jnp.nan)
+    aux0 = (X0, jnp.zeros((n_k, n_bands)), jnp.zeros((n_k, n_bands)), jnp.zeros(n_k, dtype=int), nan, nan)
 
     def norm(r):
         return jnp.sqrt(volume / n_tot * jnp.sum(r**2))
@@ -190,12 +262,20 @@ def _scf_core(
     def project(rho):
         return clip_and_renormalise(rho, n_el, volume)
 
-    res = fixed_point(F, density0, mixer, tol, max_iter, project=project, norm=norm, aux0=aux0)
-    X, eps, eig_res = res.aux
+    res = fixed_point(
+        F,
+        density0,
+        mixer,
+        tol,
+        max_iter,
+        project=project,
+        norm=norm,
+        aux0=aux0,
+        record=record if history else None,
+        on_step=(lambda it, values: jax.debug.callback(_log_iteration, it, values, t0, ordered=True)) if live else None,
+    )
+    X, eps, eig_res = res.aux[:3]
 
-    top = jnp.sum(occ[0] > 0) - 1  # highest (partially) occupied band
-    has_next = top + 1 < n_bands
-    nxt = jnp.minimum(top + 1, n_bands - 1)
     gap = jnp.take(eps, nxt, axis=1) - jnp.take(eps, jnp.maximum(top, 0), axis=1)
     gap_ok = has_next & jnp.all(gap > min_gap)
     eig_ok = jnp.all(eig_res < jnp.maximum(EIGEN_CHECK_FRACTION * tol, 5 * EIGEN_FLOOR))
@@ -211,18 +291,17 @@ def _scf_core(
         "gap_ok": gap_ok,
         "eig_ok": eig_ok,
         "n_el_ok": n_el <= 2.0 * n_bands,
+        "history": res.history,
     }
 
 
 _total_energy_jit = jax.jit(total_energy)
 
 
-def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
-    if density0 is None:
-        density0 = options.initial_density(structure, basis, charges)
+def _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, *, history, live):
     n_k = basis.miller.shape[0]
     kweights = jnp.full(n_k, 1.0 / n_k)
-    out = _scf_core(
+    args = (
         structure,
         basis,
         terms,
@@ -230,14 +309,33 @@ def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
         n_el,
         kweights,
         jnp.asarray(options.tol, dtype=jnp.float64),
-        jnp.asarray(options.max_iter),
         jnp.asarray(options.min_gap, dtype=jnp.float64),
+        jnp.asarray(0.0),  # t0, replaced at call time when logging live
+    )
+    static = dict(
         n_bands=n_bands,
+        max_iter=int(options.max_iter),
         mixer=options.mixer,
         eigensolver=options.eigensolver,
         preconditioner=options.preconditioner,
+        history=history,
+        live=live,
     )
-    return out, kweights
+    return args, static, kweights
+
+
+def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
+    """The traced path used by ``energy``: no history, no logging."""
+    if density0 is None:
+        density0 = options.initial_density(structure, basis, charges)
+    args, static, kweights = _core_arguments(
+        structure, basis, terms, options, density0, n_el, n_bands, history=False, live=False
+    )
+    return _scf_core(*args, **static), kweights
+
+
+def _integral(rho, structure):
+    return float(structure.lattice.volume) / rho.size * float(jnp.sum(rho))
 
 
 # --- public entry points -------------------------------------------------------------------------
@@ -247,8 +345,14 @@ def scf(
     structure: Structure, basis: PlaneWaveBasis, terms, options: SCFOptions | None = None, density0=None
 ) -> SCFResult:
     """Run the SCF on the host and return an ``SCFResult``; raise ``SCFError`` with a
-    description if it fails."""
+    description if it fails.
+
+    If the ``jaxdft`` logger is enabled at INFO (e.g. ``jaxdft.log_to_file``), the run
+    is logged: machine, structure, terms, basis and settings, then one line per SCF
+    iteration as it completes, then the result and timings."""
+    t_start = time.perf_counter()
     options = SCFOptions() if options is None else options
+    live = logger.isEnabledFor(logging.INFO)
     terms = bind_terms(structure, tuple(terms))
     ionic = _check_terms(terms)
     charges = ionic.ionic_charges(structure)
@@ -256,12 +360,41 @@ def scf(
     n_bands = options.n_bands or int(math.ceil(n_el / 2 - 1e-12)) + 1
     if n_el > 2 * n_bands:
         raise ValueError(f"{n_el} electrons do not fit in n_bands={n_bands}")
-    out, kweights = _run(structure, basis, terms, options, density0, jnp.asarray(n_el), n_bands, charges)
+    given = density0 is not None
+    if density0 is None:
+        density0 = options.initial_density(structure, basis, charges)
+    args, static, kweights = _core_arguments(
+        structure, basis, terms, options, density0, jnp.asarray(n_el), n_bands, history=True, live=live
+    )
+
+    if live:
+        eig_tol = max(EIGEN_TOL_FRACTION * options.tol, EIGEN_FLOOR)
+        initial = "density0 argument" if given else report.describe(options.initial_density)
+        lines = report.machine_lines(machine_info())
+        lines += report.structure_lines(structure)
+        lines += report.model_lines(terms)
+        lines += report.basis_lines(structure, basis)
+        lines += report.settings_lines(options, n_el, n_bands, eig_tol, initial, _integral(args[3], structure))
+        _log_lines(lines)
+
+    # Compile ahead of time, so compilation and the SCF itself are timed separately.
+    t_setup = time.perf_counter()
+    compiled = _scf_core.lower(*args, **static).compile()
+    t_compiled = time.perf_counter()
+    if live:
+        _log_lines(report.iteration_lines_header(options.tol))
+    out = compiled(*args[:-1], jnp.asarray(time.perf_counter()))
+    out = jax.block_until_ready(out)
+    t_solved = time.perf_counter()
+
+    n_iter = int(out["n_iter"])
+    history = {k: v[: n_iter + 1] for k, v in out["history"].items()}
+    timings = {"setup": t_setup - t_start, "compile": t_compiled - t_setup, "SCF": t_solved - t_compiled}
 
     problems = []
     if not bool(out["converged"]):
         problems.append(
-            f"SCF not converged after {int(out['n_iter'])} iterations "
+            f"SCF not converged after {n_iter} iterations "
             f"(residual {float(out['residual']):.3e}, tol {options.tol:.1e})"
         )
     if not bool(out["eig_ok"]):
@@ -269,9 +402,36 @@ def scf(
     if not bool(out["gap_ok"]):
         problems.append(f"frontier gap below min_gap={options.min_gap} Ha (or no band above the occupied ones)")
     if problems:
-        raise SCFError("; ".join(problems))
+        message = "; ".join(problems)
+        if live:
+            timings["total"] = time.perf_counter() - t_start
+            status = f"FAILED: {message}"
+            _log_lines(
+                report.result_lines(
+                    status, None, None, out["eigenvalues"], out["occupations"], None, timings, peak_memory_bytes()
+                )
+            )
+        raise SCFError(message, history=history, n_iter=n_iter)
 
     e, parts = _total_energy_jit(structure, basis, terms, out["orbitals"], out["occupations"], kweights)
+    e = jax.block_until_ready(e)
+    if live:
+        timings["final energy (incl. compile)"] = time.perf_counter() - t_solved
+        timings["total"] = time.perf_counter() - t_start
+        status = f"converged in {n_iter} iterations: |F(rho)-rho| = {float(out['residual']):.3e} < {options.tol:.1e}"
+        order = list(dict.fromkeys(type(t).__name__ for t in terms))
+        _log_lines(
+            report.result_lines(
+                status,
+                {k: parts[k] for k in order},
+                e,
+                out["eigenvalues"],
+                out["occupations"],
+                _integral(out["density"], structure),
+                timings,
+                peak_memory_bytes(),
+            )
+        )
     return SCFResult(
         density=out["density"],
         orbitals=out["orbitals"],
@@ -283,7 +443,13 @@ def scf(
         n_iter=out["n_iter"],
         converged=out["converged"],
         eigen_residuals=out["eigen_residuals"],
+        history=history,
     )
+
+
+def _log_lines(lines):
+    for line in lines:
+        logger.info(line)
 
 
 def energy(

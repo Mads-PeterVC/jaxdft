@@ -16,15 +16,19 @@ def dense_eigensolver(
     x0=None,
     preconditioner=None,
     tol=None,
-) -> tuple[jax.Array, jax.Array]:
+    return_iterations: bool = False,
+):
     """Lowest ``n_bands`` eigenpairs of the Hermitian operator ``apply`` on C^dim.
 
     Builds the dense matrix by applying the operator to the identity, then uses
     ``eigh``. Returns eigenvalues (n_bands,) ascending and orthonormal eigenvectors
     (dim, n_bands) as columns. ``x0``, ``preconditioner`` and ``tol`` are accepted for the
-    common eigensolver interface and ignored: the result is exact to rounding.
+    common eigensolver interface and ignored: the result is exact to rounding. With
+    ``return_iterations`` it also returns an iteration count of 0 (not iterative).
     """
     H = apply(jnp.eye(dim, dtype=jnp.complex128))
     H = 0.5 * (H + H.conj().T)  # remove rounding-level anti-Hermitian part
     eigenvalues, eigenvectors = jnp.linalg.eigh(H)
+    if return_iterations:
+        return eigenvalues[:n_bands], eigenvectors[:, :n_bands], jnp.asarray(0)
     return eigenvalues[:n_bands], eigenvectors[:, :n_bands]
