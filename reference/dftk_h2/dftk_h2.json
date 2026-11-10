@@ -1,0 +1,162 @@
+{
+  "description": "DFTK reference for jaxdft Milestone 2a: H2, LDA, HGH, Gamma",
+  "functional": [
+    "lda_x",
+    "lda_c_pw"
+  ],
+  "generator": "reference/dftk_h2/run_dftk.jl",
+  "pseudopotential": {
+    "sha256": "2f4069ba8ea992435a2c614bed3b2a1ed18b808fc1ffc5d7a9dcaa519f1f5969",
+    "source": "PseudoLibrary hgh_lda_hgh/h-q1.hgh (vendored in jaxdft)"
+  },
+  "systems": [
+    {
+      "ecut_hartree": 10.0,
+      "eigenvalues_hartree": [
+        -0.3610049856888306,
+        -0.01381251286937395
+      ],
+      "energies_hartree": {
+        "AtomicLocal": -2.2859027133310197,
+        "AtomicNonlocal": 0.0,
+        "Ewald": 0.12673713856329624,
+        "Hartree": 0.7014846627300275,
+        "Kinetic": 0.9802313691218905,
+        "PspCorrection": -5.191544174792165e-6,
+        "Xc": -0.6274259930571846
+      },
+      "fft_size": [
+        30,
+        30,
+        30
+      ],
+      "forces_hartree_per_bohr": [
+        [
+          1.6292773702507592e-13,
+          -8.06087563400539e-14,
+          -0.020542839655414726
+        ],
+        [
+          1.619642400796723e-13,
+          -3.663152553604241e-14,
+          0.020542839656208935
+        ]
+      ],
+      "lattice_bohr": [
+        [
+          10.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          10.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          10.0
+        ]
+      ],
+      "n_plane_waves": 1503,
+      "name": "symmetric",
+      "occupations": [
+        2.0,
+        0.0
+      ],
+      "positions_fractional": [
+        [
+          0.5,
+          0.5,
+          0.42750000000000005
+        ],
+        [
+          0.5,
+          0.5,
+          0.5725
+        ]
+      ],
+      "scf_iterations": 16,
+      "scf_tol": 1.0e-11,
+      "total_energy_hartree": -1.1048807275171648
+    },
+    {
+      "ecut_hartree": 10.0,
+      "eigenvalues_hartree": [
+        -0.3844434554967371,
+        -0.013592217984923253
+      ],
+      "energies_hartree": {
+        "AtomicLocal": -2.5896966679133526,
+        "AtomicNonlocal": 0.0,
+        "Ewald": 0.2689395866370261,
+        "Hartree": 0.791254595938931,
+        "Kinetic": 1.1117935475643368,
+        "PspCorrection": -5.191544174792165e-6,
+        "Xc": -0.6686031297738086
+      },
+      "fft_size": [
+        30,
+        30,
+        30
+      ],
+      "forces_hartree_per_bohr": [
+        [
+          -0.029655850355557914,
+          -0.014791885902973001,
+          -0.14412945868507682
+        ],
+        [
+          0.029655850619467516,
+          0.014791885239139359,
+          0.144129458666347
+        ]
+      ],
+      "lattice_bohr": [
+        [
+          10.0,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          10.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          10.0
+        ]
+      ],
+      "n_plane_waves": 1503,
+      "name": "distorted",
+      "occupations": [
+        2.0,
+        0.0
+      ],
+      "positions_fractional": [
+        [
+          0.5012891991246176,
+          0.48714459956230877,
+          0.462445995623088
+        ],
+        [
+          0.5247108008753825,
+          0.49885540043769117,
+          0.579554004376912
+        ]
+      ],
+      "scf_iterations": 15,
+      "scf_tol": 1.0e-11,
+      "total_energy_hartree": -1.0863172590910422
+    }
+  ],
+  "units": "Hartree atomic units",
+  "versions": {
+    "DFTK": "0.8.2",
+    "julia": "1.13.3",
+    "libxc": "7.0.0"
+  }
+}

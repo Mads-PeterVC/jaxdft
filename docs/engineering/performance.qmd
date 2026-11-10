@@ -184,3 +184,58 @@ gather operator is a smaller cost. Applying the operator to a block of bands,
 which is all an iterative solver needs, is cheaper still by orders of
 magnitude. The matrix-free operator pays off once an iterative solver replaces
 the dense one.
+
+## Milestone 2a: SCF for H₂
+
+One self-consistent LDA calculation for H₂ in a cubic box at Γ ($d$ = 1.45
+Bohr), with Anderson mixing and LOBPCG, and one force evaluation, which is
+`jax.grad` of `energy` with the SCF inside. The whole SCF is one jitted call.
+"First call" includes compilation for that grid shape. "Steady state" is the
+median of three repeats.
+
+```{python}
+#| echo: false
+from jaxdft import SCFOptions, dimer_in_box, energy, lda_terms, scf
+from jaxdft.pseudo.gth import hgh_lda
+
+h2_terms = lda_terms({"H": hgh_lda("H")})
+
+
+def wall(fn):
+    t0 = time.perf_counter()
+    jax.block_until_ready(fn())
+    return time.perf_counter() - t0
+
+
+scf_rows = []
+for box, ecut in [(10.0, 10.0), (12.0, 20.0), (12.0, 40.0)]:
+    h2 = dimer_in_box("H", 1.45, box)
+    b = PlaneWaveBasis.build(h2.lattice, jnp.zeros((1, 3)), ecut)
+    run_scf = lambda: scf(h2, b, h2_terms, SCFOptions()).total_energy
+    force = jax.grad(lambda s: energy(s, b, h2_terms, SCFOptions()))
+    run_force = lambda: force(h2).positions
+    first = wall(run_scf)
+    steady = statistics.median(wall(run_scf) for _ in range(3))
+    first_force = wall(run_force)
+    steady_force = statistics.median(wall(run_force) for _ in range(3))
+    scf_rows.append({
+        "L (Bohr)": f"{box:g}",
+        "E_cut (Ha)": f"{ecut:g}",
+        "plane waves": int(b.n_pw[0]),
+        "grid": "×".join(map(str, b.fft_shape)),
+        "SCF iterations": int(scf(h2, b, h2_terms, SCFOptions()).n_iter),
+        "SCF first (s)": f"{first:.2f}",
+        "SCF steady (s)": f"{steady:.2f}",
+        "force first (s)": f"{first_force:.2f}",
+        "force steady (s)": f"{steady_force:.2f}",
+    })
+pd.DataFrame(scf_rows).style.hide(axis="index")
+```
+
+The SCF converges in the same number of Anderson steps at every size, so
+the cost per step scales with the FFT grid. A force costs about as much as
+one SCF plus a first-order pass over the energy terms, as expected when the
+gradient stops at the converged orbitals. The
+[validation document](../validation/02a_scf_h2.qmd) runs about a hundred of
+these calculations, up to 100 Ha, and takes several minutes to render. It
+is the slowest page of the site.

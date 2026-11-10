@@ -102,13 +102,21 @@ Physical approximations must be interchangeable without rewriting core
 algorithms. The SCF loop must not know or care which XC functional,
 pseudopotential, or basis set it uses.
 
-- XC functional: a callable `(density) -> (energy, potential)`
+- XC functional: a pure function of the density giving its energy. Like every
+  density-dependent term (local pseudopotential, Hartree, XC), it defines
+  only an energy; its potential is the autodiff derivative of that energy
+  with respect to the grid density, so potential and energy can never
+  disagree. A `(density) -> (energy, potential)` callable is a thin wrapper
+  over this.
 - Pseudopotential: an object exposing reciprocal-space radial data, behind a
   parser interface; nothing outside the parser reads file formats. The local
   part is a form factor `local(q) -> v̂(q)` (atomic Fourier transform,
-  Ha·Bohr³, cell-independent). Nonlocal projectors and their coefficients are
-  added as further methods in the milestone that first needs them; local and
-  nonlocal parts are used by separate Hamiltonian terms.
+  Ha·Bohr³, cell-independent, Coulomb tail included for q > 0), plus its
+  ionic charge (`None` for empirical models without point ions) and the
+  finite non-Coulomb q → 0 limit α. Nonlocal projectors and their
+  coefficients are added as further methods in the milestone that first
+  needs them; local and nonlocal parts are used by separate Hamiltonian
+  terms.
 - Basis set: an object defining representation and transforms between real
   and reciprocal space (plane waves now; keep LCAO possible later)
 - Diagonaliser and k-point generation: likewise swappable
@@ -232,8 +240,15 @@ looks wrong, stop and raise it.
 - **Milestone 1b:** Cohen–Bergstresser empirical pseudopotential silicon.
   Fixed local potential from published form factors and the structure factor.
   Validated against published band structures. No SCF, XC, or total energy.
-- **Next (outline only):** self-consistency with Hartree (FFT Poisson) + LDA
-  and a real norm-conserving pseudopotential, total energy, Ewald, forces.
+- **Milestone 2a:** self-consistent LDA for H₂ in a cubic box, Γ only, with
+  the local-only HGH hydrogen pseudopotential. FFT grid, Hartree, Slater +
+  PW92, Ewald and G = 0 conventions, `solve(F, ρ₀)` with Anderson mixing,
+  LOBPCG, total energy, forces and one-sided weight derivatives from
+  `jax.grad`. Acceptance from analytic checks and invariants; DFTK and libxc
+  comparisons added after implementation.
+- **Next (outline only):** 2b, SCF silicon: nonlocal projectors, k-point
+  sampling, bands from the converged density, compared with
+  Cohen–Bergstresser.
 
 Later milestones are defined when we get there.
 

@@ -10,6 +10,9 @@ data; nothing outside its parser/constructor reads file formats.
   None if unbounded (needs the FFT-based term of a later milestone).
 - optional ``validate(q_values)``: host-side; raise ValueError if the model is not
   defined at some q where it will actually be used.
+- ``ionic_charge``: the valence charge Z of the point ion (None for empirical models
+  without one), used by the Ewald term and for the electron count.
+- ``alpha``: lim_{q->0} [v_hat(q) + 4 pi Z / q^2], the finite G = 0 limit (Ha Bohr^3).
 
 Nonlocal projectors are added as further methods in the milestone that needs them.
 """

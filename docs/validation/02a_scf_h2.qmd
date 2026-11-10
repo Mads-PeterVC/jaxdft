@@ -1,0 +1,1043 @@
+---
+title: "Milestone 2a: self-consistent LDA for H₂ validation"
+description: "H₂ in a box with the HGH pseudopotential: agreement with DFTK and libxc, convergence in cutoff and box, bond length and frequency from forces, the grid rule, and one-sided weight derivatives."
+date: 2026-11-06
+bibliography: ../references.bib
+---
+
+```{python}
+#| echo: false
+import json
+from pathlib import Path
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+import altair as alt
+
+from jaxdft import (
+    Lattice,
+    PlaneWaveBasis,
+    SCFOptions,
+    Structure,
+    dimer_in_box,
+    energy,
+    lda_terms,
+    scf,
+)
+from jaxdft.basis.planewave import min_fft_shape, rule_fft_shape
+from jaxdft.plotting import style
+from jaxdft.pseudo.gth import hgh_lda
+from jaxdft.xc.lda import lda_pw92, lda_x
+from jaxdft.units import PROTON_MASS_IN_ELECTRON_MASS, convert
+
+style.enable()
+
+GAMMA = np.zeros((1, 3))
+L_TEST, ECUT_TEST, D_TEST = 10.0, 10.0, 1.45  # acceptance size (Bohr, Ha)
+SCF_TOL = 1e-9  # the acceptance-test tolerance
+hydrogen = hgh_lda("H")
+terms = lda_terms({"H": hydrogen})
+options = SCFOptions(tol=SCF_TOL)
+cm = float(convert(1.0, "Hartree", "cm-1"))
+angstrom = float(convert(1.0, "Bohr", "Angstrom"))
+MU = PROTON_MASS_IN_ELECTRON_MASS / 2  # reduced mass of two protons (m_e)
+EXPT = {
+    "r_e": 0.7414,
+    "omega_e": 4401.0,
+}  # Angstrom, cm^-1 [huber_herzberg1979]
+
+
+def basis(s, ecut, n=None):
+    shape = None if n is None else (n, n, n)
+    return PlaneWaveBasis.build(
+        s.lattice, GAMMA, ecut, fft_shape=shape, allow_aliasing=n is not None
+    )
+
+
+def cartesian_gradient(g, s):
+    """dE/dtau (Ha/Bohr) from the gradient with respect to fractional positions."""
+    A = np.asarray(s.lattice.vectors)
+    return np.asarray(g.positions) @ np.linalg.inv(A).T
+
+
+def bond_derivative(d, box, ecut):
+    """dE/dd (Ha/Bohr) along the bond, from jax.grad of the energy."""
+    s = dimer_in_box("H", d, box)
+    b = basis(s, ecut)
+    g = jax.grad(lambda st: energy(st, b, terms, options))(s)
+    dEdtau = cartesian_gradient(g, s)
+    return 0.5 * (dEdtau[1, 2] - dEdtau[0, 2])
+
+
+def equilibrium(box, ecut, d=1.45, h=2e-3):
+    """Newton on dE/dd = 0 with the force constant from central differences of
+    forces. Returns (r_e in Bohr, k_e in Ha/Bohr^2)."""
+    for _ in range(8):
+        fp, fm = (
+            bond_derivative(d + h, box, ecut),
+            bond_derivative(d - h, box, ecut),
+        )
+        k = (fp - fm) / (2 * h)
+        step = 0.5 * (fp + fm) / k
+        d -= step
+        if abs(step) < 1e-5:
+            return d, k
+    raise RuntimeError(f"no equilibrium at L={box}, Ecut={ecut}")
+
+
+def omega(k):
+    """Harmonic wavenumber (cm^-1) of force constant k (Ha/Bohr^2)."""
+    return np.sqrt(k / MU) * cm
+
+
+def with_weights(s, weights):
+    return Structure(
+        s.lattice, s.positions, s.species, np.asarray(weights, float)
+    )
+
+
+def translated(s, t):
+    A = np.asarray(s.lattice.vectors)
+    f = np.asarray(s.positions) + np.asarray(t, float) @ np.linalg.inv(A)
+    return Structure(s.lattice, f, s.species, s.weights)
+
+
+h2_test = dimer_in_box("H", D_TEST, L_TEST)
+b_test = basis(h2_test, ECUT_TEST)
+ref = scf(h2_test, b_test, terms, options)
+eig = np.asarray(ref.eigenvalues[0])
+```
+
+This document validates Milestone 2a: a self-consistent LDA calculation for
+H₂ in a periodic cubic box, at Γ, with the local-only HGH hydrogen
+pseudopotential. The physics, conventions and tolerances are in the
+[theory post](../theory/02a_scf_h2.qmd).
+
+The acceptance tests written before implementation sit on the first rung
+of the validation ladder: analytic electrostatics, the jellium limit,
+finite-difference forces and exact invariants. After implementation, the
+third rung was added (theory post, decision 11): DFTK run on the same
+discrete problem, and libxc for the functional. This document shows both
+comparisons. It then asks the next question: are the converged numbers
+physically sensible, and how far are they from the converged limit?
+
+## Setup
+
+- H₂ along $z$ with its centre at the cube centre, which is a grid point
+  for even $N$. Bond length $d$ = `{python} f"{D_TEST}"` Bohr unless stated.
+- HGH LDA hydrogen: $Z_\text{ion}$ = `{python} f"{hydrogen.ionic_charge:g}"`,
+  $r_\text{loc}$ = `{python} f"{hydrogen.rloc}"` Bohr, and
+  $\alpha$ = `{python} f"{hydrogen.alpha:.6g}"` Ha·Bohr³.
+- Slater exchange and PW92 correlation, spin-unpolarised, two electrons in
+  the lowest band.
+- Acceptance size: $L$ = `{python} f"{L_TEST:g}"` Bohr and
+  $E_\text{cut}$ = `{python} f"{ECUT_TEST:g}"` Ha. That gives
+  `{python} f"{int(b_test.n_pw[0])}"` plane waves on a
+  `{python} "×".join(map(str, b_test.fft_shape))` grid. The no-wraparound bound
+  is `{python} min_fft_shape(h2_test.lattice, ECUT_TEST)[0]`, rounded up to a
+  2·3·5-smooth size.
+- SCF tolerance $\|F(\rho)-\rho\|$ < `{python} f"{SCF_TOL:.0e}"` (Anderson mixing).
+  The eigensolver is LOBPCG. Forces come from `jax.grad` of `energy`.
+
+## The ground state at the acceptance size
+
+```{python}
+#| echo: false
+names = {
+    "Kinetic": "kinetic",
+    "AtomicLocal": "local pseudopotential",
+    "Hartree": "Hartree",
+    "Xc": "exchange–correlation",
+    "Ewald": "ion–ion (Ewald)",
+}
+parts = {names[k]: float(v) for k, v in ref.energies.items()}
+assert set(parts) == set(names.values())
+omega_cell = float(L_TEST**3)
+n_el = float(np.sum(np.asarray(ref.density)) * omega_cell / ref.density.size)
+assert abs(n_el - 2.0) < 1e-12
+assert abs(sum(parts.values()) - float(ref.total_energy)) < 1e-14
+energy_rows = [
+    {"term": k, "energy (Ha)": f"{v:+.10f}"} for k, v in parts.items()
+]
+energy_rows.append({
+    "term": "total",
+    "energy (Ha)": f"{float(ref.total_energy):+.10f}",
+})
+pd.DataFrame(energy_rows).style.hide(axis="index")
+```
+
+The SCF converges in `{python} f"{int(ref.n_iter)}"` iterations, to a residual
+of `{python} f"{float(ref.residual):.1e}"`. The density integrates to
+`{python} f"{n_el:.13f}"` electrons. The occupied σ$_g$ level is at
+`{python} f"{eig[0]:.6f}"` Ha and the first empty level at
+`{python} f"{eig[1]:.6f}"` Ha, a gap of `{python} f"{eig[1] - eig[0]:.6f}"` Ha.
+Before implementation, the theory post's independent NumPy check and the
+review gave a total energy and gap of −1.1048807 Ha and 0.347192 Ha at this
+size. The acceptance tests assert that agreement. Neither number is a
+reference value: they come from the same discrete problem solved twice.
+
+The individual terms have the expected signs and sizes for a
+pseudopotential molecule. The local pseudopotential binds, the kinetic and
+Hartree energies are of the same order, and the ion–ion term is a modest
+positive energy.
+
+```{python}
+#| column: page-inset
+#| echo: false
+rho = np.asarray(ref.density)
+n = rho.shape[0]
+xs = np.arange(n) * L_TEST / n - L_TEST / 2
+plane = rho[:, n // 2, :]  # the y = L/2 plane, which contains the bond
+mirror = (-np.arange(n)) % n  # reflection through the centre, grid point n/2
+assert np.unravel_index(rho.argmax(), rho.shape) == (n // 2,) * 3
+assert np.abs(plane - plane[mirror, :]).max() < 1e-12
+assert np.abs(plane - plane[:, mirror]).max() < 1e-12
+assert np.abs(rho - rho.transpose(1, 0, 2)).max() < 1e-12
+density_df = pd.DataFrame([
+    {"x": xs[i], "z": xs[k], "density": plane[i, k]}
+    for i in range(n)
+    for k in range(n)
+])
+alt.Chart(density_df).mark_rect().encode(
+    x=alt.X("x:O", title="x − L/2 (Bohr)", axis=alt.Axis(format=".1f")),
+    y=alt.Y(
+        "z:O",
+        title="z − L/2 (Bohr)",
+        sort="descending",
+        axis=alt.Axis(format=".1f"),
+    ),
+    color=alt.Color(
+        "density:Q",
+        title="ρ (Bohr⁻³)",
+        scale=alt.Scale(scheme="blues"),
+    ),
+    tooltip=[
+        alt.Tooltip("x:Q", format=".2f"),
+        alt.Tooltip("z:Q", format=".2f"),
+        alt.Tooltip("density:Q", format=".3e"),
+    ],
+).properties(width=380, height=380)
+```
+
+The density in the plane that contains the bond, on the FFT grid. It has a
+single maximum at the bond centre, not two at the nuclei
+($z = \pm d/2$). The pseudopotential is finite at the nucleus, so the
+pseudo-density has no nuclear cusp, and the two atomic densities merge into
+one bonding peak. The molecule sits on a grid point, so the reflections
+$x\to-x$ and $z\to-z$ and the exchange $x\leftrightarrow y$ map the grid to
+itself. The density is symmetric under all three to rounding (asserted to
+$10^{-12}$).
+
+## Convergence with cutoff
+
+```{python}
+#| column: page-inset
+#| echo: false
+D_CONV, L_CONV = 1.44, 12.0  # the theory post's table
+cutoffs = [
+    5.0,
+    7.5,
+    10.0,
+    15.0,
+    20.0,
+    25.0,
+    30.0,
+    40.0,
+    50.0,
+    60.0,
+    80.0,
+    100.0,
+]
+s_conv = dimer_in_box("H", D_CONV, L_CONV)
+e_conv = np.array([
+    float(scf(s_conv, basis(s_conv, ec), terms, options).total_energy)
+    for ec in cutoffs
+])
+# Nested bases at fixed cell: the energy must decrease monotonically.
+assert np.all(np.diff(e_conv) < 0)
+conv_df = pd.DataFrame({
+    "ecut": cutoffs[:-1],
+    "error": (e_conv[:-1] - e_conv[-1]) * 1e3,
+})
+alt.Chart(conv_df).mark_line(
+    point=alt.OverlayMarkDef(size=60, filled=True)
+).encode(
+    x=alt.X("ecut:Q", title="E_cut (Ha)"),
+    y=alt.Y(
+        "error:Q",
+        title=f"E − E({cutoffs[-1]:g} Ha) (mHa)",
+        scale=alt.Scale(type="log"),
+    ),
+    color=alt.value(style.SERIES[0]),
+    tooltip=[
+        alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
+        alt.Tooltip("error:Q", title="mHa", format=".3g"),
+    ],
+).properties(width=style.WIDTH, height=280)
+```
+
+The total energy at $d$ = `{python} f"{D_CONV}"` Bohr and $L$ =
+`{python} f"{L_CONV:g}"` Bohr decreases monotonically with the cutoff, as the
+variational principle requires for nested bases. The document asserts this.
+At 40 Ha it is still `{python} f"{(e_conv[cutoffs.index(40.0)] - e_conv[-1]) * 1e3:.1f}"`
+mHa above its value at `{python} f"{cutoffs[-1]:g}"` Ha. With
+$r_\text{loc}$ = `{python} f"{hydrogen.rloc}"` Bohr, the HGH hydrogen potential
+is hard, and absolute energies converge slowly. The quantities that matter
+below are energy differences, and they converge much faster.
+
+## Bond length and harmonic frequency
+
+```{python}
+#| echo: false
+eq_cutoffs = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0]
+eq = {}
+d0 = 1.45
+for ec in eq_cutoffs:
+    r_e, k_e = equilibrium(L_CONV, ec, d=d0)
+    eq[ec] = (r_e, k_e)
+    d0 = r_e
+
+# Cross-check the force constant from forces against a second difference of
+# energies at one cutoff: both are derivatives of the same discrete energy.
+ec_x, h_x = 30.0, 1e-2
+r_x, k_x = eq[ec_x]
+e_x = [
+    float(
+        scf(
+            dimer_in_box("H", r_x + s * h_x, L_CONV),
+            basis(s_conv, ec_x),
+            terms,
+            SCFOptions(tol=1e-11),
+        ).total_energy
+    )
+    for s in (-1, 0, 1)
+]
+k_from_energy = (e_x[0] - 2 * e_x[1] + e_x[2]) / h_x**2
+assert abs(k_from_energy / k_x - 1) < 1e-4
+
+eq_rows = [
+    {
+        "E_cut (Ha)": f"{ec:g}",
+        "r_e (Bohr)": f"{r:.4f}",
+        "r_e (Å)": f"{r * angstrom:.4f}",
+        "k_e (Ha/Bohr²)": f"{k:.4f}",
+        "ω_e (cm⁻¹)": f"{omega(k):.0f}",
+    }
+    for ec, (r, k) in eq.items()
+]
+pd.DataFrame(eq_rows).style.hide(axis="index")
+```
+
+At each cutoff, Newton's method on $\partial E/\partial d = 0$ locates the
+equilibrium. The bond derivative comes from `jax.grad`, and the force
+constant $k_e = \partial^2E/\partial d^2$ from central differences of it with
+a step of $2\times10^{-3}$ Bohr. The harmonic wavenumber is
+$\omega_e = \sqrt{k_e/\mu}$ with $\mu = m_p/2$. Using the atomic mass of H
+instead would lower $\omega_e$ by about 1 cm⁻¹. As a check on the derivative
+path, the force constant at `{python} f"{ec_x:g}"` Ha agrees with a second
+difference of energies to
+`{python} f"{abs(k_from_energy / k_x - 1):.0e}"` relative.
+
+```{python}
+#| column: page-inset
+#| echo: false
+eq_df = pd.DataFrame([
+    {"ecut": ec, "r_e (Å)": r * angstrom, "ω_e (cm⁻¹)": omega(k)}
+    for ec, (r, k) in eq.items()
+])
+charts = []
+for col, ref_value in [
+    ("r_e (Å)", EXPT["r_e"]),
+    ("ω_e (cm⁻¹)", EXPT["omega_e"]),
+]:
+    line = (
+        alt
+        .Chart(eq_df)
+        .mark_line(point=alt.OverlayMarkDef(size=60, filled=True))
+        .encode(
+            x=alt.X("ecut:Q", title="E_cut (Ha)"),
+            y=alt.Y(f"{col}:Q", title=col, scale=alt.Scale(zero=False)),
+            color=alt.value(style.SERIES[0]),
+            tooltip=[
+                alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
+                alt.Tooltip(f"{col}:Q", format=".4~f"),
+            ],
+        )
+    )
+    rule = (
+        alt
+        .Chart(pd.DataFrame({"y": [ref_value]}))
+        .mark_rule(strokeDash=[4, 4], color=style.SERIES[1])
+        .encode(y="y:Q")
+    )
+    charts.append((line + rule).properties(width=300, height=260))
+alt.hconcat(*charts)
+```
+
+```{python}
+#| echo: false
+r_last, k_last = eq[eq_cutoffs[-1]]
+r_prev, k_prev = eq[eq_cutoffs[-2]]
+r_40, k_40 = eq[40.0]
+# The prose below relies on these: converged at the top of the scan, and
+# 40 Ha visibly not converged.
+assert abs(r_last - r_prev) < 1e-4
+assert abs(omega(k_last) - omega(k_prev)) < 2.0
+assert abs(r_40 - r_last) > 2e-3
+assert abs(omega(k_40) - omega(k_last)) > 25.0
+omegas = [omega(k) for _, k in eq.values()]
+```
+
+The dashed lines are experiment, $r_e$ = `{python} f"{EXPT['r_e']}"` Å and
+$\omega_e$ = `{python} f"{EXPT['omega_e']:.0f}"` cm⁻¹ [@huber_herzberg1979].
+Both quantities are converged in the cutoff at the top of the scan, at this
+box size. From `{python} f"{eq_cutoffs[-2]:g}"` to
+`{python} f"{eq_cutoffs[-1]:g}"` Ha, $r_e$ moves by
+`{python} f"{abs(r_last - r_prev):.0e}"` Bohr and $\omega_e$ by
+`{python} f"{abs(omega(k_last) - omega(k_prev)):.1f}"` cm⁻¹. At
+$L$ = `{python} f"{L_CONV:g}"` Bohr the cutoff-converged values are $r_e$ =
+`{python} f"{r_last:.4f}"` Bohr and $\omega_e$ =
+`{python} f"{omega(k_last):.0f}"` cm⁻¹. The next section shows that the box
+is not negligible at this level.
+
+**This corrects the theory post.** The post expected $r_e$ to converge to
+about 1.453 Bohr "by 30–40 Ha". The values at 30 and 40 Ha do agree with
+each other, and they reproduce the post's table to every digit shown. But
+they are a plateau, not the limit: $r_e$ falls by another
+`{python} f"{(r_40 - r_last) * 1e3:.1f}"` mBohr between 40 and
+`{python} f"{eq_cutoffs[-1]:g}"` Ha. The frequency is not monotone in the
+cutoff. Between 20 Ha and the top of the scan it ranges over
+`{python} f"{min(omegas[1:]):.0f}"`–`{python} f"{max(omegas[1:]):.0f}"` cm⁻¹,
+and 40 Ha happens to sit at the bottom of a dip. Neither effect is
+numerical noise. The SCF error in a force is about $10^{-8}$ Ha/Bohr, which
+becomes about $10^{-5}$ relative in $k_e$, or below 0.1 cm⁻¹. A converged
+$\omega_e$ needs about 80 Ha with this pseudopotential.
+
+## Convergence with box size
+
+```{python}
+#| echo: false
+ECUT_BOX = 20.0
+boxes = [8.0, 10.0, 12.0, 14.0, 16.0]
+box = {}
+d0 = 1.47
+for L in boxes:
+    s = dimer_in_box("H", D_TEST, L)
+    b = basis(s, ECUT_BOX)
+    r = scf(s, b, terms, options)
+    ev = np.asarray(r.eigenvalues[0])
+    dE = {
+        side: float(
+            jax.grad(lambda st: energy(st, b, terms, options, side=side))(
+                s
+            ).weights[0]
+        )
+        for side in (-1, +1)
+    }
+    r_e, k_e = equilibrium(L, ECUT_BOX, d=d0)
+    d0 = r_e
+    box[L] = {
+        "E": float(r.total_energy),
+        "homo": ev[0],
+        "lumo": ev[1],
+        "left": dE[-1],
+        "right": dE[+1],
+        "r_e": r_e,
+        "omega": omega(k_e),
+    }
+L_ref = boxes[-1]
+box_rows = [
+    {
+        "L (Bohr)": f"{L:g}",
+        "E − E(16) (mHa)": f"{(v['E'] - box[L_ref]['E']) * 1e3:+.3f}",
+        "ε_HOMO (Ha)": f"{v['homo']:.4f}",
+        "ε_LUMO (Ha)": f"{v['lumo']:.4f}",
+        "gap (Ha)": f"{v['lumo'] - v['homo']:.4f}",
+        "r_e (Bohr)": f"{v['r_e']:.4f}",
+        "ω_e (cm⁻¹)": f"{v['omega']:.0f}",
+    }
+    for L, v in box.items()
+]
+pd.DataFrame(box_rows).style.hide(axis="index")
+```
+
+```{python}
+#| column: page-inset
+#| echo: false
+level_df = pd.DataFrame([
+    {"L": L, "level": name, "energy": v[key]}
+    for L, v in box.items()
+    for name, key in [("ε_HOMO (σg)", "homo"), ("ε_LUMO", "lumo")]
+])
+alt.Chart(level_df).mark_line(
+    point=alt.OverlayMarkDef(size=60, filled=True)
+).encode(
+    x=alt.X("L:Q", title="L (Bohr)", scale=alt.Scale(zero=False)),
+    y=alt.Y("energy:Q", title="eigenvalue (Ha)"),
+    color=alt.Color(
+        "level:N",
+        title=None,
+        scale=alt.Scale(range=[style.SERIES[0], style.SERIES[1]]),
+    ),
+    tooltip=[
+        alt.Tooltip("L:Q", title="L (Bohr)"),
+        alt.Tooltip("level:N"),
+        alt.Tooltip("energy:Q", format=".5f"),
+    ],
+).properties(width=style.WIDTH, height=260)
+```
+
+```{python}
+#| echo: false
+dr_box = box[L_ref]["r_e"] - box[12.0]["r_e"]
+dw_box = box[L_ref]["omega"] - box[12.0]["omega"]
+dE_box = abs(box[12.0]["E"] - box[L_ref]["E"])
+dr_tail = abs(box[14.0]["r_e"] - box[L_ref]["r_e"])
+homo_tail = [box[L]["homo"] for L in boxes[1:]]
+lumo_tail = [box[L]["lumo"] for L in boxes[1:]]
+assert all(np.diff(lumo_tail) > 0)  # rises towards zero beyond L = 8
+assert dE_box < 1e-4 and dr_box < -1e-3 and dr_tail < 5e-4
+```
+
+At $E_\text{cut}$ = `{python} f"{ECUT_BOX:g}"` Ha and $d$ = `{python} f"{D_TEST}"` Bohr,
+this recomputes the theory post's table and extends it to
+$L$ = `{python} f"{L_ref:g}"` Bohr. The small boxes are *lower* in energy.
+Overlap of the density tails with the periodic images stabilises the
+molecule, so convergence in $L$ is not variational. At $L = 12$ Bohr the
+total energy is within `{python} f"{dE_box * 1e3:.2f}"` mHa of $L = 16$, as the
+post found. The bond is more sensitive than the energy. From $L = 12$ to
+16 Bohr, $r_e$ changes by `{python} f"{dr_box * 1e3:+.1f}"` mBohr and $\omega_e$ by
+`{python} f"{dw_box:+.0f}"` cm⁻¹. From 14 to 16 Bohr, $r_e$ changes by only
+`{python} f"{dr_tail * 1e3:.2f}"` mBohr, so $L = 16$ is converged for this
+purpose.
+
+The two eigenvalues behave differently. For $L \ge 10$ Bohr the HOMO stays
+within `{python} f"{np.ptp(homo_tail) * 1e3:.1f}"` mHa but does not settle
+monotonically. Its absolute value is limited by the zero of energy in a
+periodic calculation: the $\mathbf{G} = 0$ components of the electrostatic
+potentials are dropped, so eigenvalues are measured from the cell-averaged
+potential, not from the vacuum level. The LUMO is the antibonding
+σ$_u^*$ level. It is unbound in free space, so in the box it is a box state.
+Beyond $L = 8$ Bohr it rises steadily towards zero, by
+`{python} f"{(lumo_tail[-1] - lumo_tail[0]) * 1e3:.1f}"` mHa from $L = 10$ to
+`{python} f"{L_ref:g}"` Bohr. Its value at any finite $L$ is a property of the
+box, not of the molecule.
+
+## Best estimate and comparison with experiment
+
+```{python}
+#| echo: false
+ECUT_HIGH = 60.0
+high = {L: equilibrium(L, ECUT_HIGH, d=eq[ECUT_HIGH][0]) for L in (L_CONV,)}
+high[L_ref] = equilibrium(L_ref, ECUT_HIGH, d=eq[ECUT_HIGH][0])
+box_corr = {
+    ECUT_BOX: (dr_box, dw_box),
+    ECUT_HIGH: (
+        high[L_ref][0] - high[L_CONV][0],
+        omega(high[L_ref][1]) - omega(high[L_CONV][1]),
+    ),
+}
+assert abs(high[L_CONV][0] - eq[ECUT_HIGH][0]) < 1e-9  # same calculation
+dr_corr = np.array([v[0] for v in box_corr.values()])
+dw_corr = np.array([v[1] for v in box_corr.values()])
+r_best = r_last + dr_corr[-1]
+w_best = omega(k_last) + dw_corr[-1]
+r_unc = max(np.ptp(dr_corr), abs(r_last - r_prev))
+w_unc = max(np.ptp(dw_corr), abs(omega(k_last) - omega(k_prev)))
+corr_rows = [
+    {
+        "E_cut (Ha)": f"{ec:g}",
+        "Δr_e, L 12 → 16 (mBohr)": f"{dr * 1e3:+.2f}",
+        "Δω_e, L 12 → 16 (cm⁻¹)": f"{dw:+.1f}",
+    }
+    for ec, (dr, dw) in box_corr.items()
+]
+pd.DataFrame(corr_rows).style.hide(axis="index")
+```
+
+The box correction is not independent of the cutoff. At fixed $E_\text{cut}$
+a different box is a different set of plane waves, so the cutoff error is
+not the same function of $d$ in the two boxes. The table gives the
+correction at two cutoffs. They differ by
+`{python} f"{np.ptp(dr_corr) * 1e3:.1f}"` mBohr and
+`{python} f"{np.ptp(dw_corr):.0f}"` cm⁻¹, which sets the uncertainty of an
+additive correction. Adding the
+`{python} f"{ECUT_HIGH:g}"` Ha correction to the cutoff-converged values at
+$L = 12$ gives the best estimate for this pseudopotential and functional:
+$r_e$ = `{python} f"{r_best:.4f}"` ± `{python} f"{r_unc:.4f}"` Bohr
+(`{python} f"{r_best * angstrom:.4f}"` Å) and $\omega_e$ =
+`{python} f"{w_best:.0f}"` ± `{python} f"{w_unc:.0f}"` cm⁻¹.
+
+**Against experiment**, $r_e$ = `{python} f"{EXPT['r_e']}"` Å and $\omega_e$ =
+`{python} f"{EXPT['omega_e']:.0f}"` cm⁻¹ [@huber_herzberg1979], the LDA bond is
+`{python} f"{(r_best * angstrom - EXPT['r_e']) * 1e3:.0f}"` mÅ too long and the
+frequency `{python} f"{EXPT['omega_e'] - w_best:.0f}"` cm⁻¹ too low. That is
+the familiar pattern of LDA for H₂: a slightly too long and too soft bond.
+The theory post expected an all-electron LDA bond of about 0.765 Å and a
+pseudopotential value within about 5 mÅ of that. The value here is
+consistent with that expectation. It is not a measurement: no
+functional-matched all-electron calculation was run. The deviation from
+experiment therefore combines the LDA error and the pseudopotential error,
+and this document does not separate them.
+
+## The grid rule and the egg-box effect
+
+```{python}
+#| echo: false
+grid_sizes = [20, 22, 24, 26, 28, 29, 30, 32, 36]
+bound = min_fft_shape(h2_test.lattice, ECUT_TEST)[0]
+assert rule_fft_shape(h2_test.lattice, ECUT_TEST)[0] == b_test.fft_shape[0]
+shifts = np.linspace(0.0, 1.0, 9)  # in units of the grid spacing along x
+egg = {}
+for n_grid in grid_sizes:
+    b = basis(h2_test, ECUT_TEST, n_grid)
+    e = [
+        float(
+            scf(
+                translated(h2_test, [t * L_TEST / n_grid, 0.0, 0.0]),
+                b,
+                terms,
+                SCFOptions(tol=1e-11),
+            ).total_energy
+        )
+        for t in shifts
+    ]
+    egg[n_grid] = np.array(e)
+e_big = egg[grid_sizes[-1]][0]
+egg_df = pd.DataFrame([
+    {
+        "N": n_grid,
+        "peak-to-peak (Ha)": np.ptp(e),
+        "|E − E(36)| (Ha)": max(abs(e[0] - e_big), 1e-16),
+        "rule": "satisfied" if n_grid >= bound else "violated",
+    }
+    for n_grid, e in egg.items()
+])
+above = [np.ptp(egg[n_grid]) for n_grid in grid_sizes if n_grid >= bound]
+assert max(above) < 1e-9
+assert np.ptp(egg[24]) > 1e-6
+```
+
+```{python}
+#| column: page-inset
+#| echo: false
+egg_long = egg_df.melt(
+    id_vars=["N", "rule"],
+    value_vars=["peak-to-peak (Ha)", "|E − E(36)| (Ha)"],
+    var_name="quantity",
+    value_name="value",
+)
+points = (
+    alt
+    .Chart(egg_long)
+    .mark_line(point=alt.OverlayMarkDef(size=60, filled=True))
+    .encode(
+        x=alt.X(
+            "N:Q", title="FFT grid points per axis", scale=alt.Scale(zero=False)
+        ),
+        y=alt.Y("value:Q", title="energy (Ha)", scale=alt.Scale(type="log")),
+        color=alt.Color(
+            "quantity:N",
+            title=None,
+            scale=alt.Scale(range=[style.SERIES[0], style.SERIES[2]]),
+        ),
+        tooltip=[
+            alt.Tooltip("N:Q"),
+            alt.Tooltip("quantity:N"),
+            alt.Tooltip("value:Q", format=".2e"),
+            alt.Tooltip("rule:N"),
+        ],
+    )
+)
+bound_rule = (
+    alt
+    .Chart(pd.DataFrame({"N": [bound]}))
+    .mark_rule(strokeDash=[4, 4], color=style.TEXT_SECONDARY)
+    .encode(x="N:Q")
+)
+(points + bound_rule).properties(width=style.WIDTH, height=300)
+```
+
+At the acceptance size the molecule is translated along $x$ across one grid
+spacing, in `{python} f"{len(shifts)}"` steps, on grids from
+`{python} f"{grid_sizes[0]}"` to `{python} f"{grid_sizes[-1]}"` points per axis.
+The plot shows two quantities against $N$: the peak-to-peak energy
+variation (the egg-box effect) and the change of the energy relative to
+$N = 36$. The dashed line marks the no-wraparound bound, $N$ =
+`{python} f"{bound}"`. The default grid rounds it up to
+`{python} f"{b_test.fft_shape[0]}"`.
+
+On grids that satisfy the bound, the egg-box variation is at most
+`{python} f"{max(above):.0e}"` Ha. That is SCF noise at the tolerance used
+here: only the XC quadrature depends on the grid, and for a smooth
+pseudo-density on a grid of twice the basis resolution, it is essentially
+exact. On the positive-control grid, $N = 24$, the variation is
+`{python} f"{np.ptp(egg[24]):.1e}"` Ha, and at $N = 20$ it is
+`{python} f"{np.ptp(egg[20]):.1e}"` Ha.
+
+The transition is not sharp. At $N = 28$, one below the bound, the variation
+is only `{python} f"{np.ptp(egg[28]):.0e}"` Ha. The bound guarantees that *no*
+difference of basis vectors wraps, which is sufficient for exactness. Just
+below it, only the outermost corners of the density's Fourier sphere wrap.
+Their coefficients are tiny because the density is smooth, so the error
+grows gradually as $N$ falls. This is the expected behaviour of a
+sufficient condition. The acceptance test uses $N = 24$, far enough below
+the bound to give an unambiguous positive control.
+
+## One-sided weight derivatives
+
+```{python}
+#| echo: false
+TIGHT = SCFOptions(tol=1e-12)
+
+
+def e_weight(lam):
+    s = with_weights(h2_test, [lam, 1.0])
+    return float(scf(s, b_test, terms, TIGHT).total_energy)
+
+
+grad_side = {
+    side: float(
+        jax.grad(lambda st: energy(st, b_test, terms, TIGHT, side=side))(
+            h2_test
+        ).weights[0]
+    )
+    for side in (-1, +1)
+}
+e1 = e_weight(1.0)
+deltas = [4e-3, 2e-3, 1e-3, 5e-4, 2.5e-4]
+fd_rows = []
+for dl in deltas:
+    left = (3 * e1 - 4 * e_weight(1 - dl) + e_weight(1 - 2 * dl)) / (2 * dl)
+    right = (-3 * e1 + 4 * e_weight(1 + dl) - e_weight(1 + 2 * dl)) / (2 * dl)
+    fd_rows.append({
+        "δ": dl,
+        "side": "left (HOMO)",
+        "error": abs(left - grad_side[-1]),
+    })
+    fd_rows.append({
+        "δ": dl,
+        "side": "right (LUMO)",
+        "error": abs(right - grad_side[+1]),
+    })
+fd_df = pd.DataFrame(fd_rows)
+
+
+def observed_order(side):
+    e = fd_df[fd_df.side == side].error.to_numpy()
+    return np.log(e[-2] / e[-1]) / np.log(2.0)
+
+
+order = {s: observed_order(s) for s in ("left (HOMO)", "right (LUMO)")}
+split = grad_side[-1] - grad_side[+1]
+z_gap = hydrogen.ionic_charge * (eig[0] - eig[1])
+assert abs(split - z_gap) < 1e-8
+assert abs(order["left (HOMO)"] - 2) < 0.3
+```
+
+```{python}
+#| column: page-inset
+#| echo: false
+alt.Chart(fd_df).mark_line(
+    point=alt.OverlayMarkDef(size=60, filled=True)
+).encode(
+    x=alt.X("δ:Q", title="one-sided step δ", scale=alt.Scale(type="log")),
+    y=alt.Y(
+        "error:Q",
+        title="|finite difference − jax.grad| (Ha)",
+        scale=alt.Scale(type="log"),
+    ),
+    color=alt.Color(
+        "side:N",
+        title=None,
+        scale=alt.Scale(range=[style.SERIES[0], style.SERIES[1]]),
+    ),
+    tooltip=[
+        alt.Tooltip("side:N"),
+        alt.Tooltip("δ:Q", format=".2e"),
+        alt.Tooltip("error:Q", format=".2e"),
+    ],
+).properties(width=style.WIDTH, height=300)
+```
+
+`jax.grad` of `energy` gives
+$\partial E/\partial\lambda_1|_-$ = `{python} f"{grad_side[-1]:.6f}"` Ha
+(removing charge from the HOMO) and
+$\partial E/\partial\lambda_1|_+$ = `{python} f"{grad_side[+1]:.6f}"` Ha (adding
+it to the LUMO), both from a single SCF at $\lambda = 1$. They differ by
+`{python} f"{split:.10f}"` Ha. $Z_1(\varepsilon_\text{HOMO}-\varepsilon_\text{LUMO})$ =
+`{python} f"{z_gap:.10f}"` Ha, and the difference between the two is
+`{python} f"{abs(split - z_gap):.0e}"` Ha. This is Janak's theorem
+[@janak1978], with $\alpha$ in the Hamiltonian, holding at the level of
+the discrete energy.
+
+The plot compares each side with a second-order one-sided finite difference
+of separate SCF energies, as a function of the step. The left side
+converges at observed order `{python} f"{order['left (HOMO)']:.2f}"`, as the
+stencil should. The right side converges at order
+`{python} f"{order['right (LUMO)']:.2f}"` and is the larger error at every step.
+The theory post traced this to strong curvature of $E$ just above integer
+$N_\text{el}$, and the review measured an order of about 1.6. This is why
+the acceptance test uses a smaller step on the right.
+
+```{python}
+#| echo: false
+weight_rows = [
+    {
+        "L (Bohr)": f"{L:g}",
+        "∂E/∂λ₁ left (Ha)": f"{v['left']:.5f}",
+        "∂E/∂λ₁ right (Ha)": f"{v['right']:.5f}",
+        "ε_LUMO (Ha)": f"{v['lumo']:.5f}",
+    }
+    for L, v in box.items()
+]
+left_spread = max(box[L]["left"] for L in boxes[1:]) - min(
+    box[L]["left"] for L in boxes[1:]
+)
+right_spread = max(box[L]["right"] for L in boxes[1:]) - min(
+    box[L]["right"] for L in boxes[1:]
+)
+assert right_spread > 2 * left_spread
+pd.DataFrame(weight_rows).style.hide(axis="index")
+```
+
+The box-size scan above also recorded both derivatives. For $L \ge 10$ Bohr,
+the left derivative varies by `{python} f"{left_spread * 1e3:.1f}"` mHa,
+about as much as the HOMO, and the right by `{python} f"{right_spread * 1e3:.1f}"` mHa. The right
+derivative inherits the LUMO, a box state, and so it is mostly a property
+of the box. This confirms decision 9 of the theory post: the left derivative
+is the physical one for a molecule in a box. The right derivative is still the exact
+derivative of the discrete problem, which is what the acceptance tests
+check.
+
+## Against DFTK and libxc
+
+```{python}
+#| echo: false
+REFERENCE = Path("../../reference")
+dftk = json.loads((REFERENCE / "dftk_h2" / "dftk_h2.json").read_text())
+libxc = json.loads((REFERENCE / "libxc_lda" / "libxc_lda.json").read_text())
+TOL_DFTK = {"energy": 1e-7, "eigenvalue": 1e-6, "force": 1e-6}  # theory post
+TOL_LIBXC = 1e-10  # relative; tests/support/tolerances.py
+REF_TOL = 1e-10  # our SCF tolerance for the comparison
+
+dftk_rows, dftk_diff = [], {}
+for system in dftk["systems"]:
+    lattice = Lattice(np.asarray(system["lattice_bohr"]))
+    s = Structure(
+        lattice, np.asarray(system["positions_fractional"]), ["H", "H"]
+    )
+    b = PlaneWaveBasis.build(
+        lattice,
+        GAMMA,
+        system["ecut_hartree"],
+        fft_shape=tuple(system["fft_size"]),
+    )
+    assert int(b.n_pw[0]) == system["n_plane_waves"]
+    opts = SCFOptions(tol=REF_TOL)
+    r = scf(s, b, terms, opts)
+    g = jax.grad(lambda st: energy(st, b, terms, opts))(s)
+    forces = -cartesian_gradient(g, s)
+    theirs = system["energies_hartree"]
+    shift = 2 * hydrogen.alpha / abs(np.linalg.det(lattice.vectors))
+    diff = {
+        **{
+            names[k]: float(r.energies[k])
+            - theirs[k]
+            - (theirs["PspCorrection"] if k == "AtomicLocal" else 0.0)
+            for k in names
+        },
+        "total": float(r.total_energy) - system["total_energy_hartree"],
+        "ε_HOMO − α/Ω": float(r.eigenvalues[0, 0])
+        - shift
+        - system["eigenvalues_hartree"][0],
+        "ε_LUMO − α/Ω": float(r.eigenvalues[0, 1])
+        - shift
+        - system["eigenvalues_hartree"][1],
+        "ε_HOMO, no shift": float(r.eigenvalues[0, 0])
+        - system["eigenvalues_hartree"][0],
+        "forces (max)": float(
+            np.abs(forces - np.asarray(system["forces_hartree_per_bohr"])).max()
+        ),
+    }
+    dftk_diff[system["name"]] = diff
+    dftk_diff[system["name"]]["psp"] = theirs["PspCorrection"] - 2 * shift
+tolerance = {
+    **{k: TOL_DFTK["energy"] for k in [*names.values(), "total"]},
+    "ε_HOMO − α/Ω": TOL_DFTK["eigenvalue"],
+    "ε_LUMO − α/Ω": TOL_DFTK["eigenvalue"],
+    "ε_HOMO, no shift": TOL_DFTK["eigenvalue"],
+    "forces (max)": TOL_DFTK["force"],
+}
+for quantity, tol in tolerance.items():
+    dftk_rows.append({
+        "quantity": quantity,
+        **{
+            f"{name} (jaxdft − DFTK)": f"{d[quantity]:+.1e}"
+            for name, d in dftk_diff.items()
+        },
+        "tolerance": f"{tol:.0e}",
+    })
+for name, d in dftk_diff.items():
+    for quantity, tol in tolerance.items():
+        if quantity != "ε_HOMO, no shift":
+            assert abs(d[quantity]) < tol, (name, quantity)
+    assert abs(d["psp"]) < 1e-12
+    assert abs(d["ε_HOMO, no shift"]) > 2e-6  # the shift is real
+worst_dftk = max(
+    abs(d[q])
+    for d in dftk_diff.values()
+    for q in tolerance
+    if q != "ε_HOMO, no shift"
+)
+pd.DataFrame(dftk_rows).style.hide(axis="index")
+```
+
+DFTK [@dftk2021] (version `{python} dftk["versions"]["DFTK"]`, libxc
+`{python} dftk["versions"]["libxc"]`) was run on the same discrete problem. It
+used the same HGH file, identified by its hash, the same box, cutoff and
+`{python} "×".join(map(str, dftk["systems"][0]["fft_size"]))` grid, Γ only and
+no symmetrisation. There are two geometries: the symmetric molecule and the
+distorted, off-centre one of the acceptance tests. The script and its pinned
+Julia environment are in `reference/dftk_h2/`. jaxdft is converged to
+`{python} f"{REF_TOL:.0e}"` for this comparison.
+
+Every energy term, the total energy, both eigenvalues and all force
+components agree to at most `{python} f"{worst_dftk:.0e}"` (Ha or Ha/Bohr).
+That is four or more orders of magnitude inside the tolerances fixed in the
+theory post before DFTK was run. The tolerances were set to be limited by
+the SCF convergence of the two runs, and so is the agreement. The total
+agrees better than the individual terms. It is variational, so its error is
+second order in the residual, while the terms trade first-order errors that
+cancel in the sum.
+
+Two conventions are confirmed by measurement rather than by reading
+source. DFTK's `PspCorrection` equals $N_\text{el}\sum_j\alpha_j/\Omega$ =
+`{python} f"{dftk['systems'][0]['energies_hartree']['PspCorrection']:.3e}"` Ha
+to rounding. It is the $\mathbf{G} = 0$ part of our `AtomicLocal`, so the
+table compares our `AtomicLocal` with DFTK's `AtomicLocal` plus
+`PspCorrection`. DFTK keeps that term out of the Hamiltonian, and we
+include it (decision 3). The row "ε_HOMO, no shift" shows the consequence:
+without the explicit shift of $-\sum_j\alpha_j/\Omega$ =
+`{python} f"{-2 * hydrogen.alpha / L_TEST**3:.3e}"` Ha, the eigenvalues differ by
+exactly that amount. With it, they agree to $10^{-11}$ Ha.
+
+```{python}
+#| column: page-inset
+#| echo: false
+rho_ref = jnp.asarray(libxc["rho"])
+_, v_x = lda_x(rho_ref)
+_, v_xc = lda_pw92(rho_ref)
+eps_x = lda_x.eps(rho_ref)
+eps_c = lda_pw92.eps(rho_ref) - eps_x
+ours = {
+    ("lda_x", "zk"): eps_x,
+    ("lda_x", "vrho"): v_x,
+    ("lda_c_pw", "zk"): eps_c,
+    ("lda_c_pw", "vrho"): v_xc - v_x,
+}
+labels = {"zk": "ε", "vrho": "v"}
+xc_rows = []
+control = ("lda_c_pw_mod", "zk")  # negative control: must be told apart
+for (fn, key), value in [*ours.items(), (control, eps_c)]:
+    rel = np.abs(
+        np.asarray(value) / np.asarray(libxc["functionals"][fn][key]) - 1
+    )
+    if (fn, key) == control:
+        mod_rel = rel
+    else:
+        assert rel.max() < TOL_LIBXC
+    xc_rows += [
+        {
+            "rho": float(x),
+            "quantity": f"{fn} {labels[key]}"
+            + (" (control)" if (fn, key) == control else ""),
+            "relative difference": max(float(y), 1e-17),
+        }
+        for x, y in zip(libxc["rho"], rel)
+    ]
+xc_df = pd.DataFrame(xc_rows)
+alt.Chart(xc_df).mark_line(point=alt.OverlayMarkDef(size=20)).encode(
+    x=alt.X("rho:Q", title="ρ (Bohr⁻³)", scale=alt.Scale(type="log")),
+    y=alt.Y(
+        "relative difference:Q",
+        title="|jaxdft / libxc − 1|",
+        scale=alt.Scale(type="log"),
+    ),
+    color=alt.Color(
+        "quantity:N",
+        title=None,
+        scale=alt.Scale(range=list(style.SERIES[:5])),
+    ),
+    tooltip=[
+        alt.Tooltip("quantity:N"),
+        alt.Tooltip("rho:Q", format=".2e"),
+        alt.Tooltip("relative difference:Q", format=".2e"),
+    ],
+).properties(width=style.WIDTH, height=300)
+```
+
+```{python}
+#| echo: false
+c_rel = xc_df[xc_df.quantity.isin(["lda_c_pw ε", "lda_c_pw v"])]
+c_worst = c_rel.loc[c_rel["relative difference"].idxmax()]
+dense = xc_df[(xc_df.rho >= 1e-4) & ~xc_df.quantity.str.contains("control")][
+    "relative difference"
+].max()
+mod_rho = np.asarray(libxc["rho"])
+mod_above = int((mod_rel > TOL_LIBXC).sum())
+assert mod_rel[mod_rho >= 1e-6].min() > 100 * TOL_LIBXC
+```
+
+The functional is compared pointwise with libxc `lda_x` and `lda_c_pw`
+(version `{python} libxc["versions"]["libxc"]`, `reference/libxc_lda/`). The
+energy per particle and the potential are compared on
+`{python} len(libxc["rho"])` densities from
+`{python} f"{min(libxc['rho']):.0e}"` to `{python} f"{max(libxc['rho']):.0e}"`
+Bohr⁻³. For $\rho \ge 10^{-4}$ every quantity agrees to
+`{python} f"{dense:.0e}"` relative, which is rounding. The largest difference,
+`{python} f"{c_worst['relative difference']:.0e}"`, is in correlation at
+$\rho$ = `{python} f"{c_worst['rho']:.0e}"` ($r_s \approx 1300$), where the two
+evaluations of the same closed form round differently.
+
+The control line compares our correlation with libxc's `lda_c_pw_mod`, the
+variant with more digits in the parameters. It differs by up to
+`{python} f"{mod_rel.max():.0e}"` relative at high density, and by at least
+`{python} f"{mod_rel[mod_rho >= 1e-6].min():.0e}"` for $\rho \ge 10^{-6}$. It
+exceeds the tolerance at `{python} mod_above` of `{python} len(mod_rel)` points.
+So the comparison confirms the parameter set, not only the formula. The two
+variants converge only in the dilute limit, where correlation itself
+vanishes.
+
+## Interpretation
+
+The implementation solves the self-consistent Kohn–Sham problem for H₂ with
+the expected behaviour throughout:
+
+- Converged energies decrease monotonically with the cutoff.
+- The two one-sided weight derivatives differ by exactly $Z$ times the gap.
+- Forces from `jax.grad` agree with second differences of energies.
+- On grids that satisfy the bound, the energy does not depend on the
+  molecule's position relative to the grid.
+
+Every one of these is a property of the discrete equations, so any factor
+or sign error in the energy terms would break at least one. DFTK, an
+independent implementation of the same discrete problem, agrees term by term
+to about $10^{-10}$ Ha. That rules out the remaining class of error the
+invariants cannot see: a convention that is wrong but self-consistent.
+
+Physically, the best-estimate LDA bond length and frequency show the usual
+LDA errors for H₂: a bond a few hundredths of an ångström too long and a
+frequency a few percent too low. The surprises are quantitative, and both
+correct the theory post. First, $r_e$ and $\omega_e$ converge more slowly
+with the cutoff than the post assumed: they plateau around 30–40 Ha and are
+converged only at about 80 Ha. Second, at the millibohr level the box
+matters more than the post's energy-based estimate suggested:
+$L = 12$ Bohr changes the energy by less than 0.1 mHa, but it lengthens
+the bond by 1–2 mBohr. The research log records both. They matter for 2b,
+whose silicon pseudopotentials are of similar hardness. The box-state LUMO
+and the right-hand weight derivative are artefacts of the periodic box. The
+document identifies them as such rather than reporting them as molecular
+properties.

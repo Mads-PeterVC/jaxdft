@@ -773,3 +773,434 @@ For jaxdft this means a future iterative solver should start from random
 vectors with every symmetry present, and keep the dense-versus-iterative
 agreement tests at small sizes: a converged residual alone would not catch a
 missed state.
+
+## 2026-11-06: Milestone 2a public API, agreed before implementation
+
+Settled in two question rounds with the project lead after the 2a theory
+post was reviewed, before any 2a test or code was written. The physics is in
+the [2a theory post](../theory/02a_scf_h2.qmd); this entry records the shape of
+the code.
+
+**The FFT grid lives on `PlaneWaveBasis`.** `PlaneWaveBasis.build(...,
+fft_shape=None)` computes the minimal grid from the no-wraparound rule,
+rounded up to 2·3·5-smooth sizes. An explicit `fft_shape` overrides it, for
+the undersized-grid positive control and for matching DFTK later. The shape
+is static. The basis gains transforms between coefficients and grid values.
+`CLAUDE.md` already says the basis owns real/reciprocal transforms. A separate
+grid object was rejected, because nothing would tie a grid to its basis.
+
+**Density-dependent terms define only an energy.** The local pseudopotential,
+Hartree and XC each implement `energy(structure, basis, ρ)`. The potential is
+`(N_tot/Ω) ∂E/∂ρ_j` by `jax.grad` with respect to the grid density. Several
+properties then hold by construction instead of by care: the potential is
+the exact derivative of the discrete energy, the α term is in the
+Hamiltonian, Janak's theorem holds, and direct and double-counting energies
+agree at self-consistency. GGA potentials come for free later. The cost is a
+reverse-mode FFT pair per evaluation. The `CLAUDE.md` wording on XC was
+updated to describe this design. Explicit DFTK-style (energy, potential)
+pairs were rejected: the α finding in the review showed how small, and how
+hard to see, a G = 0 or Ω mismatch between the two would be. Operator terms
+(kinetic now, nonlocal in 2b) keep the 1a/1b `prepare`/`apply` protocol.
+
+**`energy(structure, ...)` runs the SCF inside.** `jax.grad(energy)(structure)`
+gives forces, cell gradients and weight gradients. Inside, the converged
+orbitals are `stop_gradient`ed and the density is rebuilt from them and the
+λ-dependent occupations. A `custom_vjp` for implicit differentiation replaces
+the stop later, without changing the entry point. The SCF loop is therefore
+traceable (`lax.while_loop`). A host-facing `scf(...)` returns the full
+result (density, orbitals, eigenvalues, occupations, energy breakdown,
+iteration count, convergence flag) for runs and inspection. The two-step
+alternative (run `scf`, then differentiate `total_energy(s, result)`) was
+rejected. It silently gives wrong forces if `s` is not the structure the SCF
+ran on, and that cannot be checked under tracing.
+
+**Weight-derivative side: `energy(..., side=-1 | +1)`.** The occupation
+function has a `custom_jvp` whose slope at integer N_el is one-sided, so plain
+`jax.grad` returns the HOMO or the LUMO side, both from the same SCF result. A
+hand-coded `weight_derivatives` adding Z·ε± was rejected as a separately
+implemented derivative.
+
+**Failure under tracing is NaN.** If the SCF does not converge, the
+eigensolver does not converge, or the gap guard trips, `energy` returns NaN
+and its gradients are NaN. `scf()` on the host raises a descriptive error for
+the same conditions, and it is the diagnostic tool. Rejected: `has_aux`,
+whose check every call site could forget, and `checkify`, which is clunky for
+a user-facing function.
+
+**GTH pseudopotentials come from a parser and a vendored file.**
+`parse_hgh(path) -> GTH` reads the HGH/GTH text format. The hydrogen file
+`h-q1.hgh` ships verbatim as package data, copied from JuliaMolSim
+PseudoLibrary (`pseudos/hgh_lda_hgh/`), and a test pins its hash. A file with
+nonlocal projectors raises `NotImplementedError` until 2b extends the
+parser. The protocol gains the ionic charge (`None` for Cohen–Bergstresser,
+which has no point ions) and α (0 for Cohen–Bergstresser, its V₀ = 0
+convention). A typed-in Python builder was rejected because of the
+transcription risk: α is a 0.5 % residue of a cancellation and sensitive to
+the last digits.
+
+**Ewald is a term, and there is a model builder.** `lda_terms(pseudos)`
+returns `(Kinetic(), AtomicLocal(pseudos), Hartree(), Xc(lda_pw92), Ewald(pseudos))`.
+Energies are reported as a dict keyed by term name, mirroring DFTK's
+breakdown. Building the energy raises if the terms include an ionic
+pseudopotential but no `Ewald`, because that total is not the energy of a
+neutral cell.
+
+**Two local-pseudopotential terms.** `LocalPotential` (1b, neighbour gather,
+finite support only) stays as an operator term. `AtomicLocal` is the new FFT
+energy term and accepts any pseudopotential. The gather-versus-FFT test on
+Cohen–Bergstresser bands goes through public APIs. `band_structure` gains an
+optional `density` argument, which evaluates the potentials of energy terms
+at a fixed density. 2b needs it for silicon bands from a converged density.
+A single class switching implementation by support was rejected as hidden
+behaviour.
+
+**Decided without a question round, open to change while writing the tests:**
+
+- SCF settings are a frozen dataclass, `SCFOptions(tol, max_iter, n_bands,
+  mixer, eigensolver)`, static under `jit`. `mixer` is `Anderson(depth,
+  beta)`; simple mixing is `depth=0`. `n_bands` defaults to the occupied count
+  plus one.
+- The eigensolver keeps the 1a signature, `(apply, dim, n_bands)`, with an
+  optional initial block for warm starts. `lobpcg` and `dense_eigensolver`
+  both satisfy it. The first SCF step starts LOBPCG from random vectors (see
+  the saddle-point entry above). Later steps warm-start.
+- Orbitals keep the 1a layout `(n_k, n_pad, n_bands)`, k first. The density is
+  `(N1, N2, N3)` and real.
+- The molecule builder is `structure/builders/dimer.py`:
+  `dimer_in_box(species, bond_length, box, axis=2)`. It puts the bond centre on
+  a grid point at the box centre, for the D4h symmetry tests.
+- Unit conversions are added to `units.py` for Å (bond lengths, already
+  present) and cm⁻¹ with the proton mass (harmonic frequencies), each with a
+  round-trip test.
+
+## 2026-11-06: Milestone 2a acceptance tests, written before implementation
+
+The 2a tests were written from the theory post and the agreed API, and they
+fail until the implementation exists. All 179 earlier tests still pass. The
+tolerances, each with its derivation, are in `tests/support/tolerances.py`.
+Shared H₂ setups, with session-cached SCF runs, are in `tests/support/h2.py`.
+
+Writing the tests fixed some details the API rounds had left open:
+
+- **Grid transforms are unnormalised index operations.**
+  `basis_k.to_grid(c)` is Σ_G c(G) e^{2πi m·j/N}, with no Ω^{-1/2} and no
+  1/N. `from_grid` is its inverse, restricted to the basis and zero on
+  padding. The basis stays lattice-free, as in 1a. Ω enters only in
+  `electron_density(lattice, basis, orbitals, occupations, kweights)`.
+- **A grid below the rule needs `allow_aliasing=True`.** Otherwise `build`
+  raises. That keeps the undersized-grid positive control explicit. A grid
+  too small to hold the basis itself always raises.
+- **`GTH.local(0)` returns α.** The G = 0 entry is then finite, with a finite
+  gradient. `CohenBergstresser` gains `ionic_charge = None` and `alpha = 0`.
+- **`ewald_energy(structure, charges, eta=None)` is a pure function** beside
+  the `Ewald` term, so the Madelung and η tests need no basis.
+- **Energy terms** implement `energy(structure, basis, density)`.
+  `term_potential(term, structure, basis, density)` returns V(r), real and
+  float64. `hamiltonian(...)` and `band_structure(...)` take `density=`, where
+  `None` means a zero density. `AtomicLocal` also exposes `coefficients`
+  (analytic, any Miller indices) and `grid_coefficients`, which are zero on
+  the Nyquist planes.
+- **SCF interface.** `SCFOptions(tol, max_iter, n_bands, mixer, eigensolver,
+  min_gap)`. `scf(structure, basis, terms, options, density0=None)` returns an
+  `SCFResult` carrying `density`, `orbitals`, `eigenvalues`, `occupations`,
+  `energies`, `total_energy`, `residual`, `n_iter`, `converged` and
+  `eigen_residuals`. `total_energy(structure, basis, terms, orbitals,
+  occupations)` returns `(E, breakdown)`. The fixed-point solver is
+  `fixed_point(F, x0, mixer, tol, max_iter, project=None)`, and its `project`
+  hook carries clip-then-renormalise. `aufbau_occupations(n_el, n_bands,
+  side)`.
+- **Eigensolvers** take `(apply, dim, n_bands, *, x0=None, preconditioner=None,
+  ...)`. The SCF computes eigenpair residuals itself, so solvers keep
+  returning `(eigenvalues, vectors)`. LOBPCG's default start is a fixed-seed
+  random block, so runs are reproducible.
+- **XC.** `jaxdft.xc.lda` holds `LDA`, `lda_x` (exchange only, used for the
+  analytic jellium check) and `lda_pw92`. Each returns `(energy density,
+  potential)` when called, and the energy per electron from `.eps`. The PW92
+  parameters are stored as published, in `PW92_UNPOLARISED`. The libxc
+  comparison is deferred (decision 11), so the acceptance check for now is
+  an independent transcription of the PW92 formula in the test.
+- **Units.** The energy unit `"cm-1"`, plus `HARTREE_IN_INVERSE_CM` and
+  `PROTON_MASS_IN_ELECTRON_MASS` (CODATA 2022).
+- **Cross-check values.** Two numbers in `test_scf_h2.py` come from the two
+  independent NumPy implementations written from the post: the throwaway
+  check and the review. They are E = −1.1048807274 Ha (tolerance 1e-7) and the
+  HOMO–LUMO gap 0.347192 Ha (tolerance 1e-6). They are labelled as
+  cross-checks, not reference values: they test the implementation against
+  the same specification, not the physics. The same applies to the H₂-cell
+  Ewald energy, 0.126737138563 Ha.
+- **The vendored HGH file** is pinned by its SHA-256 hash, with provenance in
+  `src/jaxdft/pseudo/data/README.md`.
+- **Slow tests.** The egg-box, grid-rule and derivative tests run many SCFs at
+  the test size and are marked `slow`. They still run in the default suite.
+
+## 2026-11-06: Milestone 2a implementation
+
+The SCF, energy terms, grid, LOBPCG and differentiable energy are implemented, and
+all 330 tests pass (2 min 13 s on the laptop CPU). These are the decisions made
+during implementation that the API rounds did not settle.
+
+**Static shapes under `jax.grad`.** In JAX 0.12, values are not concrete inside
+`jax.grad`, even without `jit`: `float(x)` raises. So every array size must
+come from static data. Two places were affected.
+
+- **Ewald truncation.** Without a traced cell, `ewald_energy` sizes its sums on
+  the host. The `Ewald` term takes static ranges from the FFT grid instead: the
+  grid's reciprocal box, plus enough real-space images to cover a cell three
+  times more skewed than a cube. η is chosen under tracing to balance the two
+  truncations. A traced check (η r_R ≥ 6.5 and r_G/2η ≥ 6.5) makes the energy
+  NaN if the ranges are insufficient. The failure is loud, consistent with the
+  2a convention.
+- **Band count in `energy()`.** It is ceil(Σ Z/2) + 1 from the *unweighted*
+  charges, so it assumes λ ≤ 1. `scf()` is host-side and uses the actual
+  N_el. Finite differences at λ = 1 + δ go through `scf()`, so they are
+  unaffected.
+
+**XC vacuum threshold.** Below ρ = 1e-40 the functional is set to zero. At
+1e-300 the derivative of r_s ∝ ρ^(-1/3) overflows and the gradient became NaN.
+At 1e-40 everything is finite and ρε is about 1e-53. The smallest density in
+the H₂ boxes is about 5e-14.
+
+**Warm starts without mixing them.** `fixed_point` accepts an F that carries
+auxiliary state, `F(x, aux) -> (f, aux)`. The SCF uses it for the previous
+orbitals (LOBPCG warm starts). The state the solver mixes is still only the
+density, so implicit differentiation can later wrap the same solve. The first
+SCF step starts LOBPCG from a fixed-seed random block, masked to the basis.
+Padding components then stay exactly zero, because `apply_H` decouples them.
+
+**LOBPCG.** Rayleigh–Ritz on [X, W, P]. W and P are orthogonalised against X
+twice, scaled to unit columns, and orthonormalised by the eigendecomposition
+of their Gram matrix. Directions with relative Gram eigenvalue below 1e-12
+are dropped and pushed to a large Ritz value, which keeps shapes fixed. X is
+re-orthonormalised by QR every iteration. The SCF preconditioner is
+r/(max(T_G − ε, 0) + 1), with T from the kinetic diagonal. Eigensolver
+tolerance: 0.05 τ_SCF, floored at 2e-14 (rounding at ‖H‖ ~ 20 Ha). The SCF
+fails if any final residual exceeds 0.1 τ_SCF, floored at 1e-13.
+
+**Ewald self-exclusion.** The real-space sum originally dropped every pair at
+zero distance. A Hypothesis case with three coincident atoms showed that this
+silently gave a finite energy for distinct coincident charges, whose physical
+energy is infinite. Only i = j at R = 0 is excluded now.
+
+**Two corrections to the acceptance tests.** Both were errors in the tests,
+not in the expectations behind them.
+
+- `test_anderson_beats_simple_mixing_on_a_slow_contraction` capped simple
+  mixing at 500 iterations. With β = 0.7 the slowest mode contracts by 0.965
+  per step, so reaching 1e-10 takes about 715 steps. The cap is now 2000. The
+  assertion that Anderson (56 steps) is more than three times faster is
+  unchanged.
+- The Ewald property tests now `assume` a minimum image separation of
+  0.5 Bohr. Coincident point charges lie outside the input domain, because
+  their energy is infinite. That corresponds to the fix above.
+
+**Measured margins** (test size, H₂ at d = 1.45 Bohr):
+
+| Quantity | Measured | Review | Tolerance |
+|:--|:--:|:--:|:--:|
+| Total energy vs. NumPy cross-check | 1e-10 Ha | — | 1e-7 Ha |
+| FD force error, symmetric | 1.8e-7 Ha/Bohr | 1.8e-7 | 1e-6 |
+| FD force error, distorted (worst component) | 4.3e-7 Ha/Bohr | — | 1e-6 |
+| Net force, off-grid placement | 7e-10 Ha/Bohr | 2.5e-11 | 1e-8 |
+| Weight derivative, HOMO side | 2.9e-7 Ha | 2.9e-7 | 1e-5 |
+| Weight derivative, LUMO side | 4.1e-6 Ha | 4.1e-6 | 1e-5 |
+| Egg-box, rule grid (N = 30) | 5e-11 Ha | 2e-11 | < 1e-9 |
+| Egg-box, undersized (N = 24) | 3.2e-6 Ha | 8.4e-6 | > 1e-6 |
+| Max eigenpair residual | 2e-11 Ha | — | < 1e-10 |
+
+The undersized egg-box is 2.6 times smaller than the review measured, probably
+because of where the molecule sits relative to the coarse grid. It still
+clears the threshold by a factor of 3. The LUMO-side weight derivative has the
+thinnest margin, a factor of 2.4, as the post predicted. The fallback if it
+proves fragile remains Richardson extrapolation.
+
+**Timing.** An H₂ SCF at the test size (1503 plane waves, 30³ grid) converges
+in 8 Anderson steps. The first call takes about 1.2 s including compilation;
+repeat calls take 0.15 s. This goes into `performance.qmd` with the
+validation document.
+
+## 2026-11-06: Milestone 2a validation document
+
+**The grid bound separated from its rounding.** `rule_fft_shape` returned
+the no-wraparound bound already rounded up to a 2·3·5-smooth size, and
+`PlaneWaveBasis.build` checked user grids against that rounded value. A
+grid of exactly the bound ($N$ = 29 at the acceptance size) was rejected
+unless the caller passed `allow_aliasing=True`, which says the opposite of
+what is true. The bound is now `min_fft_shape`. `rule_fft_shape` rounds it,
+and the build check uses the bound itself. A unit test pins 29, 30 and the
+rejection of 28. The validation document needs this to mark the bound on
+its egg-box scan without restating the formula.
+
+**Bond length and frequency from forces.** The document finds $r_e$ by
+Newton's method on $\partial E/\partial d$ from `jax.grad(energy)`. The force
+constant comes from central differences of that derivative with a step of
+$2\times10^{-3}$ Bohr. At 30 Ha it agrees with a second difference of SCF
+energies to $10^{-4}$ relative, which the document asserts. The reduced mass is
+$m_p/2$, which reproduces the review's frequencies to the wavenumber.
+
+**Render cost.** The document runs about a hundred SCF and force
+calculations, up to 100 Ha (120³ grid) and to $L$ = 16 Bohr at 60 Ha. It
+takes about four minutes to render on the development laptop, the slowest
+page of the site. Every expensive point backs a claim. The top two cutoffs
+show convergence, and the second box-correction cutoff sets the uncertainty
+of the best estimate. If render time becomes a problem, the first thing to
+drop is the 50 Ha point.
+
+## 2026-11-06: Milestone 2a reference data from DFTK and libxc
+
+Decision 11 of the theory post deferred the reference codes until after
+implementation. They are now run, with the tolerances the post fixed
+beforehand.
+
+**DFTK setup** (`reference/dftk_h2/`). The Julia project there pins DFTK 0.8.2,
+Libxc.jl (libxc 7.0.0), JSON and SHA in its `Project.toml` and `Manifest.toml`.
+The script follows decision 5:
+
+- `model_DFT(...; functionals=LDA(), symmetries=false)`;
+- `fft_size=(30, 30, 30)`, Γ only;
+- SCF tolerance 1e-11;
+- `FixedBands(n_bands_converge=2)`, so the LUMO is converged rather than
+  only computed.
+
+Three details came from reading DFTK, each with a specific question:
+
+- `load_psp(path)` in 0.8.2 dispatches on the file extension and knows
+  only `.gth`, not `.hgh` (`src/pseudo/load_psp.jl`). The script therefore
+  calls the HGH parser `PspHgh` directly on jaxdft's vendored file, and
+  records that file's SHA-256 in the output.
+- `energy_psp_correction` (`src/terms/psp_correction.jl`) is
+  N_el Σⱼ αⱼ / Ω. The test checks the reported value against that closed
+  form, so the convention is confirmed by measurement, as the post asked.
+- `FixedBands` (`src/scf/nbands_algorithm.jl`) separates the bands that are
+  converged from the bands that are only computed.
+
+The output JSON stores the fractional positions used. The tests build their
+structures from those, so the distorted geometry cannot drift between the
+Julia and Python definitions.
+
+**libxc setup** (`reference/libxc_lda/`). This uses the same pinned project.
+`lda_x`, `lda_c_pw` and `lda_c_pw_mod` are evaluated on 131 densities from
+1e-10 to 1e3 Bohr⁻³. `lda_c_pw_mod` is a negative control: the test asserts
+that it fails the comparison by more than a factor of 1000 at valence
+densities. A tolerance loose enough to accept the wrong parameter set would
+make the comparison meaningless, and the control guards against that.
+
+**The libxc tolerance was set after seeing the data.** The theory post fixed
+the DFTK tolerances but not a pointwise libxc tolerance. It is 1e-10
+relative. The worst measured difference is 6e-12, in correlation at
+ρ = 1e-10 (r_s ≈ 1300), where libxc and jaxdft round the same closed form
+differently. For ρ ≥ 1e-4 the differences are ~1e-15. The `lda_c_pw_mod`
+control sits at 3e-7 to 6e-6 for those densities.
+
+**Results.** Everything agrees four or more orders of magnitude inside its
+tolerance:
+
+| Quantity | Worst difference | Tolerance |
+|:--|:--:|:--:|
+| Energy terms | 5e-11 Ha | 1e-7 Ha |
+| Total energy | 4e-14 Ha | 1e-7 Ha |
+| Eigenvalues (after the α shift) | 4e-11 Ha | 1e-6 Ha |
+| Forces | 2e-11 Ha/Bohr | 1e-6 Ha/Bohr |
+
+Without the α shift the eigenvalues differ by 2.596e-6 Ha, exactly the
+amount the theory post predicted. No implementation change was needed.
+
+## 2026-11-06: Mixing behind a protocol
+
+`fixed_point` used to contain the Anderson algorithm itself. `Anderson`
+was only a container for `depth` and `beta`, so the solver could not take
+any other scheme without being edited. CLAUDE.md asks for approximations
+and algorithms behind abstractions, so this was a gap, even though 2a needs
+only Anderson. Kerker or Broyden mixing for silicon in 2b would have hit it.
+
+**The protocol.** `Mixer` (`jaxdft.scf.mixing`) has two methods:
+
+- `init(x0) -> state`;
+- `update(state, x, r) -> (x_next, state)`, called once per evaluated
+  iterate with the projected input `x` and its residual `r = F(x) − x`.
+
+The solver keeps evaluation, projection, the norm and the stopping test.
+The mixer only proposes the next input. The state is any pytree with fixed
+shapes, since it is carried through `lax.while_loop`. The mixer must be
+hashable because it is a static `jit` argument. `Anderson` now implements
+the protocol and owns its history; `depth = 0` carries no state at all.
+
+**No change in results.** Iterates and iteration counts on the
+fixed-point unit problems are bitwise identical before and after, for
+depths 0, 3 and 6. The order of operations (record the pair, then mix) is
+the same as before, and the full suite passes unchanged.
+
+**Tests.** `tests/support/mixers.py` defines `AdaptiveLinear`, linear
+mixing with adaptive damping. It is deliberately unlike Anderson: its state
+is a damping factor and the previous residual norm, not a history. It is
+used to test three things:
+
+- the solver converges with it;
+- the solver hands the mixer every evaluated input, after projection, with
+  its residual;
+- the H₂ SCF reaches the same ground state with it as with Anderson.
+
+It lives in the tests, not the package, because nothing yet needs a second
+mixer.
+
+## 2026-11-06: SCF extension points
+
+A review for choices fixed inside the SCF, after the mixer
+(previous entry), found three more that were cheap to open up. The
+results are unchanged. For a distorted H₂ at L = 8 Bohr and 6 Ha, the
+following are bitwise identical before and after:
+
+- energy, density, eigenvalues and iteration count;
+- the forces from `jax.grad(energy)`;
+- a dense-eigensolver run.
+
+**Terms are found by role, not by class name.** The SCF used to require a
+term whose class was literally named `"Ewald"`. It took the static ionic
+charges from an `ionic_term.pseudos` dictionary. Terms now declare two roles
+(documented in `jaxdft.hamiltonian.energy_terms`):
+
+- an *ionic* term provides `ionic_charges`, `static_ionic_charges` and
+  `is_ionic`;
+- an *ion-ion* term sets `ion_ion = True`.
+
+`AtomicLocal` and `Ewald` declare these roles. A truncated-Coulomb ion-ion
+term for isolated systems, for example, now needs no SCF change. The test
+uses wrapper terms with other names and no `pseudos` field. With them the
+SCF energy, density and forces are bitwise equal to those of the standard
+terms.
+
+**The preconditioner is an option.**
+
+- **Before:** the SCF picked out `DiagonalTerm` from the kinetic module by
+  `isinstance` and built its preconditioner inline.
+- **The diagonal moves into the operator:** `Hamiltonian.diagonal()` sums
+  the `diagonal` of the prepared terms that expose one. It is deliberately
+  not the full diagonal of H, since that would add the mean of the grid
+  potential and change the preconditioner.
+- **The formula becomes an option:**
+  `diagonal_preconditioner(ham)` (`jaxdft.hamiltonian.preconditioners`)
+  is the old formula, now the default of `SCFOptions.preconditioner`.
+  `None` turns preconditioning off. The H₂ SCF converges to the same ground
+  state without it, as a test checks.
+- **`tol` joins the eigensolver interface.** The SCF used to look for a
+  `tol` parameter with `inspect.signature`. `dense_eigensolver` now accepts
+  it and ignores it, as it already did `x0` and `preconditioner`.
+
+**The initial density is an option.** `SCFOptions.initial_density` is a
+callable `(structure, basis, charges) -> ρ`. Its default is
+`AtomicGaussians(width=0.8)` in `scf/density.py`, the old Gaussians unchanged.
+It replaces `SCFOptions.initial_width`. In 2b a superposition of atomic
+densities from the pseudopotential can replace it. With this and the
+preconditioner moved out, `scf.py` no longer imports grid helpers from the
+basis or anything from the kinetic module.
+
+**Left for the milestones that need them** (from the same review):
+
+- **Occupations as an interface:** smearing needs a theory post on the free
+  energy and the Fermi level.
+- **k-point weights:** they belong to the 2b k-point design. The SCF still
+  assumes uniform weights.
+- **A basis-independent SCF:** no second basis exists yet.
+
+The energy breakdown is still keyed by class name, so two terms of one
+class share an entry. That is a labelling limitation, and it was not
+changed.
