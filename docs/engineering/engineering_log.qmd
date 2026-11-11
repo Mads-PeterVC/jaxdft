@@ -1349,3 +1349,53 @@ installed as a dependency of Jupyter, but is now imported directly.
 fresh-clone and shallow-clone behaviour was checked by hand only. The reviews
 of the theory posts are Markdown files that are not rendered into the site,
 so the ladder links to theory and validation but not to the review.
+
+## 2026-11-11: Conversation excerpts on the site
+
+A new section, `docs/conversations/`, shows five excerpts of the Claude Code
+sessions in which the project has been developed. One goal of the project is
+to show what agentic development of a scientific code looks like, and the
+finished documents do not show the exchanges that produced them.
+
+**The data files are the record.** Claude Code keeps session logs under
+`~/.claude/projects/`, on one machine, and deletes them after
+`cleanupPeriodDays` (30 by default; now raised in the user settings). An
+excerpt is therefore extracted once, by `docs/_tools/conversations.py extract`,
+into `docs/conversations/data/<name>.json`, which is tracked by git. Which
+lines of which session make up an excerpt is listed in
+`docs/conversations/excerpts.yml`. Once a log is gone its excerpts can no
+longer be re-extracted, so the extractor does not replace an existing data
+file unless asked to.
+
+**What an excerpt holds.** The messages of both sides, verbatim; one line per
+tool call (its description, or the file it touched); the question rounds with
+the options and the answers; and a marker where the session's context was
+summarised. It leaves out tool output, the model's reasoning, subagent
+transcripts and harness messages. Paths on the development machine are
+shortened by a fixed list of patterns. A user message that was an accepted
+suggestion rather than typed text is marked as such.
+
+**Rendering is a post-render script**, the same mechanism as the front page.
+Each page holds a placeholder that `conversations.py` fills in the rendered
+HTML. Alternatives considered:
+
+- *Passing the messages through pandoc.* Claude's replies are written for a
+  terminal that renders GitHub-flavoured Markdown. Pandoc's Markdown reads
+  `~`, `^`, `@name` and `<word>` differently, so replies would be altered.
+  The script uses `markdown-it-py` with HTML disabled instead.
+- *A Python cell in each page calling a renderer in the package.* It would put
+  a transcript renderer in `jaxdft`, which has nothing to do with it.
+
+Within a reply, headings are rendered as bold paragraphs so they stay out of
+the page outline. TeX in a reply is passed to MathJax; because pandoc sees no
+math on such a page, the page loads MathJax itself in its front matter.
+
+**Display.** Claude's tool calls and the short notes between them are folded
+into one block per turn, with the time it took. What Claude wrote after its
+last tool call of a turn is shown in full.
+
+**Dependencies.** `markdown-it-py` and `mdit-py-plugins` were added to the
+`docs` group.
+
+**Not done.** The selection is made by hand. The excerpts so far all come
+from the first two sessions.

@@ -47,7 +47,8 @@ jaxdft/
 │   ├── ideas/         # exploratory tests of speculative methods
 │   ├── validation/    # comparisons against references, with interpretation
 │   ├── engineering/   # engineering_log.qmd, performance.qmd
-│   └── research/      # research_log.qmd
+│   ├── research/      # research_log.qmd
+│   └── conversations/ # selected excerpts of the development conversations
 └── CLAUDE.md
 ```
 
@@ -304,6 +305,20 @@ problems. Every concept-post rule above applies to them, plus:
   checked) in the post itself, and report negative or mixed results as such.
 - A promising result is not a design decision. An idea reaches jaxdft only
   through the milestone workflow, starting from a theory post.
+
+### Conversations
+`docs/conversations/` shows a few excerpts of the Claude Code sessions in which
+the project is developed, to show how the work is done.
+- Excerpts are extracted from the session logs by
+  `docs/_tools/conversations.py` (usage in its docstring), never retyped or
+  edited. Each is listed in `docs/conversations/excerpts.yml` and stored in
+  `docs/conversations/data/`, which is tracked by git because the session logs
+  are local to one machine and are deleted after a while.
+- Keep the section small. When a milestone is finished, suggest at most one
+  exchange from it that shows something the existing excerpts do not; the user
+  decides what is added. Extract it in the same session.
+- Each page opens with a short note on the context and on what came of the
+  conversation. Read an excerpt for private details before adding it.
 
 ### Logs
 - `docs/engineering/engineering_log.qmd`: design decisions, refactors,

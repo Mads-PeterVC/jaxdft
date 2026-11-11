@@ -47,6 +47,8 @@ the build.
 - [Engineering](engineering/index.qmd): the engineering log, performance
   tracking and project statistics.
 - [Research](research/index.qmd): the research log of physical results.
+- [Conversations](conversations/index.qmd): excerpts of the conversations
+  with Claude in which the project is developed.
 
 ```{=html}
 <div id="effort-strip"></div><!--/effort-strip-->

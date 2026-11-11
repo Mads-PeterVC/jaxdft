@@ -1,0 +1,23 @@
+{
+ "name": "04_comparing_total_energies",
+ "session": "2b010b98-daf7-4625-b22b-cf01e4cadae3",
+ "lines": [
+  1655,
+  1658
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-06T14:33:45.269Z",
+   "text": "While it runs I am curious: Typically total energies are not compared between codes as they depend on choices that effectively set the zero point, whereas this cancels when comparing energy differences. \n\nWhat allows us to make the direct comparison with DFTK?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T14:34:07.054Z",
+   "model": "claude-opus-5-5",
+   "text": "The comparison works because we didn't compare two codes' estimates of H₂. We had both codes solve one fully specified finite-dimensional problem, so the total energy is a single well-defined number that both should reproduce up to SCF convergence.\n\n**Why total energies usually can't be compared.** The offsets come from choices that differ between calculations:\n- **Pseudopotential.** Each one fixes its own reference energy for the removed core, an arbitrary per-atom offset.\n- **Functional implementation.** For example `lda_c_pw` against `lda_c_pw_mod`, or VWN against PW92.\n- **Basis and cutoff convention.** Rydberg or Hartree, a sphere or a cube of G-vectors, and the convergence level.\n- **Integration grid.** It sets the XC quadrature error.\n- **G = 0 conventions.** Whether the α term is included, how the Ewald background is handled, the treatment of charged cells.\n- **Smearing and occupations.**\n\nEnergy differences cancel most of these, which is why codes are normally compared on differences.\n\n**What we pinned instead.** Every item on that list was fixed to the same value in both codes:\n- the same pseudopotential file, checked by SHA-256, so the core offset is identical;\n- the same libxc functionals, `lda_x` + `lda_c_pw`, now with `lda_c_pw_mod` shown to be distinguishable;\n- the same lattice, positions and plane-wave set: ½|G|² ≤ 10 Ha at Γ, and both codes report 1503 plane waves;\n- the same 30³ FFT grid, so even the XC quadrature, the only inexact term, is identical;\n- the same G = 0 conventions. The Hartree G = 0 term is dropped, the Ewald sum uses a neutralising background, and the α term is in the energy. DFTK labels that last term `PspCorrection`, and we checked its value.\n- integer occupations with no smearing.\n\nWith all of that fixed, both codes minimise the same functional over the same 1503-dimensional space, so the minimum is unique. The only remaining difference is how tightly each SCF converged, and that's what the 1e-10 agreement measures.\n\n**The zero point is well defined here.** For a neutral cell, the divergent G = 0 parts of the Hartree, local and Ewald terms cancel exactly, and what's left is the finite α term. So the total energy has no free offset once the conventions are fixed. The quantity that keeps an arbitrary zero is the eigenvalues, which are measured from the cell-averaged potential. That's exactly where the two codes did differ: DFTK leaves α/Ω out of the Hamiltonian and we include it. That gave the 2.6e-6 Ha eigenvalue offset, which we had to apply explicitly.\n\n**Why compare totals and terms rather than only differences.** It's a much sharper test. Matching energy differences would also pass if, say, one code dropped `PspCorrection` (a constant 5e-6 Ha shift) or used a different core reference, because those cancel. Matching every term absolutely rules those errors out. So the term-by-term comparison tests whether we implemented the same conventions, while the physical results in the validation document rely only on differences, like bond lengths and frequencies.\n\nThe grid needed less care than it might seem. The grid-rule scan showed the energy changes by under 1e-9 Ha on any grid at or above the bound. DFTK on its own default grid would therefore still have agreed to about 1e-9 Ha; fixing the grid just removes that last source of difference."
+  }
+ ]
+}

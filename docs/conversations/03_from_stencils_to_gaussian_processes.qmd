@@ -1,0 +1,26 @@
+---
+title: "From stencils to a Gaussian-process basis"
+date: 2026-11-06
+description: "A question about a concept post turns into a discussion of real-space methods and kriging, then into a 1D numerical test and a new section of this site."
+---
+
+Mads-Peter is reading the concept post on the
+[matrix-free Hamiltonian](../concepts/matrix_free_hamiltonian.qmd) and asks a
+question about it. Over the next exchanges the subject moves from LCAO codes
+to real-space codes, and then to a field Mads-Peter knows well: could
+Gaussian-process regression replace the finite-difference stencil?
+
+Claude's answers place the idea among existing methods, say where it is known
+and where it would be new, and correct one version of it. The conversation
+ends with a request to test the idea on a 1D model problem. Most of what
+follows is that work, which appears folded: building the test, then moving
+it into the site.
+
+What came of it: the ideas post
+[A Gaussian-process basis for grid wavefunctions](../ideas/gp_basis.qmd), and
+the [Ideas](../ideas/index.qmd) section itself, which did not exist before
+this conversation.
+
+```{=html}
+<div class="transcript" data-excerpt="03_from_stencils_to_gaussian_processes"></div><!--/transcript-->
+```

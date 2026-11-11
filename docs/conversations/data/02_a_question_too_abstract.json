@@ -1,0 +1,301 @@
+{
+ "name": "02_a_question_too_abstract",
+ "session": "9bf31771-0cd0-4482-bf4f-dbb6a347fb08",
+ "lines": [
+  1092,
+  1189
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-05T10:21:02.138Z",
+   "text": "Lets start the questions."
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:21:34.565Z",
+   "model": "claude-opus-5-5",
+   "text": "I'll ask in rounds again. Round 1 covers how atoms enter the calculation, which is the biggest decision because it reaches back into the 1a API."
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-05T10:21:47.075Z",
+   "answered": true,
+   "questions": [
+    {
+     "question": "Round 1 (structure). How should atomic positions enter the calculation? Today `band_structure(lattice, basis, ...)` and `term.prepare(lattice, basis_k)` only see a Lattice.",
+     "options": [
+      "Crystal replaces Lattice (Recommended)",
+      "Keep Lattice; atoms in the term"
+     ],
+     "answer": "Crystal replaces Lattice (Recommended)"
+    },
+    {
+     "question": "How should each atom be mapped to its pseudopotential?",
+     "options": [
+      "Species labels + dict (Recommended)",
+      "Pseudo objects in the Crystal"
+     ],
+     "answer": "Species labels + dict (Recommended)"
+    },
+    {
+     "question": "Should per-atom weights λ be restricted to [0, 1]?",
+     "options": [
+      "No range check (Recommended)",
+      "Validate at construction"
+     ],
+     "answer": "No range check (Recommended)"
+    },
+    {
+     "question": "How should a Crystal be constructed for 1b?",
+     "options": [
+      "General constructor",
+      "Crystal.from_cartesian",
+      "Crystal.diamond(a, species)",
+      "Crystal.empty(lattice)"
+     ],
+     "answer": "General constructor, Crystal.from_cartesian, \"I think .empty and .diamond can be factories rather than class methods. I also think .from_cartesian could take a unit literal [\\\"Bohr\\\", \\\"Angstrom\\\"] as Angstrom is the typical unit of published configurations, also makes it easy to load configurations with ase.io later on. \""
+    }
+   ]
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-05T10:30:16.931Z",
+   "answered": true,
+   "questions": [
+    {
+     "question": "Since the object must represent any periodic configuration (bulk crystal, slab, molecule in a vacuum box), what should it be called?",
+     "options": [
+      "Structure (Recommended)",
+      "Crystal",
+      "Configuration",
+      "Atoms"
+     ],
+     "answer": "Structure (Recommended)"
+    },
+    {
+     "question": "For `from_cartesian(..., unit=...)`: what does the unit apply to, and is there a default?",
+     "options": [
+      "Cell + positions, required (Recommended)",
+      "Positions only, Lattice given",
+      "Cell + positions, default Angstrom"
+     ],
+     "answer": "Cell + positions, required (Recommended)"
+    },
+    {
+     "question": "Where should structure factories (diamond, empty, later fcc/bcc/slabs/molecule-in-box) live?",
+     "options": [
+      "structure/builders.py (Recommended)",
+      "structure/prototypes.py"
+     ],
+     "answer": "Like option 1 but with a subpackage for builders: structure/builders/diamond.py, structure/builders/empty.py. Avoids a potential future where `structure/builders.py` is hundreds of lines of code that are actually independent functions. If there ends up being functions used by several builders they can be in a shared module. "
+    },
+    {
+     "question": "Should `Lattice.fcc` (a class method from 1a) move to the builders too, for consistency?",
+     "options": [
+      "Move to builders (Recommended)",
+      "Keep Lattice.fcc"
+     ],
+     "answer": "Move to builders, in the subpackage described before. "
+    }
+   ]
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-05T10:34:21.124Z",
+   "answered": false,
+   "questions": [
+    {
+     "question": "Round 3 (pseudopotentials). In what normalisation should a pseudopotential return its local part?",
+     "options": [
+      "Atomic transform v̂(q) (Recommended)",
+      "Per-atom-volume V^S"
+     ],
+     "answer": null
+    },
+    {
+     "question": "CLAUDE.md describes a pseudopotential as a callable `(G vectors) -> (V_loc, V_nl)`. For 1b (local only), what should the protocol be?",
+     "options": [
+      "Local method now, nonlocal later (Recommended)",
+      "Literal (V_loc, V_nl) callable"
+     ],
+     "answer": null
+    },
+    {
+     "question": "The matrix-free gather needs the finite set of coupling vectors. How is that set determined?",
+     "options": [
+      "Pseudo declares a support radius (Recommended)",
+      "Pseudo lists its shells"
+     ],
+     "answer": null
+    },
+    {
+     "question": "Where does the off-shell guard run? It needs concrete (not traced) lattice values, so it cannot run inside jit.",
+     "options": [
+      "Host-side validate hook (Recommended)",
+      "At LocalPotential construction"
+     ],
+     "answer": null
+    }
+   ]
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:35:36.732Z",
+   "model": "claude-opus-5-5",
+   "text": "You chose the atomic transform v̂(q) for the normalisation, then stopped at the protocol question.\n\nWhat would you like to clarify about the other three: the `(V_loc, V_nl)` protocol, how the set of coupling vectors is determined, or where the off-shell guard runs? I'll rework those questions around your answer."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-05T10:36:23.793Z",
+   "text": "I think I don't understand the (V_loc, V_nl) protocol well enough to answer the question - I am unable to foresee the consequences of each choice so I would like to dicuss that."
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:36:56.107Z",
+   "model": "claude-opus-5-5",
+   "text": "The question was too abstract, so here is the substance behind it.\n\n## Two kinds of pseudopotential term\n\nA pseudopotential replaces each atom's nucleus and core electrons with a smoother effective potential. In a plane-wave code it has up to two parts, and they act on wavefunctions very differently.\n\n**The local part** is an ordinary potential: a function V(r) that multiplies ψ(r). Its plane-wave matrix element depends only on the difference G − G′:\n\n$$\\langle \\mathbf{k}+\\mathbf{G}|V_\\text{loc}|\\mathbf{k}+\\mathbf{G}'\\rangle = \\tilde V(\\mathbf{G}-\\mathbf{G}') = \\frac{1}{\\Omega}\\sum_j \\lambda_j e^{-i(\\mathbf{G}-\\mathbf{G}')\\cdot\\boldsymbol\\tau_j}\\,\\hat v_j(|\\mathbf{G}-\\mathbf{G}'|)$$\n\nSo all a species has to provide is one radial function v̂(q). Cohen–Bergstresser is purely local, so this is all of 1b.\n\n**The nonlocal part** is not a function of r at all. It is a sum of rank-one projections centred on each atom (the Kleinman–Bylander form):\n\n$$V_\\text{nl} = \\sum_j \\sum_{i,i'} |\\beta^j_{i}\\rangle\\, D_{ii'}\\, \\langle\\beta^j_{i'}|$$\n\nEach projector β has an angular-momentum character (s, p, d). Its plane-wave matrix element depends on k+G and k+G′ separately, not on their difference:\n\n$$\\langle \\mathbf{k}+\\mathbf{G}|V_\\text{nl}|\\mathbf{k}+\\mathbf{G}'\\rangle \\propto \\sum_j e^{-i(\\mathbf{G}-\\mathbf{G}')\\cdot\\boldsymbol\\tau_j}\\sum_{ii'} \\beta_i(\\mathbf{k}+\\mathbf{G})\\,D_{ii'}\\,\\beta^*_{i'}(\\mathbf{k}+\\mathbf{G}')$$\n\nThe operator is applied as \"project, scale, expand\": compute ⟨β|ψ⟩ (a small array of shape projectors × bands), multiply by D, and add back D·⟨β|ψ⟩ times |β⟩. The data a species must provide is radial projector functions β_l(q) for each l, the coefficient matrix D, and the angular momenta. That is a different kind of object from v̂(q).\n\n## Why the literal `(G) -> (V_loc, V_nl)` is awkward\n\n- **There's no single V_nl(G) to return.** V_nl depends on k+G, not G, and comes as projectors plus coefficients rather than as values on G vectors. Making the literal signature work would mean changing its arguments (k+G, per k-point) and inventing a return shape for data we don't have yet.\n- **It couples two terms that are applied differently.** The local term would compute, or at least carry, the nonlocal part it never uses, and the reverse.\n- **We'd design the nonlocal interface now, blind.** 1b has no nonlocal pseudopotential to test it against, so it's likely to be wrong and to need changing anyway.\n\n## Consequences of each option\n\n**A: a `local(q)` method now, nonlocal methods later.**\n- 1b depends only on something we can test now.\n- When a milestone brings a real norm-conserving pseudopotential, the protocol gains methods for the projector data, and a separate `NonlocalPotential` Hamiltonian term uses them.\n- The change is purely additive: CB just declares that it has no projectors, and nothing written in 1b changes.\n- The cost: the protocol isn't final, and `CLAUDE.md`'s wording no longer matches it literally.\n\n**B: the literal tuple.**\n- It matches the wording.\n- But the V_nl slot's arguments and shape would be guesses, likely revised when real projectors arrive, so the \"final\" interface probably isn't final either.\n\n## What I think CLAUDE.md is protecting\n\nThe intent behind the line seems to be:\n- physics talks to pseudopotentials through a function interface in reciprocal space;\n- nothing outside the parser reads file formats;\n- the SCF loop never knows which pseudopotential it has.\n\nOption A meets all three. Real pseudopotential files (UPF, for instance) store radial functions on a real-space grid. The pseudo object would transform them to q-space once, so the q-space interface fits real files as well as it fits CB.\n\n**My recommendation is A.** If you agree, the line in `CLAUDE.md` should be updated to say so, for example: \"Pseudopotential: an object exposing reciprocal-space radial data (local form factor v̂(q); nonlocal projectors and coefficients when needed), behind a parser interface.\" `CLAUDE.md` is yours, so I won't edit it unless you ask.\n\n## How this affects the other two questions\n\nBoth are about the local part only:\n- **Support radius:** CB's v̂ is non-zero on only three shells, so a short list of neighbours works. A real pseudopotential's local part is long-ranged (it goes like −Z/r, so v̂(q) ∝ −4πZ/q²), and its support is effectively unbounded. That's why its support would be declared as \"none, needs FFT\", the FFT arriving with the SCF milestone.\n- **Validate hook:** an optional host-side check, which only CB needs for now.\n\nDoes this make the choice clear enough? If so, I'll re-ask the remaining three questions, with this framing in the options."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-05T10:39:46.132Z",
+   "text": "Yes, go with A and update CLAUDE.md",
+   "suggested": true
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:39:49.995Z",
+   "name": "Bash",
+   "summary": "Locate pseudopotential line in CLAUDE.md"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:39:53.440Z",
+   "name": "Read",
+   "summary": "CLAUDE.md"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:39:57.478Z",
+   "name": "Edit",
+   "summary": "CLAUDE.md"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:40:02.362Z",
+   "name": "Write",
+   "summary": "~/.claude/memory/explain-before-asking-api-questions.md"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:40:03.487Z",
+   "name": "Write",
+   "summary": "~/.claude/memory/MEMORY.md"
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-05T10:40:21.849Z",
+   "answered": true,
+   "questions": [
+    {
+     "question": "The matrix-free local potential needs to know which G-differences can couple (CB: only the 44 vectors on shells 3, 8, 11). How should the general LocalPotential term learn this from a pseudopotential?",
+     "options": [
+      "Pseudo declares a support radius (Recommended)",
+      "Pseudo lists its shells"
+     ],
+     "answer": "Pseudo declares a support radius (Recommended)"
+    },
+    {
+     "question": "The off-shell guard (CB must refuse a cell whose |G|² don't match its table) needs concrete numbers, so it can't run inside jit/vmap/grad. Where should it run?",
+     "options": [
+      "Host-side validate hook (Recommended)",
+      "At term construction",
+      "No guard; document only"
+     ],
+     "answer": "Host-side validate hook (Recommended)"
+    },
+    {
+     "question": "Which Cohen–Bergstresser elements should the parameter module carry?",
+     "options": [
+      "Si only (Recommended)",
+      "Si, Ge, Sn"
+     ],
+     "answer": "Si only (Recommended)"
+    },
+    {
+     "question": "Where should unit conversions (Ry↔Ha, Å↔Bohr, Ha↔eV, CODATA 2022) live?",
+     "options": [
+      "jaxdft/units.py (Recommended)",
+      "jaxdft/io/units.py"
+     ],
+     "answer": "jaxdft/units.py (Recommended)"
+    }
+   ]
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:42:35.851Z",
+   "model": "claude-opus-5-5",
+   "text": "Round 4, the last one, covers the analysis helpers, the reference data, and how the CB pseudopotential is obtained."
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-05T10:42:47.212Z",
+   "answered": true,
+   "questions": [
+    {
+     "question": "Round 4. The tests and the validation doc both need analysis helpers: locate the band-5 minimum along Δ, compute inversion parity of a level, group degenerate levels, shift energies to the VBM. Docs may not reimplement physics. Where do these live?",
+     "options": [
+      "jaxdft/analysis/ subpackage (Recommended)",
+      "Test helpers only"
+     ],
+     "answer": "jaxdft/analysis/ subpackage (Recommended)"
+    },
+    {
+     "question": "How should the Δ-line conduction minimum be located?",
+     "options": [
+      "Sample then refine (Recommended)",
+      "Gradient-based via autodiff"
+     ],
+     "answer": "Sample then refine (Recommended)"
+    },
+    {
+     "question": "Format for the transcribed Table I reference data in reference/?",
+     "options": [
+      "JSON + README (Recommended)",
+      "Python module"
+     ],
+     "answer": "JSON + README (Recommended)"
+    },
+    {
+     "question": "How should code obtain the CB silicon pseudopotential?",
+     "options": [
+      "Function per element (Recommended)",
+      "Element key"
+     ],
+     "answer": "Function per element (Recommended)"
+    }
+   ]
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:44:31.055Z",
+   "model": "claude-opus-5-5",
+   "text": "All four rounds are answered. I'll record the consolidated API in the engineering log and commit it together with the `CLAUDE.md` change."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-05T10:44:46.180Z",
+   "name": "Bash",
+   "summary": "Log 1b API decisions and commit with CLAUDE.md update"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T10:44:56.003Z",
+   "model": "claude-opus-5-5",
+   "text": "The question rounds are done and the API for 1b is settled. `CLAUDE.md` now describes the pseudopotential protocol as we agreed. Both the API record (in the engineering log) and the `CLAUDE.md` change are committed on `milestone-1b`.\n\n**The API we agreed:**\n\n```\njaxdft/\n  units.py                  CODATA 2022 constants, convert()\n  structure/\n    lattice.py              Lattice (general constructor only)\n    structure.py            Structure(lattice, positions_frac, species, weights=None)\n                            Structure.from_cartesian(cell, positions, species, unit=...)\n    builders/               fcc.py (fcc_lattice), diamond.py, empty.py\n    kpoints.py              unchanged\n  pseudo/\n    cohen_bergstresser.py   CohenBergstresser, silicon()\n  hamiltonian/\n    local.py                LocalPotential({\"Si\": pseudo}), matrix-free 44-neighbour gather\n  analysis/                 level grouping, inversion parity, VBM reference,\n                            band minimum on a segment (sample, then golden-section)\nreference/cohen_bergstresser_1966/si_table1.json + README\n```\n\n- **Pseudopotential protocol:** `local(q) -> v̂(q)` in Ha·Bohr³, plus `local_support` (the q beyond which v̂ is exactly zero, or `None` for unbounded). There's an optional `validate` check that runs on the host before tracing. Nonlocal methods get added in the milestone that first needs them.\n- **Changes to the 1a API:**\n  - Terms are prepared from the `Structure`: `prepare(structure, basis_k)`.\n  - `band_structure` and `hamiltonian` take a `Structure` as well.\n  - `Lattice.fcc` becomes `builders.fcc_lattice`.\n  - The empty lattice is `empty(lattice)`.\n  - `PlaneWaveBasis.build`, `kpath` and `free_electron_bands` keep taking a `Lattice`, since they don't involve atoms.\n  - The 1a tests will be updated mechanically to match, which you approved in round 1.\n\n**Next step: writing the tests.** That means the Table I reference file, the 1b acceptance and property tests from the theory post, the mechanical 1a updates, and a test for each unit conversion. Some exact signatures will be settled while writing the tests, such as the band-minimum helper's arguments, or whether `analysis` takes `Bands` or raw arrays. I'll list each one for you rather than let it slip in unannounced.\n\n**Two things still need your answer:**\n- `sources/` is still uncommitted because the PDF is copyrighted. Shall I add it to `.gitignore`?\n- Shall I go ahead and write the tests?"
+  }
+ ]
+}

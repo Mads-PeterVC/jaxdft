@@ -1,0 +1,36 @@
+# Which parts of which Claude Code sessions are shown under Conversations.
+#
+# Read by `docs/_tools/conversations.py extract`, which stores each excerpt as
+# data/<name>.json. The session logs are deleted by Claude Code after a while;
+# the data files are the lasting record, so extract an excerpt when it is added
+# here. `conversations.py outline <session>` lists the line index of every
+# user message in a session.
+#
+# Fields:
+#   name     name of the data file and of the page's placeholder
+#   session  Claude Code session id (file name of the log, without .jsonl)
+#   lines    first and last line of the log to include, 0-based, inclusive
+
+user: Mads-Peter
+timezone: Europe/Copenhagen
+
+excerpts:
+  - name: 01_starting_from_claude_md
+    session: 9bf31771-0cd0-4482-bf4f-dbb6a347fb08
+    lines: [5, 480]
+
+  - name: 02_a_question_too_abstract
+    session: 9bf31771-0cd0-4482-bf4f-dbb6a347fb08
+    lines: [1092, 1189]
+
+  - name: 03_from_stencils_to_gaussian_processes
+    session: 9bf31771-0cd0-4482-bf4f-dbb6a347fb08
+    lines: [3694, 4344]
+
+  - name: 04_comparing_total_energies
+    session: 2b010b98-daf7-4625-b22b-cf01e4cadae3
+    lines: [1655, 1658]
+
+  - name: 05_a_missing_abstraction
+    session: 2b010b98-daf7-4625-b22b-cf01e4cadae3
+    lines: [1772, 2089]

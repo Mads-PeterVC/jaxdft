@@ -1,0 +1,21 @@
+---
+title: "Why the total energies could be compared"
+date: 2026-11-06
+description: "While the test suite runs, a question about the DFTK comparison: total energies normally cannot be compared between codes, so why does it work here?"
+---
+
+Milestone 2a had just been compared with DFTK, and the two codes agreed on the
+total energy of H₂ to about 10⁻¹⁰ Ha. While the test suite and the site render
+ran in the background, Mads-Peter asked why that comparison is allowed at all,
+since total energies from different codes usually differ by arbitrary offsets.
+
+A single question and answer, included because much of the project has gone
+this way: the code and its documents are also the material for learning the
+physics.
+
+The comparison itself is in the
+[2a validation document](../validation/02a_scf_h2.qmd).
+
+```{=html}
+<div class="transcript" data-excerpt="04_comparing_total_energies"></div><!--/transcript-->
+```
