@@ -5,3 +5,5 @@ title: "Engineering"
 - [Engineering log](engineering_log.qmd): design decisions, refactors,
   numerical stability issues, data layout and performance choices.
 - [Performance](performance.qmd): wall time per milestone.
+- [Project statistics](project_stats.qmd): commits, lines of code and
+  co-authorship over time, with the milestones marked.

@@ -27,7 +27,7 @@ from jaxdft import (
     scf,
 )
 from jaxdft.basis.planewave import min_fft_shape, rule_fft_shape
-from jaxdft.plotting import style
+from jaxdft.plotting import featured, style
 from jaxdft.pseudo.gth import hgh_lda
 from jaxdft.xc.lda import lda_pw92, lda_x
 from jaxdft.units import PROTON_MASS_IN_ELECTRON_MASS, convert
@@ -412,21 +412,25 @@ conv_df = pd.DataFrame({
     "ecut": cutoffs[:-1],
     "error": (e_conv[:-1] - e_conv[-1]) * 1e3,
 })
-alt.Chart(conv_df).mark_line(
-    point=alt.OverlayMarkDef(size=60, filled=True)
-).encode(
-    x=alt.X("ecut:Q", title="E_cut (Ha)"),
-    y=alt.Y(
-        "error:Q",
-        title=f"E − E({cutoffs[-1]:g} Ha) (mHa)",
-        scale=alt.Scale(type="log"),
-    ),
-    color=alt.value(style.SERIES[0]),
-    tooltip=[
-        alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
-        alt.Tooltip("error:Q", title="mHa", format=".3g"),
-    ],
-).properties(width=style.WIDTH, height=280)
+conv_chart = (
+    alt
+    .Chart(conv_df)
+    .mark_line(point=alt.OverlayMarkDef(size=60, filled=True))
+    .encode(
+        x=alt.X("ecut:Q", title="E_cut (Ha)"),
+        y=alt.Y(
+            "error:Q",
+            title=f"E − E({cutoffs[-1]:g} Ha) (mHa)",
+            scale=alt.Scale(type="log"),
+        ),
+        color=alt.value(style.SERIES[0]),
+        tooltip=[
+            alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
+            alt.Tooltip("error:Q", title="mHa", format=".3g"),
+        ],
+    )
+)
+conv_chart.properties(width=style.WIDTH, height=280)
 ```
 
 The total energy at $d$ = `{python} f"{D_CONV}"` Bohr and $L$ =
@@ -1042,6 +1046,19 @@ worst_dftk = max(
     for d in dftk_diff.values()
     for q in tolerance
     if q != "ε_HOMO, no shift"
+)
+featured.publish(
+    conv_chart,
+    "2a",
+    caption="Total energy of H₂ against plane-wave cutoff: it falls "
+    "monotonically, as the variational principle requires.",
+    headline=[
+        (
+            "largest difference from DFTK in any energy, eigenvalue or "
+            "force component",
+            f"{worst_dftk:.0e} atomic units",
+        )
+    ],
 )
 pd.DataFrame(dftk_rows).style.hide(axis="index")
 ```

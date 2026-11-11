@@ -1287,3 +1287,65 @@ differentiable path) neither records nor logs, so forces pay nothing.
 the acceptance size (`performance.qmd`, 'Observability'). The first
 version cost 45 %. Profiling traced the extra time to two `git`
 subprocesses per call, now cached.
+
+## 2026-11-11: Milestone ladder on the front page, project statistics
+
+The front page now tells the project as a ladder of milestones, and a new
+page, `engineering/project_stats.qmd`, shows the effort in numbers.
+
+**One source of truth.** `docs/milestones.yml` lists every milestone: id,
+title, one-line capability, status, the time it was reached, and its theory
+and validation documents. The front page and the milestone markers on the
+statistics page both read it. Adding a milestone means adding one entry
+there, plus one `featured.publish(...)` call in its validation document.
+
+**Dates are written in the file, not read from git.** The repository has no
+tags, and a date resolved from a commit would be missing in a shallow clone.
+The `reached` timestamps were copied once from the commits that completed
+each milestone.
+
+**Validation documents publish; the front page only reads.** A validation
+document calls `jaxdft.plotting.featured.publish(chart, id, caption=...,
+headline=...)` with a chart it has already drawn and one headline number it
+has already computed. The call writes the chart (as an embeddable fragment,
+resized for the front page) and the numbers to `docs/_results/`, which git
+ignores. Nothing is hardcoded and the front page runs no calculation. The
+helper sits next to the shared plot style in `jaxdft.plotting`, which is
+already documentation-only code.
+
+**The front page is assembled after the render.** `docs/_tools/front_page.py`
+is a Quarto `post-render` script. It reads `milestones.yml` and `_results/`
+and fills two placeholders in the rendered `index.html`: the ladder and the
+small statistics strip. Alternatives considered:
+
+- *The `embed` shortcode.* It needs labelled cells, and for a `.qmd` source
+  Quarto executes the source document to obtain the output. With freeze off
+  that would run the validation calculations a second time. This was not
+  measured; the approach was dropped before testing it.
+- *A Quarto listing with a custom template.* A listing shows a static image
+  per item, and our charts are altair, so this would need a second, static
+  copy of each figure.
+- *A Python cell in `index.qmd` reading `_results/`.* Quarto does not promise
+  to render the validation documents before the front page, so a fresh clone
+  could build the front page before its inputs exist.
+
+The script is idempotent. It fails the render when a completed milestone's
+validation document was rendered but published no figure, when a linked
+document does not exist, or when an entry in `milestones.yml` is malformed.
+If only `index.qmd` is rendered in a fresh clone, the ladder shows a note in
+place of the missing figures instead of failing.
+
+**Statistics come from git at render time.** The statistics page walks
+`git log` and counts lines per commit with `git grep` on the commit, so no
+checkout is needed. The time axis is days since the first commit. In a shallow clone, or
+outside a repository, it shows a notice instead of partial numbers, and the
+front-page strip falls back to a plain link. Test coverage is not shown: its
+history cannot be read from git without re-running the suite at every commit.
+
+**Dependency.** `pyyaml` was added to the `docs` group. It was already
+installed as a dependency of Jupyter, but is now imported directly.
+
+**Not done.** There is no CI configuration in the repository, so the
+fresh-clone and shallow-clone behaviour was checked by hand only. The reviews
+of the theory posts are Markdown files that are not rendered into the site,
+so the ladder links to theory and validation but not to the review.

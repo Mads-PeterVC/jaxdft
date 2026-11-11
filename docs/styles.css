@@ -6,3 +6,89 @@
   display: flex;
   justify-content: center;
 }
+
+/* Front page: the milestone ladder (filled in by _tools/front_page.py). */
+ol.milestones {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0;
+  border-left: 2px solid #e6e5e1;
+}
+.milestone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem 2rem;
+  padding: 0 0 2.5rem 1.5rem;
+  position: relative;
+}
+.milestone::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 0.25rem;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #2a78d6;
+  border: 2px solid #fff;
+}
+.milestone-in-progress::before {
+  background: #fff;
+  border-color: #eb6834;
+}
+@media (min-width: 1000px) {
+  .milestone {
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  }
+}
+.milestone h3 {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 1.2rem;
+}
+.milestone-meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.milestone-status {
+  font-weight: 600;
+  margin-right: 0.6rem;
+  color: #2a78d6;
+}
+.milestone-in-progress .milestone-status {
+  color: #c2410c;
+}
+.milestone-figure {
+  margin: 0;
+  overflow-x: auto;
+}
+.milestone-figure figcaption,
+.milestone-pending {
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.milestone-headline {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+}
+.milestone-headline dt {
+  display: inline;
+  font-weight: normal;
+  color: #52514e;
+}
+.milestone-headline dt::after {
+  content: ": ";
+}
+.milestone-headline dd {
+  display: inline;
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+#effort-strip {
+  margin-top: 3rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e6e5e1;
+  font-size: 0.8rem;
+  color: #52514e;
+}
