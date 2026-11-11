@@ -1,0 +1,53 @@
+# Full render of the Quarto site, executing every document against the current
+# code (freeze is off: a document that no longer runs is a failing test).
+#
+# The render is slow, so it runs only on main, where it also deploys the site to
+# GitHub Pages. A pull request renders (without deploying) only when it changes
+# this workflow, so changes to it can be tested before they reach main.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: [.github/workflows/docs.yml]
+  workflow_dispatch:
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The project statistics page is computed from the full git history.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: 1.10.19
+      - run: uv sync --locked
+      - run: uv run quarto render docs/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: render
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
