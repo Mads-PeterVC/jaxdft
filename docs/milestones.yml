@@ -51,3 +51,4 @@
   capability: "Self-consistent LDA for silicon: nonlocal projectors and Brillouin-zone sampling."
   status: in-progress
   theory: theory/02b_scf_silicon.qmd
+  validation: validation/02b_scf_silicon.qmd

@@ -189,3 +189,43 @@ bond of about 0.765 Å, stays an expectation. Nothing measured contradicts it.
 The decision 6 fallback, a cited literature value, is not taken either:
 without a functional-matched source, it would add a number with an unknown
 error.
+
+## 2026-11-11: Self-consistent LDA silicon: the textbook picture, and a stricter gap guard
+
+The 2b implementation reproduces every number the theory post and its review
+quoted at the settings computed: the test-size energy to 1.5×10⁻¹⁰ Ha of the
+review's independent code, the k-grid and cutoff tables, and the band levels
+to their rounding. Physically, HGH silicon is soft: 15 Ha is within 1 mHa of
+the cutoff limit, and the k-grid dominates the error. The Γ-centred grids are
+the least efficient uniform grids. A half-shifted 3³ grid lies within 0.14 mHa
+of the unshifted 6³ value at an eighth of the k-points, so a later milestone
+with density symmetrisation would gain a factor of about eight.
+
+**Bands.** Every Kohn–Sham gap is smaller than the Cohen–Bergstresser value,
+by 0.3–0.9 eV. The indirect gap is 0.47 eV at 0.84 of Γ–X, and the LDA values
+of Hybertsen and Louie agree within 0.05 eV. This is the band-gap problem of
+Kohn–Sham theory, not an error of the code. One expectation of the theory post
+holds only in part. The upper two valence bands agree with the empirical model
+to 0.1 eV RMS, but the lowest differs by about 0.6 eV. The empirical valence
+band is 12.6 eV wide against the LDA's 12.0 eV, presumably because the form
+factors were fitted to transitions near the gap and leave the band bottom
+unconstrained.
+
+**Structure.** On the half-shifted 3³ grid at 15 Ha, a₀ = 5.385 Å (−0.9 %)
+and B₀ = 97 GPa (experiment about 99 GPa). The k-grid moves a₀ more than the
+cutoff does: 4³ at 20 Ha gave 22 mBohr more, and 15 → 20 Ha moves it by
+−4 mBohr.
+
+**The gap guard over the grid.** The more instructive result concerns the
+discrete problems the tests use, not silicon itself. Guarding band filling
+with the gap over all k-points instead of per k-point exposed three settings
+whose occupations the theory post had taken for granted:
+
+- the displaced force-test geometry on the 2³ grid, gap 0.12 mHa;
+- silicon without XC, a semimetal on every grid tried;
+- local-only silicon, whose fixed-occupation SCF cannot converge because a
+  band crosses the Fermi level.
+
+In each case the per-k gaps were tens of mHa. A per-k criterion is blind to
+exactly the indirect-gap situation that silicon is famous for. The guard
+earned its place in its first milestone.

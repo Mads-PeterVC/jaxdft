@@ -1574,3 +1574,37 @@ occupied states that included the empty conduction bands.
 displaced geometry, and the degenerate valence side at the ideal geometry,
 agree with the second-order finite differences within 10⁻⁵ Ha (5×10⁻⁵ for the
 degenerate case). The Z × gap identity holds to 10⁻⁸.
+
+## 2026-11-11: Milestone 2b validation document, and an open performance item
+
+**The validation document is sized to its render cost.** Reproducing all of
+the theory post's settings at every render would take 20–30 minutes on the
+laptop. The 4³ grid at 40 Ha takes 207 s, 6³ at 15 Ha 152 s, and 8³ 423 s.
+With the project lead it was decided to keep the document lean and to profile
+later. The document renders in about 7 minutes. Its cheaper settings:
+
+- the cutoff scan runs on the 2³ grid; its convergence profile matches the
+  post's 4³ table within 10 %;
+- the k-scan stops at 4³ and adds the half-shifted 2³ and 3³ grids;
+- E(a) uses half-shifted grids, whose density asymmetry does not matter for
+  energies.
+
+The post's 20 Ha, 40 Ha and 6³ numbers are quoted, not recomputed. The band
+path, 150 k-points with about 760 plane waves each, uses LOBPCG rather than
+dense diagonalisation, to keep the render short.
+
+**Units.** `units.py` gains the atomic unit of pressure, E_h/a₀³ in GPa,
+from the CODATA 2022 E_h and a₀, for bulk moduli. It is tested against its
+derivation and against the CODATA 2018 value, which differs by 2×10⁻⁹
+relative because a₀ changed between the two adjustments.
+
+**Open item: superlinear cost in the number of k-points.** At 15 Ha, 6³ takes
+6.7 times as long as 4³ for 3.4 times as many k-points and the same number of
+SCF steps. The suspected cause, not yet profiled, is memory. The density and
+the local-potential application are `vmap`ped over all k-points at once. They
+therefore materialise (n_k, N³, n_bands) complex arrays, about 0.3 GB at 6³,
+plus FFT workspace. If profiling confirms it, the fix is to accumulate the
+density over k-points in chunks (`lax.map` over batches, or a scan), which
+keeps k-points a batch dimension for sharding. The performance page now
+tracks the cost per k-point and SCF step, so the fix will be measurable. The
+validation document can grow back towards the post's settings afterwards.

@@ -283,3 +283,54 @@ pd.DataFrame([
 Both times include writing the setup block and the final energy, so the
 difference is an upper bound on the cost of the live lines. At this size,
 the two times differ by `{python} f"{100 * (logged / quiet - 1):+.0f}"` %.
+
+## Milestone 2b: SCF for silicon
+
+One self-consistent LDA calculation for diamond silicon ($a$ = 10.263 Bohr,
+HGH with nonlocal projectors) at 12 Ha, on Γ-centred k-grids of increasing
+size, and one force evaluation at the 2³ test size. "First call" includes
+compilation. The k-points are one `vmap` batch, so ideally the time per
+k-point and SCF step is constant.
+
+```{python}
+#| echo: false
+from jaxdft import diamond, monkhorst_pack
+
+si_terms = lda_terms({"Si": hgh_lda("Si")})
+si = diamond(10.263, "Si", unit="Bohr")
+si_rows = []
+for n in (1, 2, 3, 4):
+    k, w = monkhorst_pack((n, n, n))
+    b = PlaneWaveBasis.build(si.lattice, k, 12.0, kweights=w)
+    t0 = time.perf_counter()
+    res = scf(si, b, si_terms, SCFOptions())
+    first = time.perf_counter() - t0
+    steady = wall(lambda: scf(si, b, si_terms, SCFOptions()).total_energy)
+    si_rows.append({
+        "k-grid": f"{n}³",
+        "k-points": n**3,
+        "plane waves (max)": int(b.n_pw.max()),
+        "grid": "×".join(map(str, b.fft_shape)),
+        "SCF iterations": int(res.n_iter),
+        "SCF first (s)": f"{first:.2f}",
+        "SCF steady (s)": f"{steady:.2f}",
+        "ms per k-point and step": f"{1e3 * steady / n**3 / int(res.n_iter):.1f}",
+    })
+k2, w2 = monkhorst_pack((2, 2, 2))
+b2 = PlaneWaveBasis.build(si.lattice, k2, 12.0, kweights=w2)
+si_force = jax.grad(lambda s: energy(s, b2, si_terms, SCFOptions()))
+si_force_first = wall(lambda: si_force(si).positions)
+si_force_steady = wall(lambda: si_force(si).positions)
+pd.DataFrame(si_rows).style.hide(axis="index")
+```
+
+A force at the 2³ test size takes `{python} f"{si_force_first:.1f}"` s on the
+first call and `{python} f"{si_force_steady:.1f}"` s after. The cost per
+k-point and SCF step falls from Γ to a few k-points, as fixed costs spread,
+and then grows again. At 15 Ha the 6³ grid took 152 s against 23 s for 4³,
+6.7 times as long for 3.4 times as many k-points (measured once while sizing
+the [validation document](../validation/02b_scf_silicon.qmd), not computed
+here). The likely cause, not yet profiled, is memory: the density and the
+local potential are built for all k-points at once, through arrays of shape
+(k-points, grid points, bands), about 0.3 GB on 6³. Profiling this is an open
+item in the engineering log.

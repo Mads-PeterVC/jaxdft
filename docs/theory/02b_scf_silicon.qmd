@@ -6,7 +6,7 @@ bibliography: ../references.bib
 ---
 
 ::: {.callout-note}
-## Status: reviewed, not yet implemented
+## Status: reviewed and implemented; DFTK comparison pending
 Reviewed on 2026-11-11. The review is kept at `reviews/review_02b_scf_silicon.md`.
 It rebuilt the method independently from this post (a NumPy plane-wave LDA)
 and reproduced every number quoted here. It found one physics error: the
@@ -14,14 +14,28 @@ FFT-grid condition for the symmetry of diamond is $N$ even, not $4 \mid N$.
 It also changed the argument for the Γ-centred grid, the evidence for buffer
 bands and the form of the projector protocol, and answered the open
 questions. The decisions are recorded at the [end of this
-post](#decisions-from-review). No acceptance test or implementation exists
-yet.
+post](#decisions-from-review).
+
+The [validation document](../validation/02b_scf_silicon.qmd) confirms the
+post's numbers and corrects three expectations that were measured with the
+2a per-k-point gap guard. With the guard over the whole grid:
+
+- the displaced force-test geometry is nearly gapless on the 2³ grid
+  (0.12 mHa), so its tests run on the 3³ grid;
+- silicon without XC is a semimetal on these grids, so the XC-off net-force
+  control runs without the guard;
+- local-only silicon is rejected, as stated below, but its SCF does not
+  converge either, so "a converged state" overstates what the 2a SCF found.
+
+It also refines two statements. Only the upper valence bands agree closely
+with Cohen–Bergstresser; the lowest does not. And 6³ is within about 0.2 mHa
+of the k-converged energy, not 0.5. The DFTK comparison follows
+implementation, as in 2a.
 
 Formulas marked *checked* were verified numerically while the post was being
 prepared, and again by the review. Numbers quoted "from the throwaway check"
 come from a scratch nonlocal term run through the 2a SCF; numbers quoted
-"from the review" come from the review's independent code. Both are
-expectations, not acceptance values.
+"from the review" come from the review's independent code.
 :::
 
 ## Scope
