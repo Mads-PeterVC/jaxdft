@@ -132,9 +132,11 @@ SHIFTED_GRID_FORCE_MIN = 1e-4
 # spacing is exact (SCF_ENERGY_ATOL).
 EGGBOX_HALF_SPACING_MIN = 2e-8
 
-# Net force at the displaced geometry on the 2^3 grid (theory post, 'Tolerances'):
-# with XC measured 5.7e-7 Ha/Bohr; without XC 4e-15 (review 2.5e-15), first order in
-# the SCF tolerance since it vanishes only at self-consistency.
+# Net force at the displaced geometry (theory post, 'Tolerances'): with XC measured
+# 5.7e-7 Ha/Bohr on 2^3 and ~5e-7 on 3^3, where the tests now run (2^3 closes the
+# gap over the grid; decided with the project lead); without XC 4e-15 on 2^3 (review
+# 2.5e-15), first order in the SCF tolerance since it vanishes only at
+# self-consistency.
 NET_FORCE_XC_MAX = 5e-6
 NET_FORCE_NO_XC_MAX = 1e-8
 
@@ -145,10 +147,10 @@ FD_FRACTIONAL_ATOL = 1e-6
 
 # Weight derivatives of silicon. DERIVED, NOT MEASURED: no fractional-charge silicon
 # run exists. The second-order one-sided stencil of 2a at delta = 1e-3 is kept, with
-# the 2a tolerance. A non-degenerate frontier state at one of 8 k-points changes its
-# occupation by Z/w_k = 32 per unit lambda, so delta = 1e-3 moves it by 0.03-0.06
-# electrons, inside its capacity 2 w_k = 0.25. A failure is raised with the project
-# lead, not met by loosening (engineering log, 2b API).
+# the 2a tolerance. On the 3^3 grid (w_k = 1/27) the largest step, 2 delta, moves
+# Z * 2 delta = 0.008 electrons: 0.22 in the single VBM state at Gamma, 0.11 in each
+# state of the CBM pair, inside the capacity 2 of a state. A failure is raised with
+# the project lead, not met by loosening (engineering log, 2b API).
 SI_WEIGHT_STEP = 1e-3
 SI_WEIGHT_ATOL = 1e-5
 # The degenerate-frontier variant is looser (review, open question 1); same caveat.

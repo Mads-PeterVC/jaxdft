@@ -68,7 +68,7 @@ def test_band_filling_even_when_bands_overlap_across_k():
 @pytest.mark.parametrize("delta", [0.01, 0.2])
 def test_extra_charge_goes_to_the_crystal_cbm(delta):
     e = synthetic(cbm_k=5)
-    f = np.asarray(grid_occupations(e, W, 8.0 + delta, tol=TOL))
+    f = np.array(grid_occupations(e, W, 8.0 + delta, tol=TOL))
     np.testing.assert_allclose(f[5, 4], delta * N_K, atol=1e-14)
     f[5, 4] = 0.0
     np.testing.assert_allclose(f[:, :4], 2.0, atol=1e-15)
@@ -95,7 +95,7 @@ def test_degenerate_frontier_is_shared_equally_across_k_and_bands():
     change = 2.0 - np.array([f[3, 3], f[6, 3], f[6, 2]])
     np.testing.assert_allclose(change, change[0], atol=1e-14)
     np.testing.assert_allclose(np.sum(change) / N_K, delta, atol=1e-14)
-    assert np.sum(f < 2.0 - 1e-14) == 3
+    assert np.sum(f[:, :4] < 2.0 - 1e-14) == 3
 
 
 def test_states_just_outside_the_tolerance_are_not_shared():

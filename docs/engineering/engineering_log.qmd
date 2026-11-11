@@ -1504,3 +1504,73 @@ gap come from the review alone and say so. The finite-difference tolerances
 for the fractional-charge weight derivatives are derived, not measured,
 because nobody has run fractional-charge silicon. If one fails during
 implementation it is raised with the project lead, not loosened.
+
+## 2026-11-11: Milestone 2b implementation
+
+The nonlocal term, k-point weights on the basis, grid occupations, buffer bands,
+`fft_multiple`, `monkhorst_pack` and `supercell` are implemented as agreed in the
+API entry above. These are the decisions made during implementation, and the
+changes to acceptance tests, each agreed with the project lead.
+
+**The nonlocal operator.** `AtomicNonlocal.prepare` builds B, of shape
+`(n_pad, N_proj)`, once per k-point. Its columns are
+Ω^(-1/2) e^(-2πi m·f_a) S_lm(q) p̂ᵢ(q)/qˡ, masked to the basis. D is the block
+diagonal of λ_a hˡ, repeated for each m. `apply` is B(D(B†ψ)), with no FFT.
+The real solid harmonics up to l = 2 are written out as polynomials in
+(q_x, q_y, q_z), and the projectors are functions of q², so no |q| and no q̂
+appear anywhere. First and second derivatives with respect to the cell,
+positions and k at Γ are finite (a property test).
+
+**Grid occupations.** `grid_occupations` is a `custom_jvp`. The value sorts all
+candidate states (empty ones for added charge, occupied ones by −ε for removed
+charge), groups them into levels where consecutive sorted energies differ by
+more than `tol`, and fills levels by a clipped cumulative capacity. Every step is
+a traced array operation, so it runs inside the jitted SCF and under `vmap`.
+The JVP picks the active level from the side argument, half-open toward the
+side, so the derivative at an integer count is exactly one-sided. Eigenvalues
+and weights are stop-gradiented. In `energy()` they already are, and the
+Hellmann–Feynman argument needs nothing through them.
+
+**SCF changes.** The occupations are recomputed from the eigenvalues at every
+iteration, so a fractional frontier follows the current spectrum. The gap guard
+uses `frontier_gap`: CBM − VBM over all k-points of the band filling at N_ref,
+evaluated at convergence. The history's `homo`, `lumo` and `gap` are the same
+quantity at each iteration. The eigensolver iterates `n_bands + buffer_bands`
+vectors, capped by the smallest basis. Only the first `n_bands` are checked,
+recorded and returned. The SCF error message now quotes the gap over the grid.
+
+**Four acceptance-test changes, agreed with the project lead.** None loosens a
+tolerance. Each comes from the new gap guard meeting a state that the theory
+post had measured with the 2a per-k guard.
+
+- **The displaced geometry runs on the 3³ grid, not 2³.** On 2³ the
+  0.11 Bohr displacement splits Γ₂₅′ and lowers an X-point conduction state
+  until the gap over the grid is 0.12 mHa, below `min_gap` = 1 mHa. Per-k gaps
+  stay at 72 mHa. On 3³ the gap is 10.3 mHa, the review's value. The post's
+  finite-difference force measurements were already made on 3³. On 3³ the
+  conduction-side frontier is the time-reversal pair (k, −k), and the test
+  asserts that pair instead of a single state.
+- **The XC-off net-force control runs with the guard disabled.** Silicon
+  without XC is a semimetal on every grid tried: −0.042 Ha (2³) and −0.025 Ha
+  (3³) at the ideal geometry. The identity it tests, a vanishing net force when
+  only translation-covariant terms remain, holds at any self-consistent fixed
+  point with fixed occupations.
+- **The XC-off supercell comparison runs with `min_gap` = 1e-4.** Its gap over
+  the 2×1×1 grid is +0.33 mHa: positive, so the band filling is the ground
+  state.
+- **The gap-guard positive control no longer requires convergence.**
+  Local-only silicon is rejected for a gap over the grid of −0.063 Ha (the
+  review's value). With fixed occupations it also never converges, since a band
+  crossing at the Fermi level (smallest per-k gap 10⁻⁴ Ha) makes them slosh.
+  Residuals stay at 10⁻³–10⁻¹ after 300 iterations with any mixer tried. The
+  theory post's "accepted a converged state" described the 2a SCF stopping at a
+  looser tolerance.
+
+Two further corrections were errors in the tests themselves, not in their
+expectations: a read-only NumPy view written to, and a count of partially
+occupied states that included the empty conduction bands.
+
+**The unmeasured tolerances held.** Both one-sided weight derivatives at the
+displaced geometry, and the degenerate valence side at the ideal geometry,
+agree with the second-order finite differences within 10⁻⁵ Ha (5×10⁻⁵ for the
+degenerate case). The Z × gap identity holds to 10⁻⁸.

@@ -332,15 +332,18 @@ def test_translation_by_a_grid_vector_is_exact():
 
 def test_gap_guard_rejects_a_negative_gap_over_the_grid():
     """Positive control (theory post; review: gap over the grid -0.063 Ha while every
-    per-k gap is positive): local-only silicon on the 2^3 grid at 12 Ha. The SCF
-    converges but its band filling is not the aufbau filling of the crystal."""
+    per-k gap is positive): local-only silicon on the 2^3 grid at 12 Ha. Its band
+    filling is not the aufbau filling of the crystal. With fixed occupations this
+    semimetal does not converge either (a band crossing at the Fermi level), so the
+    test asks only that the guard rejects it for the gap, not that the SCF converged
+    first (decided 2026-11-11 with the project lead; the post said 'converged')."""
     s = si()
     b = basis_for(s)
     terms = (Kinetic(), AtomicLocal({"Si": local_only_silicon()}), Hartree(), Xc(lda_pw92), Ewald({"Si": local_only_silicon()}))
     with pytest.raises(SCFError) as err:
         scf(s, b, terms, SCFOptions(tol=SCF_TOL))
-    assert "gap" in str(err.value) and "not converged" not in str(err.value)
-    assert float(err.value.history["gap"][-1]) < 0
+    assert "gap over all k-points" in str(err.value)
+    assert float(err.value.history["gap"][-1]) < -0.05
     assert np.isnan(float(energy(s, b, terms, SCFOptions(tol=SCF_TOL))))
 
 

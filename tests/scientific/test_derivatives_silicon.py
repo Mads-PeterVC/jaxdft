@@ -15,6 +15,7 @@ import pytest
 from jaxdft import Lattice, SCFOptions, Structure, energy
 from support.silicon import (
     DISPLACEMENT,
+    KGRID_DISPLACED,
     basis_for,
     converged_displaced,
     displaced_si,
@@ -68,18 +69,24 @@ def test_position_gradient_matches_finite_differences():
 def test_cross_check_of_the_force_on_the_three_cubed_grid():
     """dE/df_0x at the displaced geometry, 3^3 grid, 12 Ha: the throwaway check and the
     review agree to nine digits."""
-    s = displaced_si()
-    b = basis_for(s, kshape=(3, 3, 3))
+    s, b, _ = converged_displaced()
+    assert b.kpoints.shape[0] == 27
     np.testing.assert_allclose(position_gradient(s, b)[0, 0], CROSS_CHECK_SI_DEDF, atol=CROSS_CHECK_SI_DEDF_ATOL)
 
 
 @pytest.mark.parametrize(("xc", "bound"), [(True, NET_FORCE_XC_MAX), (False, NET_FORCE_NO_XC_MAX)], ids=["with-xc", "without-xc"])
 def test_net_force_at_the_displaced_geometry(xc, bound):
     """The acceptance pair of the theory post: the net force is the egg-box effect,
-    caused by the XC quadrature alone; without XC it vanishes at self-consistency."""
+    caused by the XC quadrature alone; without XC it vanishes at self-consistency.
+
+    Silicon without XC is a semimetal (gap over the 3^3 grid -0.035 Ha). The identity
+    tested holds at any self-consistent fixed point with fixed occupations, ground state
+    or not, so the XC-off run disables the gap guard (decided 2026-11-11 with the
+    project lead)."""
     s, b, _ = converged_displaced()
     A = np.asarray(s.lattice.vectors)
-    F = -position_gradient(s, b, terms=si_terms(xc=xc)) @ np.linalg.inv(A).T
+    options = {} if xc else {"min_gap": -np.inf}
+    F = -position_gradient(s, b, terms=si_terms(xc=xc), **options) @ np.linalg.inv(A).T
     assert np.linalg.norm(F.sum(axis=0)) < bound
 
 
@@ -151,7 +158,7 @@ def one_sided_fd(s, b, res0, side, delta=SI_WEIGHT_STEP):
 @pytest.fixture(scope="module")
 def displaced_tight():
     s = displaced_si()
-    b = basis_for(s)
+    b = basis_for(s, kshape=KGRID_DISPLACED)
     return s, b, run(s, b, tol=SCF_TOL_TIGHT)
 
 
@@ -175,10 +182,20 @@ def test_weight_derivative_sides_differ_by_z_times_the_gap_over_the_grid(displac
 
 @pytest.mark.parametrize("side", [-1, +1], ids=["vbm-side", "cbm-side"])
 def test_one_sided_weight_derivative_non_degenerate_frontier(displaced_tight, side):
-    """The displaced geometry has no symmetry; on the 2^3 grid every k-point is
-    time-reversal invariant, so the frontier level is a single state."""
+    """The displaced geometry has no spatial symmetry. On the 3^3 grid the VBM is at
+    Gamma, time-reversal invariant, so its level is a single state. The CBM lies at a
+    k-point that is not, so its level is the pair (k, -k), held together by time
+    reversal at every lambda; the set is asserted unchanged over the step."""
     s, b, res = displaced_tight
-    assert len(frontier_level(res, side)) == 1
+    level = frontier_level(res, side)
+    if side < 0:
+        assert level == {(0, 3)}
+    else:
+        assert len(level) == 2
+        (k1, n1), (k2, n2) = sorted(level)
+        kp = np.asarray(b.kpoints)
+        assert n1 == n2 == 4
+        np.testing.assert_allclose(np.mod(kp[k1] + kp[k2] + 1e-9, 1.0), 0.0, atol=1e-8)
     g = weight_gradient(s, b, side)
     np.testing.assert_allclose(g[0], one_sided_fd(s, b, res, side), atol=SI_WEIGHT_ATOL)
 

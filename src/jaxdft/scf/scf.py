@@ -48,7 +48,7 @@ from jaxdft.output import report
 from jaxdft.output.environment import machine_info, peak_memory_bytes
 from jaxdft.scf.density import AtomicGaussians, clip_and_renormalise, electron_density
 from jaxdft.scf.mixing import Anderson, Mixer
-from jaxdft.scf.occupations import aufbau_occupations
+from jaxdft.scf.occupations import frontier_gap, grid_occupations
 from jaxdft.scf.solve import fixed_point
 from jaxdft.solvers.lobpcg import lobpcg
 from jaxdft.structure.structure import Structure
@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 class SCFError(RuntimeError):
     """The SCF did not produce a valid ground state (not converged, eigensolver not
-    converged, or HOMO-LUMO gap below ``min_gap``). ``history`` and ``n_iter`` are
+    converged, or the gap over all k-points below ``min_gap``). ``history`` and ``n_iter`` are
     those of the failed run (see ``SCFResult``), for diagnosis."""
 
     def __init__(self, message: str, history: dict | None = None, n_iter: int | None = None):
@@ -76,8 +76,12 @@ class SCFError(RuntimeError):
 @dataclass(frozen=True)
 class SCFOptions:
     """SCF settings. ``tol`` is on ||F(rho) - rho|| = (int (F(rho) - rho)^2)^(1/2).
-    ``n_bands`` defaults to occupied + 1. ``min_gap`` (Ha) guards aufbau filling against
-    a degenerate frontier level; it is a numerical criterion, not a physical gap.
+    ``n_bands`` (the bands that must converge, and are returned) defaults to occupied
+    + 1; the eigensolver carries ``buffer_bands`` more, which are neither checked nor
+    returned (theory post 2b, decision 2). ``min_gap`` (Ha) guards the band filling:
+    the gap over all k-points, CBM - VBM, must exceed it at convergence; it is a
+    numerical criterion, not a physical gap. ``degeneracy_tol`` (Ha) groups states
+    into levels for fractional occupations (``grid_occupations``).
     ``mixer`` is any ``Mixer`` (``jaxdft.scf.mixing``). ``preconditioner`` is a
     factory ``(Hamiltonian) -> precondition(r, eps)`` (``jaxdft.hamiltonian
     .preconditioners``), or None for none. ``initial_density(structure, basis,
@@ -92,6 +96,8 @@ class SCFOptions:
     preconditioner: Callable | None = diagonal_preconditioner
     min_gap: float = 1e-3
     initial_density: Callable = field(default_factory=AtomicGaussians)
+    buffer_bands: int = 1
+    degeneracy_tol: float = 1e-6
 
 
 @jax.tree_util.register_dataclass
@@ -126,14 +132,13 @@ class SCFResult:
 # --- the direct energy functional ------------------------------------------------------
 
 
-def total_energy(structure: Structure, basis: PlaneWaveBasis, terms, orbitals, occupations, kweights=None):
+def total_energy(structure: Structure, basis: PlaneWaveBasis, terms, orbitals, occupations):
     """Direct Kohn-Sham energy of ``orbitals`` (n_k, n_pad, n_bands) with
     ``occupations`` (n_k, n_bands): (E, {term name: energy}). Operator terms contribute
-    sum_k w_k sum_n f_nk <psi_nk|T|psi_nk>; energy terms are evaluated at the density
-    of the orbitals."""
-    n_k = orbitals.shape[0]
-    w = jnp.full(n_k, 1.0 / n_k) if kweights is None else jnp.asarray(kweights, dtype=jnp.float64)
-    density = electron_density(structure.lattice, basis, orbitals, occupations, w)
+    sum_k w_k sum_n f_nk <psi_nk|T|psi_nk> with the weights of the basis; energy terms
+    are evaluated at the density of the orbitals."""
+    w = basis.kweights
+    density = electron_density(structure.lattice, basis, orbitals, occupations)
     parts = {}
     for term in terms:
         name = type(term).__name__
@@ -176,7 +181,17 @@ def _log_iteration(it, values, t0):
     logger.info(report.iteration_line(int(it), values, elapsed=time.perf_counter() - float(t0)))
 
 
-_STATIC = ("n_bands", "max_iter", "mixer", "eigensolver", "preconditioner", "history", "live")
+_STATIC = (
+    "n_bands",
+    "n_solve",
+    "degeneracy_tol",
+    "max_iter",
+    "mixer",
+    "eigensolver",
+    "preconditioner",
+    "history",
+    "live",
+)
 
 
 @partial(jax.jit, static_argnames=_STATIC)
@@ -186,12 +201,13 @@ def _scf_core(
     terms,
     density0,
     n_el,
-    kweights,
     tol,
     min_gap,
     t0,
     *,
     n_bands,
+    n_solve,
+    degeneracy_tol,
     max_iter,
     mixer,
     eigensolver,
@@ -199,11 +215,15 @@ def _scf_core(
     history,
     live,
 ):
+    """The traced SCF. The eigensolver iterates ``n_solve`` = ``n_bands`` + buffer
+    bands; occupations, residual checks and results use the first ``n_bands``."""
     volume = structure.lattice.volume
     n_tot = math.prod(basis.fft_shape)
     n_k = basis.miller.shape[0]
-    occ = jnp.broadcast_to(aufbau_occupations(n_el, n_bands), (n_k, n_bands))
     eig_tol = jnp.maximum(EIGEN_TOL_FRACTION * tol, EIGEN_FLOOR)
+
+    def occupations(eps):
+        return grid_occupations(eps[:, :n_bands], basis.kweights, n_el, tol=degeneracy_tol)
 
     def diagonalise(potential, X_prev):
         def per_k(basis_k, x0):
@@ -214,7 +234,7 @@ def _scf_core(
                 return apply_H(ham, psi)
 
             eps, vecs, its = eigensolver(
-                apply, basis_k.n_pad, n_bands, x0=x0, preconditioner=precondition, tol=eig_tol, return_iterations=True
+                apply, basis_k.n_pad, n_solve, x0=x0, preconditioner=precondition, tol=eig_tol, return_iterations=True
             )
             vecs = jnp.where(basis_k.mask[:, None], vecs, 0)
             res = jnp.linalg.norm(apply(vecs) - vecs * eps[None, :], axis=0)
@@ -222,39 +242,36 @@ def _scf_core(
 
         return jax.vmap(per_k)(basis, X_prev)
 
-    top = jnp.sum(occ[0] > 0) - 1  # highest (partially) occupied band
-    has_next = top + 1 < n_bands
-    nxt = jnp.minimum(top + 1, n_bands - 1)
-
     def F(rho, aux):
         X_prev, e_prev = aux[0], aux[4]
         potential = total_potential(terms, structure, basis, rho)
         X, eps, res, its = diagonalise(potential, X_prev)
-        rho_out = electron_density(structure.lattice, basis, X, occ, kweights)
-        e = total_energy(structure, basis, terms, X, occ, kweights)[0] if history else e_prev
+        occ = occupations(eps)
+        Xn = X[:, :, :n_bands]
+        rho_out = electron_density(structure.lattice, basis, Xn, occ)
+        e = total_energy(structure, basis, terms, Xn, occ)[0] if history else e_prev
         return rho_out, (X, eps, res, its, e, e - e_prev)
 
     def record(rho, rho_out, aux):
         _, eps, res, its, e, de = aux
-        homo = jnp.max(jnp.take(eps, jnp.maximum(top, 0), axis=1))
-        lumo = jnp.where(has_next, jnp.min(jnp.take(eps, nxt, axis=1)), jnp.nan)
+        vbm, cbm = frontier_gap(eps[:, :n_bands], n_el)
         return {
             "energy": e,
             "delta_energy": de,
-            "homo": homo,
-            "lumo": lumo,
-            "gap": lumo - homo,
-            "eig_residual_max": jnp.max(res),
+            "homo": vbm,
+            "lumo": cbm,
+            "gap": cbm - vbm,
+            "eig_residual_max": jnp.max(res[:, :n_bands]),
             "eig_iters": jnp.max(its),
         }
 
     key = jax.random.PRNGKey(0)
     kr, ki = jax.random.split(key)
-    shape = (n_k, basis.n_pad, n_bands)
+    shape = (n_k, basis.n_pad, n_solve)
     X0 = jax.random.normal(kr, shape) + 1j * jax.random.normal(ki, shape)
     X0 = jnp.where(basis.mask[..., None], X0, 0)
     nan = jnp.asarray(jnp.nan)
-    aux0 = (X0, jnp.zeros((n_k, n_bands)), jnp.zeros((n_k, n_bands)), jnp.zeros(n_k, dtype=int), nan, nan)
+    aux0 = (X0, jnp.zeros((n_k, n_solve)), jnp.zeros((n_k, n_solve)), jnp.zeros(n_k, dtype=int), nan, nan)
 
     def norm(r):
         return jnp.sqrt(volume / n_tot * jnp.sum(r**2))
@@ -275,14 +292,15 @@ def _scf_core(
         on_step=(lambda it, values: jax.debug.callback(_log_iteration, it, values, t0, ordered=True)) if live else None,
     )
     X, eps, eig_res = res.aux[:3]
+    X, eps, eig_res = X[:, :, :n_bands], eps[:, :n_bands], eig_res[:, :n_bands]
 
-    gap = jnp.take(eps, nxt, axis=1) - jnp.take(eps, jnp.maximum(top, 0), axis=1)
-    gap_ok = has_next & jnp.all(gap > min_gap)
+    vbm, cbm = frontier_gap(eps, n_el)
+    gap_ok = jnp.isfinite(cbm) & (cbm - vbm > min_gap)
     eig_ok = jnp.all(eig_res < jnp.maximum(EIGEN_CHECK_FRACTION * tol, 5 * EIGEN_FLOOR))
     return {
         "orbitals": X,
         "eigenvalues": eps,
-        "occupations": occ,
+        "occupations": occupations(eps),
         "density": res.fx,
         "residual": res.residual,
         "n_iter": res.n_iter,
@@ -298,22 +316,29 @@ def _scf_core(
 _total_energy_jit = jax.jit(total_energy)
 
 
+def _n_solve(basis, n_bands, options) -> int:
+    """Bands the eigensolver iterates: the needed ones plus buffer bands, capped by
+    the smallest basis."""
+    if options.buffer_bands < 0:
+        raise ValueError(f"buffer_bands must be >= 0, got {options.buffer_bands}")
+    return max(n_bands, min(n_bands + int(options.buffer_bands), int(jnp.min(basis.n_pw))))
+
+
 def _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, *, history, live):
-    n_k = basis.miller.shape[0]
-    kweights = jnp.full(n_k, 1.0 / n_k)
     args = (
         structure,
         basis,
         terms,
         jnp.asarray(density0, dtype=jnp.float64),
         n_el,
-        kweights,
         jnp.asarray(options.tol, dtype=jnp.float64),
         jnp.asarray(options.min_gap, dtype=jnp.float64),
         jnp.asarray(0.0),  # t0, replaced at call time when logging live
     )
     static = dict(
         n_bands=n_bands,
+        n_solve=_n_solve(basis, n_bands, options),
+        degeneracy_tol=float(options.degeneracy_tol),
         max_iter=int(options.max_iter),
         mixer=options.mixer,
         eigensolver=options.eigensolver,
@@ -321,17 +346,15 @@ def _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, *
         history=history,
         live=live,
     )
-    return args, static, kweights
+    return args, static
 
 
 def _run(structure, basis, terms, options, density0, n_el, n_bands, charges):
     """The traced path used by ``energy``: no history, no logging."""
     if density0 is None:
         density0 = options.initial_density(structure, basis, charges)
-    args, static, kweights = _core_arguments(
-        structure, basis, terms, options, density0, n_el, n_bands, history=False, live=False
-    )
-    return _scf_core(*args, **static), kweights
+    args, static = _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, history=False, live=False)
+    return _scf_core(*args, **static)
 
 
 def _integral(rho, structure):
@@ -363,7 +386,7 @@ def scf(
     given = density0 is not None
     if density0 is None:
         density0 = options.initial_density(structure, basis, charges)
-    args, static, kweights = _core_arguments(
+    args, static = _core_arguments(
         structure, basis, terms, options, density0, jnp.asarray(n_el), n_bands, history=True, live=live
     )
 
@@ -400,7 +423,11 @@ def scf(
     if not bool(out["eig_ok"]):
         problems.append(f"eigensolver not converged (max residual {float(jnp.max(out['eigen_residuals'])):.3e})")
     if not bool(out["gap_ok"]):
-        problems.append(f"frontier gap below min_gap={options.min_gap} Ha (or no band above the occupied ones)")
+        gap = float(history["gap"][-1]) if "gap" in history else float("nan")
+        problems.append(
+            f"gap over all k-points {gap:.3e} Ha below min_gap={options.min_gap} Ha "
+            "(or no band above the occupied ones): the band filling is not the ground state"
+        )
     if problems:
         message = "; ".join(problems)
         if live:
@@ -413,7 +440,7 @@ def scf(
             )
         raise SCFError(message, history=history, n_iter=n_iter)
 
-    e, parts = _total_energy_jit(structure, basis, terms, out["orbitals"], out["occupations"], kweights)
+    e, parts = _total_energy_jit(structure, basis, terms, out["orbitals"], out["occupations"])
     e = jax.block_until_ready(e)
     if live:
         timings["final energy (incl. compile)"] = time.perf_counter() - t_solved
@@ -466,7 +493,8 @@ def energy(
     The SCF runs on a stop-gradient copy of ``structure``; the converged orbitals are
     stop-gradiented and the energy is the direct functional of them, with occupations
     depending on the weights through N_el = sum_j lambda_j Z_j. ``side`` picks the
-    one-sided derivative at integer N_el: -1 the HOMO side, +1 the LUMO side.
+    one-sided derivative at integer N_el: -1 the VBM (HOMO) side, +1 the CBM (LUMO)
+    side, with the frontier levels taken over all k-points (``grid_occupations``).
 
     Array sizes must be static: ``n_bands`` defaults to ceil(sum_j Z_j / 2) + 1 from the
     unweighted charges (weights at most 1). Failure gives NaN, also in the gradient.
@@ -480,12 +508,12 @@ def energy(
 
     fixed = jax.lax.stop_gradient(structure)
     fixed_charges = ionic.ionic_charges(fixed)
-    out, kweights = _run(fixed, basis, terms, options, density0, jnp.sum(fixed_charges), n_bands, fixed_charges)
+    out = _run(fixed, basis, terms, options, density0, jnp.sum(fixed_charges), n_bands, fixed_charges)
     ok = out["converged"] & out["eig_ok"] & out["gap_ok"] & out["n_el_ok"]
 
     n_el = jnp.sum(ionic.ionic_charges(structure))
-    n_k = basis.miller.shape[0]
-    occ = jnp.broadcast_to(aufbau_occupations(n_el, n_bands, side=side), (n_k, n_bands))
+    eps = jax.lax.stop_gradient(out["eigenvalues"])
+    occ = grid_occupations(eps, basis.kweights, n_el, side=side, tol=options.degeneracy_tol)
     orbitals = jax.lax.stop_gradient(out["orbitals"])
-    e, _ = total_energy(structure, basis, terms, orbitals, occ, kweights)
+    e, _ = total_energy(structure, basis, terms, orbitals, occ)
     return e * jnp.where(ok, 1.0, jnp.nan)

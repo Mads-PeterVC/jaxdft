@@ -35,8 +35,12 @@ N_TEST = 24  # the rule grid at the test size
 HARTREE_IN_EV = 27.211386245981
 
 # The displaced geometry of the force test (theory post, 'Forces'): atom 0 moved by
-# this fractional vector. No symmetry is left, and no inversion centre on the grid.
+# this fractional vector (0.11 Bohr). No symmetry is left, and no inversion centre on
+# the grid. Its tests run on the 3^3 grid: on 2^3 the gap over the grid closes to
+# 0.12 mHa, below min_gap, while on 3^3 it is 10.3 mHa (decided 2026-11-11 with the
+# project lead; the theory post's force measurements were made on 3^3).
 DISPLACEMENT = np.array([[0.012, -0.005, 0.008], [0.0, 0.0, 0.0]])
+KGRID_DISPLACED = (3, 3, 3)
 
 
 @functools.cache
@@ -101,7 +105,7 @@ def converged_test_size():
 @functools.cache
 def converged_displaced():
     s = displaced_si()
-    b = basis_for(s)
+    b = basis_for(s, kshape=KGRID_DISPLACED)
     return s, b, run(s, b)
 
 
@@ -114,12 +118,13 @@ def grid_gap(eigenvalues, n_occupied=4) -> float:
 # --- derivatives ---------------------------------------------------------------------
 
 
-def position_gradient(structure, basis, terms=None, tol=None, side=-1) -> np.ndarray:
-    """dE/df (Ha per unit fractional coordinate), (n_atoms, 3)."""
+def position_gradient(structure, basis, terms=None, tol=None, side=-1, **options) -> np.ndarray:
+    """dE/df (Ha per unit fractional coordinate), (n_atoms, 3). ``options`` go to
+    SCFOptions."""
     from support.tolerances import SCF_TOL
 
     terms = si_terms() if terms is None else terms
-    opts = SCFOptions(tol=tol or SCF_TOL)
+    opts = SCFOptions(tol=tol or SCF_TOL, **options)
     g = jax.grad(lambda st: energy(st, basis, terms, opts, side=side))(structure)
     return np.asarray(g.positions)
 

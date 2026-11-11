@@ -2,8 +2,6 @@
 a supercell', 'Invariants and checks: k-point sampling'; decisions 4 and 5).
 """
 
-import functools
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -18,7 +16,7 @@ from jaxdft import (
     supercell,
     total_energy,
 )
-from support.silicon import A_SI, ECUT_TEST, basis_for, displaced_si, run, si, si_terms
+from support.silicon import A_SI, ECUT_TEST, basis_for, converged_displaced, run, si, si_terms
 from support.tolerances import EXACT_ATOL, SCF_DENSITY_ATOL, SCF_ENERGY_ATOL
 
 # --- the empty-lattice rung ----------------------------------------------------------
@@ -49,18 +47,11 @@ def test_empty_lattice_energy_is_the_weighted_sum_of_free_electron_bands():
 # --- time reversal (decision 5: a test, not a reduction) --------------------------------
 
 
-@functools.cache
-def _three_cubed():
-    s = displaced_si()
-    b = basis_for(s, kshape=(3, 3, 3))
-    return s, b, run(s, b)
-
-
 @pytest.mark.slow
 def test_eigenvalues_at_k_and_minus_k_agree():
     """On the 3^3 grid most points are not time-reversal invariant; the displaced
     geometry leaves no spatial symmetry, so only time reversal pairs them."""
-    _s, b, res = _three_cubed()
+    _s, b, res = converged_displaced()
     k = np.asarray(b.kpoints)
     keys = {tuple(np.round(np.mod(x, 1.0), 9) % 1.0): i for i, x in enumerate(k)}
     pairs = 0
@@ -84,7 +75,10 @@ def _supercell_pair(xc):
     sc = supercell(prim, (2, 1, 1))
     b_sc = PlaneWaveBasis.build(sc.lattice, jnp.zeros((1, 3)), ECUT_TEST, fft_shape=(2 * n1, n2, n3))
     terms = si_terms(xc=xc)
-    return (prim, b_prim, run(prim, b_prim, terms=terms)), (sc, b_sc, run(sc, b_sc, terms=terms))
+    # Without XC the gap over the 2x1x1 grid is 0.33 mHa: positive, so the band filling
+    # is the ground state, but below the default min_gap (decided with the project lead).
+    options = {} if xc else {"min_gap": 1e-4}
+    return (prim, b_prim, run(prim, b_prim, terms=terms, **options)), (sc, b_sc, run(sc, b_sc, terms=terms, **options))
 
 
 def test_supercell_basis_is_the_union_of_the_primitive_bases():

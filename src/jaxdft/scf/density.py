@@ -18,11 +18,11 @@ def electron_density(lattice: Lattice, basis: PlaneWaveBasis, orbitals, occupati
     ``basis.fft_shape``.
 
     ``orbitals`` (n_k, n_pad, n_bands), ``occupations`` (n_k, n_bands) including spin,
-    ``kweights`` (n_k,) summing to 1 (uniform by default). With the no-wraparound grid
+    ``kweights`` (n_k,) summing to 1 (default: ``basis.kweights``). With the no-wraparound grid
     this is exact: no aliasing.
     """
     n_k = orbitals.shape[0]
-    w = jnp.full(n_k, 1.0 / n_k) if kweights is None else jnp.asarray(kweights, dtype=jnp.float64)
+    w = basis.kweights if kweights is None else jnp.asarray(kweights, dtype=jnp.float64)
 
     def per_k(basis_k, c, f):
         psi = basis_k.to_grid(c)  # (*N, n_bands)
