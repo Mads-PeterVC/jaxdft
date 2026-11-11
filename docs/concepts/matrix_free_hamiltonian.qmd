@@ -745,13 +745,13 @@ for label, M in {
         X0.copy(),
         M=M,
         largest=False,
-        tol=1e-7,
+        tol=1e-6,
         maxiter=500,
         retResidualNormsHistory=True,
     )
     seconds = time.perf_counter() - start
     residuals = [np.abs(r[:n_bands]).max() for r in residual_history]
-    converged = 1 + next(i for i, x in enumerate(residuals) if x < 1e-7)  # <4>
+    converged = 1 + next(i for i, x in enumerate(residuals) if x < 1e-6)  # <4>
     runs[label] = {
         "eigenvalues": np.sort(eigenvalues)[:n_bands],
         "residuals": residuals[:converged],
