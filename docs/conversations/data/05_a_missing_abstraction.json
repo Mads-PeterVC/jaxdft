@@ -1,0 +1,291 @@
+{
+ "name": "05_a_missing_abstraction",
+ "session": "2b010b98-daf7-4625-b22b-cf01e4cadae3",
+ "lines": [
+  1772,
+  2089
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-06T16:46:22.823Z",
+   "text": "I looked at some of the code. \n\nI don't know if it will become relevant, but I think it should be addressed regardless: The mixing scheme is hardcoded, the class describes the parameters but not the method. I think this lacks an abstraction that is easy to make and shouldn't have any effects on performance. \n\nSo that AndersonMixing can be replaced with any mixing scheme."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:46:24.418Z",
+   "name": "Read",
+   "summary": "src/jaxdft/scf/scf.py"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:46:25.563Z",
+   "name": "Bash",
+   "summary": "Find mixing usages across the repo"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:46:29.857Z",
+   "name": "Bash",
+   "summary": "Show mixing, solver code and usages"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:46:43.940Z",
+   "name": "Bash",
+   "summary": "Inspect exports, API test, fixed-point tests, log"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:46:56.456Z",
+   "name": "Write",
+   "summary": "src/jaxdft/scf/mixing.py"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:06.917Z",
+   "name": "Bash",
+   "summary": "Make fixed_point call the mixer protocol"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T16:47:09.585Z",
+   "model": "claude-opus-5-5",
+   "text": "Refactor in place: `fixed_point` now calls a `Mixer` protocol (`init`, `update`) and `Anderson` implements it. Next I'll check that results are bitwise unchanged and add tests."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:15.477Z",
+   "name": "Bash",
+   "summary": "Compare fixed-point results before and after refactor"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T16:47:19.838Z",
+   "model": "claude-opus-5-5",
+   "text": "Results are bitwise identical before and after, both for iterates and for iteration counts. Now the tests:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:20.884Z",
+   "name": "Bash",
+   "summary": "Look at H2 test helpers and fixed-point tests"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:24.307Z",
+   "name": "Bash",
+   "summary": "Show run helper in SCF tests"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:26.429Z",
+   "name": "Bash",
+   "summary": "Locate run and converged_small helpers"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:42.235Z",
+   "name": "Bash",
+   "summary": "Add custom mixer and protocol tests"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:47:44.868Z",
+   "name": "Bash",
+   "summary": "Fix import and run mixing-related tests"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T16:47:57.992Z",
+   "model": "claude-opus-5-5",
+   "text": "The tests pass. Next, the engineering log entry and the full definition of done:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:48:05.563Z",
+   "name": "Bash",
+   "summary": "Add log entry and run definition of done"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T16:56:40.080Z",
+   "name": "Bash",
+   "summary": "Commit the mixer refactor"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T16:56:49.036Z",
+   "model": "claude-opus-5-5",
+   "text": "You were right: `fixed_point` contained the Anderson algorithm itself, and the `Anderson` class only held `depth` and `beta`. Mixing schemes can now be swapped without touching the solver. Results are bitwise unchanged, and the full definition of done passes (358 tests plus the render). It's committed on `milestone-2a` as `1ccf64e`.\n\n**What changed**\n- **New `Mixer` interface** in `src/jaxdft/scf/mixing.py`, with two methods:\n  - `init(x0) -> state` sets up whatever the mixer needs to remember.\n  - `update(state, x, r) -> (x_next, state)` is called once per iteration with the current input (after clip-and-renormalise) and its residual `F(x) − x`.\n- **The solver** (`src/jaxdft/scf/solve.py`) still does the evaluation, clip-and-renormalise, the norm and the stopping test. The mixer only proposes the next input.\n- **`Anderson` follows the interface** and now keeps its own history. With `depth=0` it stores nothing.\n- **`SCFOptions.mixer`** is typed as `Mixer`, so any mixing scheme can be passed in.\n\nTwo rules a new mixer has to follow:\n- Its state must keep the same array shapes every iteration, because it is carried through `lax.while_loop`.\n- The mixer must be hashable (for example a frozen dataclass), because it is a static `jit` argument.\n\n**Checks**\n- **Bitwise identity:** I ran the old and new code on the fixed-point test problems at depths 0, 3 and 6. Iterates and iteration counts are identical.\n- **New tests**, using a deliberately different mixer, `AdaptiveLinear` in `tests/support/mixers.py`. It is linear mixing whose step size adapts each iteration, so it keeps no history the way Anderson does. The tests check that:\n  - the solver converges with it;\n  - the mixer receives every input the solver evaluated, after clip-and-renormalise, with the correct residual;\n  - the H₂ SCF reaches the same energy and density with it as with Anderson.\n- **Existing tests:** none were changed.\n\n`AdaptiveLinear` lives in the tests, not the package, because nothing needs a second mixer yet. Kerker or Broyden mixing for silicon in 2b can now be added without changing the solver. I added an engineering-log entry, \"Mixing behind a protocol\", recording the reasoning."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T17:29:05.499Z",
+   "text": "Can you check if there are other places where such abstractions are missing? \n\nIf you find any propose them before changing any code."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T17:29:07.924Z",
+   "name": "Bash",
+   "summary": "List package source files by size"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T17:29:11.731Z",
+   "name": "Bash",
+   "summary": "Read Hamiltonian, XC, occupations and related modules"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T17:29:14.263Z",
+   "name": "Bash",
+   "summary": "Read local pseudopotential, Ewald and signatures"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T17:29:43.161Z",
+   "name": "Bash",
+   "summary": "Find duck-typing and name-based dispatch"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T17:29:45.055Z",
+   "name": "Bash",
+   "summary": "Find duck-typing and name-based dispatch"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T17:30:01.314Z",
+   "model": "claude-opus-5-5",
+   "text": "I found six more places where the code makes a fixed choice that should be swappable, like the mixer was. I haven't changed any code. I'd do the first three now and leave the other three for the milestones that need them.\n\n### Do now (small, results unchanged)\n\n**1. The SCF finds the ion-ion term by its class name.**\n- `scf.py:130` refuses to run unless some term's class is literally named `\"Ewald\"`. Any other ion-ion term, such as a truncated Coulomb for isolated molecules, would be rejected.\n- `_static_charges` (`scf.py:138`) assumes the ionic term has a `.pseudos` dictionary. `_ionic_terms` relies on `hasattr`/`getattr` checks.\n- Proposal: terms declare their role with explicit attributes, for example `provides_ion_ion = True` on `Ewald`, and `static_ionic_charges(structure)` on any term that carries ionic charges. The SCF checks those attributes, not class names or internal fields.\n\n**2. The eigensolver preconditioner is fixed inside the SCF, and the SCF reaches into a kinetic-energy class to build it.**\n- `scf.py:176–179` picks out `DiagonalTerm` (imported from `hamiltonian/kinetic.py`) with `isinstance`, and builds a fixed `1/(max(diag − ε, 0) + 1)` preconditioner. That is the kind of import-by-name CLAUDE.md calls a design smell.\n- Proposal:\n  - `Hamiltonian` gets a `diagonal()` method: the sum of the diagonals of terms that provide one.\n  - The preconditioner becomes an `SCFOptions` field, a callable built from that diagonal, with the current formula as the default.\n  - At the same time, make `tol` a required part of the eigensolver interface. That removes the `inspect.signature` check in `_accepts` (`scf.py:154`).\n\n**3. The initial density is fixed.**\n- `initial_density` (atomic Gaussians, with `initial_width` in `SCFOptions`) lives in `scf.py` and is the main reason it imports `grid_miller` and `nyquist_mask` from the basis. You can already pass `density0`, but you can't change the default method.\n- Proposal: an `SCFOptions.initial_density` callable `(structure, basis, charges) -> ρ`, with the Gaussians as the default, moved to `scf/density.py`. In 2b this lets a superposition of atomic densities from the pseudopotential file replace the Gaussians without editing the SCF.\n\n### Defer to the milestone that needs it\n\n**4. Occupations (smearing for metals).**\n- `aufbau_occupations` is called directly, and it runs once, before the SCF loop. The design therefore assumes occupations never depend on the eigenvalues. `min_gap` and `side` are also specific to aufbau filling.\n- A proper `Occupations` interface needs Fermi-level determination, an entropy term, and a statement of which quantity is variational (the free energy). That is physics for a theory post, and silicon in 2b is gapped.\n- Recommendation: introduce it with the first metal. If you want the change now, the cheap part is to move the occupation call inside the SCF map so it receives the eigenvalues. Results would not change.\n\n**5. k-point weights.**\n- `_run` (`scf.py:242`) fixes the weights at `1/n_k`, and the basis carries k-points but no weights. Symmetry-reduced k-point meshes in 2b need weights.\n- CLAUDE.md lists k-point generation as swappable, so a k-point set holding points and weights belongs in the 2b design rather than a refactor now.\n\n**6. The SCF is tied to plane waves.**\n- `_scf_core` uses `basis.mask`, `n_pad`, `fft_shape` and the FFT-grid norm directly. Making it independent of the basis (keeping LCAO possible) is a large change with no current user.\n- Items 2 and 3 remove the most visible dependencies. I'd stop there.\n\n### Considered but not worth it\n- **The fixed-point solver itself:** now that mixing is swappable, a second solver (e.g. Newton–Krylov) adds little.\n- **The convergence criterion:** a density-residual norm is standard.\n- **The energy breakdown keyed by class name** (`scf.py:104`): two terms of the same class would be merged into one entry. That is a labelling issue, not a missing abstraction; I could fix it alongside item 1.\n\nShould I go ahead with 1–3? Each would get tests showing that a replacement slots in and that results are bitwise unchanged, plus an engineering-log entry, as for the mixer."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T18:13:29.929Z",
+   "text": "Yes go ahead with those three."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:13:33.504Z",
+   "name": "Bash",
+   "summary": "Read Ewald term and find usages to change"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:13:59.360Z",
+   "model": "claude-opus-5-5",
+   "text": "First I'll record a baseline from the current code (SCF and forces), so I can check afterwards that results are bitwise unchanged:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:14:04.006Z",
+   "name": "Bash",
+   "summary": "Record pre-refactor SCF baseline"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:14:13.570Z",
+   "name": "Bash",
+   "summary": "Check related tests and solver signatures"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:14:15.740Z",
+   "model": "claude-opus-5-5",
+   "text": "Now the edits. Item 1 (term roles):"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:14:28.124Z",
+   "name": "Bash",
+   "summary": "Replace class-name checks with declared term roles"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:14:33.719Z",
+   "model": "claude-opus-5-5",
+   "text": "Item 2 (Hamiltonian diagonal, preconditioner option, `tol` required by the eigensolver interface):"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:14:48.710Z",
+   "name": "Bash",
+   "summary": "Add Hamiltonian.diagonal and swappable preconditioner"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:14:51.539Z",
+   "model": "claude-opus-5-5",
+   "text": "Item 3 (the initial density as an option), together with the new `SCFOptions` fields:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:02.641Z",
+   "name": "Bash",
+   "summary": "Make the initial density a swappable option"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:06.760Z",
+   "name": "Bash",
+   "summary": "Compare lint baseline and check SCF bitwise"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:19.593Z",
+   "name": "Bash",
+   "summary": "Diff lint findings before and after"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:22.082Z",
+   "name": "Bash",
+   "summary": "Fix import sorting in scf.py"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:15:29.244Z",
+   "model": "claude-opus-5-5",
+   "text": "Now the tests for the three extension points:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:48.640Z",
+   "name": "Write",
+   "summary": "tests/unit/test_scf_extension_points.py"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:15:50.032Z",
+   "name": "Bash",
+   "summary": "Run the new extension-point tests"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:16:02.060Z",
+   "model": "claude-opus-5-5",
+   "text": "All 8 pass. Next I'll update the `scf.py` module docstring, add the log entry, and run the full definition of done:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:16:15.983Z",
+   "name": "Bash",
+   "summary": "Update docstring, log, and run definition of done"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T18:25:10.211Z",
+   "name": "Bash",
+   "summary": "Commit the SCF extension points"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T18:25:19.126Z",
+   "model": "claude-opus-5-5",
+   "text": "All three changes are in and results are bitwise unchanged. I checked a distorted H₂ (L = 8 Bohr, 6 Ha) before and after: energy, density, eigenvalues, iteration count, forces from `jax.grad(energy)` and a dense-eigensolver run all match exactly. The definition of done passes (366 tests plus the render). The work is committed on `milestone-2a` as `e7429b4`.\n\n**1. Terms are found by the role they declare, not by class name**\n- `Ewald` sets `ion_ion = True`, and `AtomicLocal` gains `static_ionic_charges(structure)`.\n- The SCF now looks for these roles, which are written down in `hamiltonian/energy_terms.py`. It no longer checks for a class named `\"Ewald\"` or reads a `.pseudos` field.\n- The error for a missing ion-ion term now says \"no ion-ion term (e.g. Ewald)\".\n\n**2. The preconditioner is an option**\n- `Hamiltonian.diagonal()` sums the diagonals that the prepared terms provide, which here is the kinetic energy. That replaces the SCF's `isinstance` check on `DiagonalTerm`.\n- The old formula is now `diagonal_preconditioner` in the new file `hamiltonian/preconditioners.py`. It is the default of `SCFOptions.preconditioner`; `None` turns preconditioning off.\n- `tol` is now part of the eigensolver interface, so the `inspect.signature` check is gone. `dense_eigensolver` accepts it and ignores it.\n\n**3. The initial density is an option**\n- `SCFOptions.initial_density` takes `(structure, basis, charges) -> ρ`. The default is `AtomicGaussians(width=0.8)` in `scf/density.py`, the same Gaussians as before.\n- **This breaks the API:** `SCFOptions.initial_width` no longer exists. Write `initial_density=AtomicGaussians(width)` instead. Nothing in the repo used it.\n\n`scf.py` no longer imports grid helpers from the basis, or anything from the kinetic module.\n\n**Tests** are in `tests/unit/test_scf_extension_points.py`:\n- Stand-in terms with different class names and no `pseudos` field give bitwise-identical SCF energy, density and forces. Leaving out the ion-ion term raises an error.\n- `Hamiltonian.diagonal()` equals the diagonal of the dense matrix.\n- A user-supplied preconditioner is actually used. With `preconditioner=None` the SCF reaches the same ground state.\n- A user-supplied initial density gives exactly the same result as passing that density as `density0`. `AtomicGaussians` integrates to the electron count.\n\nThe engineering-log entry \"SCF extension points\" records this and the three items left for later: occupations, k-point weights and a basis-independent SCF. The energy breakdown is still keyed by class name, so two terms of the same class share one entry; I didn't change that."
+  }
+ ]
+}

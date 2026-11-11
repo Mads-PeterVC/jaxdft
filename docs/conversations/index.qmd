@@ -1,0 +1,26 @@
+---
+title: "Conversations"
+listing:
+  contents: "*.qmd"
+  sort: "filename"
+  type: table
+  fields: [date, title, description]
+---
+
+jaxdft is developed in conversation between Mads-Peter and Claude, in
+[Claude Code](https://claude.com/claude-code). These pages show a few excerpts
+of those conversations, chosen to show the different ways the work goes:
+starting a milestone, settling an interface, learning the physics, testing a
+speculative idea, and reviewing code.
+
+The excerpts are taken from the session logs and are not edited. Messages
+appear as they were written, typing errors included. Three things are left out
+or shortened:
+
+- **Tool calls** (commands, file edits, searches) are folded into a block
+  between the messages, with one line per call. Their output is not shown.
+- **The model's private reasoning** between messages is not shown.
+- **Paths on the development machine** are shortened.
+
+Each page starts with a short note on where the excerpt sits in the project
+and what came of it.

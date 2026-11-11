@@ -25,7 +25,7 @@ from jaxdft import (
 )
 from jaxdft.analysis.bands import band_minimum_on_segment
 from jaxdft.analysis.symmetry import group_levels, inversion_parities
-from jaxdft.plotting import style
+from jaxdft.plotting import featured, style
 from jaxdft.pseudo.cohen_bergstresser import silicon
 from jaxdft.units import convert
 
@@ -189,9 +189,8 @@ mark_layer = (
         ],
     )
 )
-(line_layer + mark_layer).properties(
-    width=style.WIDTH, height=style.HEIGHT
-).interactive()
+band_chart = line_layer + mark_layer
+band_chart.properties(width=style.WIDTH, height=style.HEIGHT).interactive()
 ```
 
 Points mark the four levels that Table I gives directly relative to the
@@ -222,6 +221,18 @@ for r in table["splittings"]:
 assert all(row["within"] for row in rows)
 worst = max(
     table["splittings"], key=lambda r: abs(ours[r["id"]] - r["calculated"])
+)
+featured.publish(
+    band_chart,
+    "1b",
+    caption="Silicon bands from the Cohen–Bergstresser pseudopotential "
+    "(lines) with the levels published in 1966 (points).",
+    headline=[
+        (
+            "largest deviation from the paper's Table I",
+            f"{abs(ours[worst['id']] - worst['calculated']):.3f} eV",
+        )
+    ],
 )
 pd.DataFrame(rows).style.hide(axis="index")
 ```

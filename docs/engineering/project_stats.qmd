@@ -1,0 +1,262 @@
+---
+title: "Project statistics"
+description: "Commits, lines of code and co-authorship over time, with the milestones marked."
+---
+
+```{python}
+#| echo: false
+import subprocess
+from pathlib import Path
+
+import altair as alt
+import pandas as pd
+import yaml
+
+from jaxdft.plotting import featured, style
+
+style.enable()
+
+ROOT = Path("../..")
+CATEGORIES = {
+    "package (src/)": "src/*.py",
+    "tests": "tests/*.py",
+    "documents (docs/)": "docs/*.qmd",
+}
+SEP = "\x1f"
+
+
+def git(*args, ok=(0,)):
+    done = subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, text=True
+    )
+    if done.returncode not in ok:
+        raise RuntimeError(done.stderr)
+    return done.stdout
+
+
+def have_full_history():
+    try:
+        return git("rev-parse", "--is-shallow-repository").strip() == "false"
+    except (RuntimeError, FileNotFoundError):
+        return False
+
+
+def count(sha, pattern, pathspec):
+    """Lines matching `pattern` in the files of `pathspec` at commit `sha`."""
+    out = git("grep", "-c", "-E", pattern, sha, "--", pathspec, ok=(0, 1))
+    return sum(int(line.rsplit(":", 1)[1]) for line in out.splitlines())
+
+
+def co_author(trailer):
+    """The co-author's name, without the e-mail address."""
+    return trailer.split("<")[0].strip() if trailer.strip() else "none"
+
+
+def utc(when):
+    return pd.Timestamp(when).tz_convert("UTC").tz_localize(None)
+
+
+def days_since(start, when):
+    """Elapsed time from `start` to `when`, in days."""
+    return (when - start) / pd.Timedelta(days=1)
+
+
+def history():
+    fmt = SEP.join([
+        "%H",
+        "%aI",
+        "%(trailers:key=Co-Authored-By,valueonly,separator=;)",
+    ])
+    rows = []
+    for line in git(
+        "log", "--date-order", "--reverse", f"--format={fmt}"
+    ).splitlines():
+        sha, when, trailer = line.split(SEP)
+        row = {
+            "sha": sha[:7],
+            "time": utc(when),
+            "co-author": co_author(trailer),
+        }
+        for name, pathspec in CATEGORIES.items():
+            row[name] = count(sha, "", pathspec)
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    df["commits"] = range(1, len(df) + 1)
+    df["day"] = days_since(df["time"].iloc[0], df["time"])
+    return df
+
+
+FULL = have_full_history()
+commits = history() if FULL else None
+milestones = [
+    {
+        "label": m["id"],
+        "day": days_since(commits["time"].iloc[0], utc(m["reached"])),
+    }
+    for m in yaml.safe_load(Path("../milestones.yml").read_text())
+    if FULL and m["status"] == "done"
+]
+
+
+def with_milestones(chart):
+    """`chart` with a labelled vertical rule at every completed milestone."""
+    marks = pd.DataFrame(milestones)
+    marks["offset"] = [
+        14 * (i % 3) for i in range(len(marks))
+    ]  # px, no overlap
+    rule = (
+        alt
+        .Chart(marks)
+        .mark_rule(color=style.TEXT_SECONDARY, strokeDash=[4, 3])
+        .encode(x="day:Q")
+    )
+    text = (
+        alt
+        .Chart(marks)
+        .mark_text(
+            align="left", dx=4, baseline="top", color=style.TEXT_SECONDARY
+        )
+        .encode(x="day:Q", y=alt.Y("offset:Q", scale=None), text="label:N")
+    )
+    return (
+        (chart + rule + text)
+        .resolve_scale(y="independent")
+        .properties(width=style.WIDTH, height=300)
+    )
+
+
+DAY = alt.X(
+    "day:Q", title="Days since the first commit", axis=alt.Axis(tickMinStep=1)
+)
+```
+
+This page shows the effort behind the project in numbers. Everything is
+computed from the git history when the site is built. The dashed lines mark
+when each milestone was reached. They come from `docs/milestones.yml`, the
+same file that drives the [front page](../index.qmd).
+
+```{python}
+#| echo: false
+#| output: asis
+if not FULL:
+    print(
+        "::: {.callout-warning}\n"
+        "## History not available\n"
+        "This site was built from a shallow clone or outside a git "
+        "repository, so the statistics below could not be computed. Build "
+        "from a full clone (`git fetch --unshallow`) to see them.\n"
+        ":::"
+    )
+```
+
+```{python}
+#| echo: false
+if FULL:
+    last = commits.iloc[-1]
+    co_authored = int((commits["co-author"] != "none").sum())
+    # The interpretation below relies on these.
+    assert len(commits) > 0 and last["package (src/)"] > 0
+    featured.publish_numbers(
+        "project_stats",
+        {
+            "strip": [
+                {"value": len(commits), "label": "commits"},
+                {
+                    "value": f"{int(last['package (src/)']):,}",
+                    "label": "lines in the package",
+                },
+                {
+                    "value": f"{int(last['tests']):,}",
+                    "label": "lines of tests",
+                },
+            ]
+        },
+    )
+    summary = pd.DataFrame([
+        {"quantity": "commits", "value": f"{len(commits)}"},
+        {
+            "quantity": "commits co-authored by an AI model",
+            "value": f"{co_authored} ({co_authored / len(commits):.0%})",
+        },
+        *[
+            {"quantity": f"lines, {name}", "value": f"{int(last[name]):,}"}
+            for name in CATEGORIES
+        ],
+    ])
+summary.style.hide(axis="index") if FULL else None
+```
+
+Lines are counted as they are in the files, including blank lines and
+comments.
+
+## Lines of code
+
+Each milestone's acceptance tests are committed before its implementation, so
+the test lines rise before the package lines do.
+
+```{python}
+#| column: page-inset
+#| echo: false
+if FULL:
+    loc = commits.melt(
+        id_vars=["day", "sha"],
+        value_vars=list(CATEGORIES),
+        var_name="category",
+        value_name="lines",
+    )
+    loc_chart = with_milestones(
+        alt
+        .Chart(loc)
+        .mark_line(interpolate="step-after")
+        .encode(
+            x=DAY,
+            y=alt.Y("lines:Q", title="Lines"),
+            color=alt.Color(
+                "category:N",
+                title=None,
+                scale=alt.Scale(
+                    domain=list(CATEGORIES), range=list(style.SERIES[:3])
+                ),
+            ),
+            tooltip=["sha:N", "category:N", "lines:Q"],
+        )
+    )
+loc_chart if FULL else None
+```
+
+## Commits and co-authorship
+
+```{python}
+#| column: page-inset
+#| echo: false
+if FULL:
+    authors = sorted(commits["co-author"].unique())
+    by_author = pd.concat([
+        commits.assign(n=(commits["co-author"] == name).cumsum()).assign(**{
+            "co-author": name
+        })[["day", "sha", "co-author", "n"]]
+        for name in authors
+    ])
+    assert len(authors) <= len(style.SERIES)
+    commit_chart = with_milestones(
+        alt
+        .Chart(by_author)
+        .mark_line(interpolate="step-after")
+        .encode(
+            x=DAY,
+            y=alt.Y("n:Q", title="Cumulative commits"),
+            color=alt.Color(
+                "co-author:N",
+                title="Co-author trailer",
+                scale=alt.Scale(
+                    domain=authors, range=list(style.SERIES[: len(authors)])
+                ),
+            ),
+            tooltip=["sha:N", "co-author:N", "n:Q"],
+        )
+    )
+commit_chart if FULL else None
+```
+
+A commit is counted for a co-author when its message carries a
+`Co-Authored-By` trailer naming them. "none" means no trailer.

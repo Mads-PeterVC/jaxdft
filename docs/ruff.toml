@@ -3,7 +3,7 @@
 # Quarto's ```{python} fences and leaves `#|` cell options alone.
 line-length = 80
 extend-include = ["*.qmd"]
-extend-exclude = ["_site", ".quarto"]
+extend-exclude = ["_site", ".quarto", "_results"]
 
 [extension]
 qmd = "markdown"

@@ -1,0 +1,29 @@
+---
+title: "A question that was too abstract"
+date: 2026-11-05
+description: "Asked to choose a pseudopotential interface, Mads-Peter stops the question round, unable to foresee what the options lead to. Claude explains the physics behind them instead."
+# The excerpt is inserted after pandoc has run, so pandoc sees no math on this
+# page and would not load MathJax.
+include-in-header:
+  text: |
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-chtml.js"></script>
+---
+
+The API questions for Milestone 1b, Cohen–Bergstresser silicon. In the third
+round Claude asks whether the pseudopotential interface should follow the
+wording `CLAUDE.md` then had, a callable returning both a local and a nonlocal
+part. Mads-Peter leaves the round unanswered and says why: the consequences of
+either choice are not foreseeable from the question.
+
+The reply is the explanation that should have come with the question: what the
+two parts of a pseudopotential are, why they cannot share one signature, and
+what each option would cost later. The decision then takes one line.
+
+What came of it: the pseudopotential paragraph in `CLAUDE.md` was rewritten
+to describe the interface chosen here, and Claude now explains the consequences
+of each option before asking an API question. The physics is in the
+[1b theory post](../theory/01b_cohen_bergstresser.qmd).
+
+```{=html}
+<div class="transcript" data-excerpt="02_a_question_too_abstract"></div><!--/transcript-->
+```

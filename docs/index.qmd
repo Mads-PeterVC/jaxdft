@@ -1,5 +1,6 @@
 ---
 title: "jaxdft"
+toc: false
 ---
 
 A GPU-first plane-wave density functional theory code written in
@@ -9,6 +10,29 @@ The project has two goals, in this order: to explore building a substantial
 scientific code through agentic development, and to produce real, verifiable
 physics along the way. Correctness, clarity and sound architecture matter more
 than feature count or peak performance.
+
+## How each milestone is built
+
+Every milestone goes through the same steps, and none is skipped:
+
+1. A **theory post** states the physics, the conventions and the acceptance
+   criteria.
+2. The theory post is **reviewed** before any code is written.
+3. The acceptance criteria become **failing tests**, with reference data.
+4. The **implementation** is written until those tests pass. The tests are
+   not changed to fit it.
+5. A **validation document** compares the results with analytic limits,
+   published numbers and reference codes, and interprets the deviations.
+
+The figures and numbers below are computed by the validation documents each
+time the site is built. A document that no longer agrees with the code fails
+the build.
+
+## Milestones
+
+```{=html}
+<div id="milestone-ladder"></div><!--/milestone-ladder-->
+```
 
 ## Sections
 
@@ -20,14 +44,12 @@ than feature count or peak performance.
   model problems.
 - [Validation](validation/index.qmd): comparisons against analytic limits,
   published results and reference codes, with interpretation.
-- [Engineering](engineering/index.qmd): the engineering log and performance
-  tracking.
+- [Engineering](engineering/index.qmd): the engineering log, performance
+  tracking and project statistics.
 - [Research](research/index.qmd): the research log of physical results.
+- [Conversations](conversations/index.qmd): excerpts of the conversations
+  with Claude in which the project is developed.
 
-## Milestones
-
-| Milestone | Scope | Status |
-|-----------|-------|--------|
-| Step 0 | Package, environment, tests, docs, double precision | Done |
-| 1a | Empty-lattice band structure, fcc | Done: implemented and validated |
-| 1b | Cohen–Bergstresser empirical pseudopotential silicon | Done: implemented and validated |
+```{=html}
+<div id="effort-strip"></div><!--/effort-strip-->
+```

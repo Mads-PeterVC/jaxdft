@@ -1,0 +1,25 @@
+---
+title: "Starting from CLAUDE.md"
+date: 2026-11-05
+description: "The first hour of the project: Step 0, the first theory post, an outside review, and six rounds of API questions before any physics is written."
+---
+
+The first session of the project. The repository held `CLAUDE.md` and an
+empty package skeleton, and the first message asks Claude to work out from
+that file what to do next.
+
+The excerpt runs for about an hour and shows the milestone workflow being
+followed for the first time: Claude finishes Step 0 and stops at a theory post;
+the post is reviewed by Mads-Peter and by a second model outside the session;
+Claude checks the review's numbers before acting on it; and the API is settled
+through rounds of questions before the acceptance tests are written. It ends
+with the tests committed and failing, because the package they test does not
+exist yet.
+
+What came of it: the [theory post](../theory/01a_empty_lattice.qmd) and, later
+the same morning, the [validation](../validation/01a_empty_lattice.qmd) of
+Milestone 1a.
+
+```{=html}
+<div class="transcript" data-excerpt="01_starting_from_claude_md"></div><!--/transcript-->
+```

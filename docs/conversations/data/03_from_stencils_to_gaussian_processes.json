@@ -1,0 +1,606 @@
+{
+ "name": "03_from_stencils_to_gaussian_processes",
+ "session": "9bf31771-0cd0-4482-bf4f-dbb6a347fb08",
+ "lines": [
+  3694,
+  4344
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-05T20:04:19.837Z",
+   "text": "I'm reading the post, and it makes sense so far. \n\nOne question: So a plane-wave code always works in matrix-free form, does a LCAO code use dense matrices because they use relatively few basis functions?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-05T20:04:45.855Z",
+   "model": "claude-opus-5-5",
+   "text": "Mostly yes. A small basis is part of the reason, but the bigger one is what fraction of the eigenvectors you need.\n\n**Why dense suits LCAO**\n\n- **The basis is small.** LCAO uses roughly 10–30 functions per atom, against hundreds to thousands of plane waves per atom. So N stays small enough to store H, and LCAO codes diagonalise it with dense, distributed solvers such as ScaLAPACK or ELPA. GPAW's LCAO mode and SIESTA, for example, both work this way.\n- **You need a large fraction of the eigenvectors.** With a compact basis, the occupied bands are something like a fifth to a third of N. In a plane-wave calculation they are a tiny fraction: for the silicon cell in the post it's 8 bands out of 749. Iterative solvers pay off when you want a few eigenvectors of a huge matrix. When you want a third of them, dense diagonalisation is the natural tool.\n- **H·ψ has no cheap shortcut.** The plane-wave route relies on the kinetic energy being diagonal and the potential being a convolution, so one FFT pair applies H. Atomic orbitals have no equivalent.\n\n**Two complications**\n\n- **The basis is not orthogonal.** Neighbouring atomic orbitals overlap, so LCAO solves the generalised problem H c = ε S c, with an overlap matrix S.\n- **Large systems use sparsity, not just dense matrices.** Localised orbitals on distant atoms don't overlap, so H and S are sparse, and LCAO codes exploit that.\n  - SIESTA stores sparse matrices and only densifies them to diagonalise.\n  - CP2K keeps everything in sparse block matrices and can avoid diagonalisation altogether, by minimising the energy directly.\n  - Linear-scaling (O(N)) methods work with the sparse density matrix instead of eigenvectors.\n\n  So past a few thousand atoms, LCAO codes also stop being \"just dense\". The structure they use is locality in real space, where plane-wave codes use the convolution.\n\n**What this means for jaxdft**\n\n`CLAUDE.md` asks to keep LCAO possible later, and the current design half-supports it.\n\n- **What already fits:** `dense_matrix` is built from the operator, so an LCAO term could still provide `apply`, and the dense path would work unchanged.\n- **What doesn't fit yet:** `dense_eigensolver` assumes an orthonormal basis and calls plain `eigh`. LCAO needs the overlap S as well, and a solver that takes it into account.\n\nNothing needs to change now. But when we write the solver interface for LOBPCG, it's cheap to let it accept an optional overlap operator. LOBPCG handles H x = ε S x natively, and the ultrasoft/PAW pseudopotentials from the first post need the same generalised form.\n\nI can add a short aside along these lines at the end of the matrix-free post, if it's worth having there."
+  },
+  {
+   "kind": "compaction",
+   "time": "2026-11-05T20:59:30.281Z"
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:22:27.976Z",
+   "text": "The \"Gather\"-approach is analogous to a graph calculations where where V is non-zero decides the neighbourhood / adjaceny matrix / sender-receivers"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:22:38.212Z",
+   "name": "Bash",
+   "summary": "Look at how the gather term indexes couplings"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:22:40.563Z",
+   "name": "Bash",
+   "summary": "Read the prepared-term apply and neighbour setup"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:22:57.094Z",
+   "model": "claude-opus-5-5",
+   "text": "Yes, that's exactly the structure. jaxdft's gather term is a message-passing layer, and you can read it straight off `src/jaxdft/hamiltonian/local.py:51`:\n\n| Graph language | Gather term |\n|---|---|\n| Nodes | Plane waves **G** in the basis (`n_pad` of them, padding included) |\n| Edges | Pairs (**G**, **G** − **d**_k) for each coupling vector with Ṽ(**d**_k) ≠ 0 |\n| Adjacency / senders | `neighbours` (n_pad, K): for each receiver, the index of each sender |\n| Edge mask | `present`: the sender is missing when **G** − **d**_k lies outside the cutoff sphere |\n| Edge weight | `values[k]` = Ṽ(**d**_k) |\n| Node features | ψ(**G**), with the bands as channels |\n| Aggregation | Sum (the `einsum`), with no nonlinearity |\n\nIt is the padded fixed-degree neighbour-list format, like JAX-MD's dense neighbour lists, rather than jraph's flat senders/receivers arrays. Every node has the same K = 44 edge slots, and the mask handles nodes near the edge of the sphere.\n\n**What makes this graph special.** An edge's weight depends only on its type, the difference **G** − **G**′, not on which node it is at. Every node uses the same 44 weights. So this is a graph convolution with fully shared weights on a lattice graph, which is just an ordinary convolution, like a CNN kernel. That is what lets the FFT method work:\n\n- On a translation-invariant lattice graph, the graph Fourier basis is the ordinary Fourier basis. Diagonalising the \"adjacency\" means going to real space, where the convolution becomes the pointwise product V(r)ψ(r).\n- A general GNN has no such shortcut. Its weights depend on the nodes (or the graph is irregular), so it has to pass messages edge by edge.\n\n**The aliasing section in the same language.** An FFT grid that is too small is a convolution on a torus. The wrap-around adds spurious edges: node **G** receives a message from **G** − **d** taken modulo the grid. The 4n+1 condition is the grid size at which no wrapped edge lands back inside the basis.\n\n**Where the analogy stops.** It covers the local potential and nothing else:\n\n- The kinetic energy is a self-loop on each node.\n- The nonlocal Kleinman–Bylander term in the next milestone is low-rank: a few projectors coupling every **G** to every other. That is closer to a global readout than to local message passing.\n- XC is nonlinear and acts pointwise in real space, not as a fixed kernel in **G**.\n\nIf you think it would help other readers too, I can add this as a short aside in the gather section of the post."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:25:56.644Z",
+   "text": "No, I think it won't help the general reader - just an analogy to an area I myself am more comfortable in. \n\nSo we've discussed PW and LCAO codes, the other main type are real space codes: What do they typically do?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:26:17.437Z",
+   "model": "claude-opus-5-5",
+   "text": "Real-space codes store the wavefunction as values on a grid of points, or on a mesh, instead of as coefficients of basis functions. They are matrix-free too, but for a different reason than plane-wave codes: every operator is short-ranged in real space.\n\n**How they apply H**\n\n- **Kinetic energy:** a finite-difference stencil for the Laplacian, typically 6th to 12th order. That means each point couples to about 4–6 neighbours along each axis. Your graph view fits this exactly: message passing on a grid graph, with a fixed small degree and shared weights.\n- **Local potential:** diagonal on the grid, just V(r)ψ(r). No FFT is needed.\n- **Nonlocal projectors:** each lives inside a small sphere around its atom, so it touches only the grid points in that sphere.\n- **Cost:** each H·ψ costs O(N) with a small constant, against O(N log N) for plane waves.\n\n**How they solve the rest**\n\n- **Eigensolver:** always iterative. Common choices are Davidson, RMM-DIIS, LOBPCG, and Chebyshev-filtered subspace iteration (used in PARSEC, SPARC and DFT-FE).\n- **Hartree potential:** the Poisson equation is solved on the grid with multigrid or conjugate gradients, not FFTs.\n\n**Representative codes**\n\n| Discretisation | Codes |\n|---|---|\n| Finite differences | Octopus, PARSEC, SPARC, RMG, GPAW's FD mode |\n| Finite elements | DFT-FE |\n| Wavelets | BigDFT |\n| Adaptive multiresolution | MADNESS |\n\n**Why people choose real space**\n\n- **Boundary conditions:** molecules, surfaces, charged systems and applied fields are natural. Plane waves force periodicity on everything, so isolated systems need vacuum padding and corrections.\n- **Parallel scaling:** you split the grid into domains. Each step then needs only halo exchanges with neighbouring domains. A 3D FFT needs all-to-all communication, which is what limits plane-wave codes at large scale.\n- **Adaptivity:** finite elements, wavelets and multiresolution grids can refine near the nuclei. That makes some all-electron calculations feasible (DFT-FE, MADNESS).\n\n**What they give up**\n\n- **The egg-box effect:** the grid breaks translation invariance. The energy changes slightly when you move an atom relative to the grid points, which makes forces and phonons noisy unless the grid is fine.\n- **Variationality:** a finite-difference grid is not a basis, so the energy is not guaranteed to fall as the spacing shrinks. Finite elements and wavelets are true bases and keep this property.\n- **Control:** convergence is set by the grid spacing h, roughly like a plane-wave cutoff with E_cut ~ ½(π/h)². Plane waves give you one clean, systematic knob for convergence. A real-space grid offers no equally clean one.\n\n**What this means for jaxdft**\n\nTwo things in `CLAUDE.md` assume plane waves:\n\n- \"The total energy decreases monotonically with increasing cutoff\" holds for plane waves. A finite-difference backend would break it.\n- So does exact translation invariance, and with it clean forces from `jax.grad`.\n\nOtherwise the architecture carries over:\n\n- The operator interface (`apply_H` built from terms) is exactly what a real-space code needs.\n- The next milestone's FFT local term already multiplies by V(r) on a real-space grid.\n- A real-space mode would mostly be a new basis object and a different kinetic term."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:28:45.539Z",
+   "text": "So I have a lot of experience with Guassian Process regression, are there any DFT codes that use kriging?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:29:09.671Z",
+   "model": "claude-opus-5-5",
+   "text": "To my knowledge, no DFT code uses kriging to solve the electronic structure itself. Nobody represents the wavefunctions or the density as a GP posterior inside the SCF loop. GPs are used heavily one level up, though, and you probably know some of these codes already.\n\n**Surrogates for the potential energy surface.** These are the main uses. They are fit to DFT energies and forces, usually treating the forces as derivative observations.\n- **Force fields:** GAP/SOAP (Bartók and Csányi), FLARE (Kozinsky's group, with on-the-fly active learning driven by the GP variance), and VASP's on-the-fly machine-learned force field (Jinnouchi and Kresse, a Bayesian kernel model).\n- **Optimisation and search:** GPMin in ASE (geometry optimisation), GP-accelerated NEB (Jónsson's group, CatLearn), and global structure search with GP surrogates and acquisition functions: GOFEE and BEACON in AGOX, from Hammer's group in Aarhus.\n\n**Learning electronic quantities.**\n- **Densities:** SALTED (Grisafi and Ceriotti) predicts electron densities with kernel regression in an auxiliary basis. A predicted density can then start, or replace, an SCF.\n- **Functionals:** Snyder, Rupp, Hansen, Müller and Burke (2012) used kernel ridge regression to learn the kinetic-energy functional for orbital-free DFT. This is the closest anyone has come to putting kriging inside the functional.\n\n**A loose structural echo inside ordinary codes.** Density fitting, or resolution of the identity, in Gaussian-basis codes approximates the density by a combination of auxiliary Gaussians. It picks the coefficients by least squares in the Coulomb metric. That is a projection in a Hilbert space defined by a kernel, here 1/|r − r′|, which is formally close to a GP posterior mean with the Coulomb operator as the kernel. Nobody frames it that way, though, and it has no predictive variance.\n\n**Why kriging isn't used as the discretisation.** A GP is an interpolator for scattered, noisy observations of an unknown function. In the eigenproblem you don't observe ψ. It is defined implicitly by H, and you need a basis in which you can apply H cheaply, ideally with variational guarantees.\n- **Plane waves** give a cheap apply through FFTs.\n- **Grids** give one through stencils.\n- **Gaussians** give one because the integrals are analytic.\n- **A kernel expansion** centred on scattered points gives none of these cheaply. It amounts to a meshless collocation method, which exists in the numerical-PDE literature but not in production DFT.\n\n**Where this connects to jaxdft.** The `CLAUDE.md` ambitions make jaxdft a good oracle for exactly the GP workflows above:\n- the energy is differentiable, and forces and stress come from `jax.grad`, so the GP gets cheap derivative observations;\n- Hessian-vector products would give curvature information;\n- the per-atom weights λ give dE/dλ, which is the kind of gradient BEACON-style searches with continuous atom existence use."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:31:58.099Z",
+   "text": "But can't you replace stencils with interpolation (I mean in some sense stencils already make some assumption about how the continous quantity behaves between samples, so they are a type of interpolation)"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:32:22.534Z",
+   "model": "claude-opus-5-5",
+   "text": "Yes. A finite-difference stencil is exactly that: the derivative of an interpolant.\n\n**Stencils are interpolation.** The standard central stencil of order 2p is what you get by fitting a polynomial through 2p+1 neighbouring samples and differentiating it at the centre. Fornberg's algorithm computes the weights this way. So the assumption is \"locally, ψ looks like a polynomial of degree 2p.\"\n\n**Plane waves are the other end of the same family.** Widen the stencil to the whole periodic grid and the polynomial interpolant becomes a trigonometric one. Its derivative is the spectral (Fourier) derivative. In other words:\n\n- Finite differences assume ψ is locally polynomial.\n- Plane waves assume ψ is band-limited, meaning nothing above G_max.\n\nIn your language: a GP with a stationary periodic kernel whose spectral density is flat up to G_max and zero beyond. Sampled at or above Nyquist, the posterior mean is exact trigonometric interpolation with zero posterior variance. That is the sampling theorem, and it is what the plane-wave cutoff asserts.\n\n**Kernel interpolation as a stencil also exists.**\n\n- **RBF-FD:** stencil weights are derived from radial-basis-function interpolation on scattered nodes instead of polynomials (Fornberg and Flyer). It is used in geosciences. A GP posterior-mean derivative with the same kernel gives the same weights.\n- **Kansa / Hermite collocation:** global kernel collocation for PDEs.\n- **Probabilistic numerics:** treats the PDE solve as GP inference, which adds error bars on the discretisation. Examples include Owhadi's gamblets, Cockayne et al., and Chen, Hosseini, Owhadi and Stuart (2021) for nonlinear PDEs.\n- **DVR / Lagrange-mesh methods** in chemical physics (Baye; sinc-DVR): grid methods where the interpolating functions are chosen so that the matrices come out simple. They are the closest established relative in quantum mechanics.\n\nSo the idea is sound and has literature behind it. As far as I know, no production DFT code uses kernel-based stencils.\n\n**Why it hasn't caught on in DFT:**\n\n1. **Hermiticity.** On scattered nodes, an interpolation-derived differentiation matrix is generally not symmetric. You get a non-Hermitian H, possibly complex spurious eigenvalues, and no variational principle. For an eigenproblem that is serious. A boundary-value solve tolerates it better. The fix is to go Galerkin (use the kernels as a basis and compute integrals), and then you are back to an LCAO-like method with an overlap matrix.\n2. **The main payoff is gone.** Scattered nodes are attractive mainly for adaptivity: dense nodes near the nuclei, sparse ones in vacuum. Pseudopotentials have already removed most of the need for that. On a uniform grid, a kernel-derived stencil essentially reproduces polynomial finite differences or spectral differentiation, depending on the kernel.\n3. **The prior is already known.** For pseudo-wavefunctions, \"smooth, band-limited above some G\" is the physically right prior, so plane waves already use the correct kernel.\n\nOne piece of the GP view does carry real value: the posterior variance. A cheap estimate of discretisation error per configuration is something DFT codes lack. They use cutoff convergence tests instead. The egg-box effect from the real-space discussion is also an interpolation error between grid points, which this view would quantify. That is a research idea rather than something jaxdft needs now, but the plane-wave case at least has a clean statement of what the prior is."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:36:52.867Z",
+   "text": "Can you provide an example of how a real space code finds an eigenvalue? \n\nLike what actually needs to be constructed?"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:37:06.449Z",
+   "name": "Bash",
+   "summary": "Run a small real-space finite-difference eigensolver demo"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:37:11.199Z",
+   "name": "Bash",
+   "summary": "Fix the preconditioner and rerun the demo"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:37:31.642Z",
+   "model": "claude-opus-5-5",
+   "text": "Here is a minimal real-space eigensolver that I ran. It is the 3D harmonic oscillator on a finite-difference grid, chosen because its exact levels are known: 1.5, 2.5 (three-fold degenerate) and 3.5 (six-fold).\n\n```\nN = 110592 grid points, h = 0.250 Bohr, dense H would be 98 GB\neigenvalues: [1.5  2.499999 ×3  3.499996–3.499998 ×6]\ntime 5.9 s\n```\n\nIt found the 10 lowest states in 6 s on the laptop, without ever forming H. scipy warned that one residual ended at 1.3×10⁻⁶, just above the requested 10⁻⁶. The eigenvalues are still correct to about 4×10⁻⁶ Ha.\n\nThe script is `/tmp/scratchpad/rs/rs.py`.\n\n**What has to be constructed**\n\n1. **A grid.** A box of 48³ points with spacing h = 0.25 Bohr. The unknowns are just ψ at those points, a vector of length N. In this example ψ = 0 outside the box, which is the isolated-system boundary condition. A crystal would instead use periodic wrap-around, or Bloch phases for k ≠ 0.\n2. **The potential sampled on the grid.** `V[i,j,k]`, one array of N numbers. It acts on ψ by pointwise multiplication.\n3. **Stencil weights.** Five numbers for an 8th-order second derivative: −205/72, 8/5, −1/5, 8/315, −1/560, divided by h². The Laplacian is shifted copies of ψ along each axis, weighted and summed. That is the whole kinetic operator.\n4. **An `apply_H` function.** It returns −½·(stencil applied to ψ) + V·ψ for a block of trial vectors. This is the only thing the eigensolver ever asks for.\n5. **A preconditioner.** An approximate inverse of (H − shift). The demo uses the crudest version, dividing by the diagonal of H. Real codes use a few multigrid cycles on the kinetic operator, playing the role of the 1/(T+1) preconditioner in the plane-wave post.\n6. **Starting vectors.** Here, 10 random vectors. Real codes start from atomic orbitals or the previous SCF step.\n7. **An iterative eigensolver.** LOBPCG, the same algorithm as in the matrix-free post. Its only dense pieces are small (10×10 up to 30×30) Rayleigh–Ritz problems.\n\n**What a real DFT code adds**\n\n- **V comes from the SCF:** V = V_ion + V_H + V_xc. The Hartree part comes from solving ∇²V_H = −4πn on the same grid, usually with multigrid, which is a second matrix-free solve.\n- **Nonlocal projectors:** each atom's projectors are stored only on the grid points inside its cutoff sphere, a few thousand points each. Applying them is a small gather, a dot product and a scatter-add.\n- **Orthogonalisation of many bands:** with hundreds or thousands of bands this becomes the cost bottleneck. Some codes (PARSEC, SPARC) therefore use Chebyshev-filtered subspace iteration instead, which applies a polynomial in H to the whole block and orthogonalises only once per SCF step.\n\nCompared with the plane-wave version in the post, steps 4–7 are identical. Only steps 1–3 change, from \"Miller indices, kinetic diagonal and FFT\" to \"grid, stencil and pointwise V\". This is why `apply_H` is the right abstraction boundary in jaxdft."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:43:01.401Z",
+   "text": "So my, possibly naive, idea is that instead of 48^3 grid you use a less dense grid and use a GP to interpolate to a finer grid. \n\nOr perhaps a prettier idea is the GP posterior mean is analytical and can be integrated / differentiated exactly."
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:43:36.016Z",
+   "model": "claude-opus-5-5",
+   "text": "The second version isn't naive. It's a known and productive idea, and it fixes the Hermiticity objection I raised before. The first version needs a small correction.\n\n**Idea 1: solve coarse, then interpolate to a fine grid**\n\nInterpolating after the solve doesn't add accuracy. The eigenvalue is already set by the coarse-grid problem, and the error sits in how H was discretised there. A nicer picture of ψ afterwards doesn't change it.\n\nInterpolating during the solve, though, is an established trick:\n\n- **The double-grid method** (Ono and Hirose, PRL 1999). Wavefunctions live on a coarse grid. They are interpolated to a fine grid only around each atom, where the sharp pseudopotential projectors are integrated. This cuts the egg-box effect a lot for little cost.\n- **Multigrid** moves between grids by interpolation (\"prolongation\") at every cycle.\n- **Plane-wave codes** do the same thing implicitly. The density and potential live on the finer FFT grid, so the coarse basis is interpolated exactly, by band-limited interpolation, onto it.\n\n**Idea 2: use the posterior mean as the basis**\n\nWrite the posterior mean given the node values ψ_i:\n\nψ(r) = Σ_i ψ_i ℓ_i(r),  with ℓ_i(r) = Σ_j k(r, r_j) (K⁻¹)_ji\n\nThe ℓ_i are cardinal functions: ℓ_i(r_j) = δ_ij. So the unknowns are still values at grid points, but there is now a continuous function behind them. You can then form exact matrices:\n\n- the kinetic matrix T_ij = ½∫∇ℓ_i·∇ℓ_j, analytic for a Gaussian kernel;\n- the overlap S_ij = ∫ℓ_i ℓ_j.\n\nThat is a Galerkin method. H is symmetric, the problem is H c = ε S c, and the energy is variational. Those are exactly the guarantees finite differences give up.\n\nYour kernel choice then lands you on a named method:\n\n| Kernel / prior | What you get |\n|---|---|\n| Band-limited (sinc), uniform nodes | Sinc-DVR / Lagrange-mesh method. This is essentially plane waves in grid form |\n| Gaussian centred on each node | Distributed Gaussian basis (Hamilton and Light, 1986) |\n| Compactly supported interpolating functions | Interpolating wavelets. Arias's semicardinal and wavelet bases (Rev. Mod. Phys. 1999); BigDFT's Poisson solver uses interpolating scaling functions |\n\n**Where it gets hard**\n\n1. **The potential term isn't analytic.** ∫ℓ_i V ℓ_j for a general V(r), such as a self-consistent density, has no closed form. You evaluate it by quadrature on a grid. The usual shortcut, taking the integrand at the nodes alone, is the DVR approximation, and it gives back a diagonal V. So the exact-integral advantage covers T and S, not V.\n2. **The conditioning of K.** Wide Gaussian kernels give very ill-conditioned K, the well-known RBF shape-parameter problem. Narrow ones interpolate badly. The cardinal functions ℓ_i also have tails, so T and S are banded with a wider band than a finite-difference stencil. They are still matrix-free friendly, just more expensive per point.\n3. **On a uniform grid you rediscover known methods.** A good stationary kernel on a regular lattice reproduces something between high-order finite differences and plane waves.\n\n**What would be genuinely new:**\n\n- **Learned hyperparameters.** A kernel length scale fit to the problem is effectively an adaptive cutoff.\n- **Non-uniform nodes.** Galerkin keeps the matrices Hermitian, which plain RBF-FD collocation does not. Nodes could then concentrate near nuclei or bonds.\n- **Posterior variance as an error estimate.** Each configuration would get a built-in estimate of discretisation error, which no current DFT code has. You'd have to check whether it is calibrated against the real eigenvalue error.\n\nThat third point is the one I'd find most interesting to test.\n\nA 1D toy would show quickly whether it's worth anything: a harmonic oscillator or a soft Coulomb well, solved with a Gaussian-kernel cardinal basis and compared with finite differences and sinc at the same number of nodes. It's about the size of the aliasing toy in the matrix-free post. I can put one together in the scratchpad if you want to see it."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:46:48.161Z",
+   "text": "Would hyperparameters be learned through log likelihood?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:47:09.662Z",
+   "model": "claude-opus-5-5",
+   "text": "You could, but it's not the natural choice here. Physics gives you a better objective.\n\n**Why the marginal likelihood doesn't fit directly**\n\nIn GP regression you maximise log p(y | θ) for observed data y. Here nothing is observed. The node values ψ_i are unknowns, set by the eigenproblem, and they change when θ changes. There are three ways to get an objective, and they answer different questions.\n\n**1. Minimise the energy (the variational principle)**\n\nWith exact Galerkin integrals, every eigenvalue in a trial basis is an upper bound on the true one; for the lowest state, that is the Rayleigh–Ritz principle. So:\n\nθ* = argmin_θ Σ_occupied ε_n(θ), or the DFT total energy E(θ).\n\nThis is how quantum chemistry optimises Gaussian exponents and centres (energy-optimised basis sets, floating Gaussians). Each choice of θ defines a subspace, and you pick the one with the lowest energy.\n\n- **Gradient:** dε/dθ = c†(∂H/∂θ − ε ∂S/∂θ)c. This is the Pulay term, and `jax.grad` gives it for free through the generalised eigensolve. Eigenvector derivatives are ill-defined at degeneracies, but band sums are invariant within a degenerate subspace, so they are safe.\n- **Catch:** the bound holds only if ∫ℓ_i V ℓ_j is integrated accurately. With DVR-style quadrature the energy can drop below the exact one, and the optimiser will exploit that.\n\n**2. Empirical Bayes on the solution**\n\nSolve, treat the converged ψ_i (one per band, sharing θ) as data, maximise log p(ψ | θ), solve again, and repeat until it converges.\n\n- **What it measures:** how well the prior explains the smoothness of the solution you already have. It does not measure eigenvalue accuracy.\n- **Circularity:** the coarse solution's discretisation error is invisible to it.\n- **Noise-free problems:** these are known to be awkward. Smooth data tends to push the length scale long, which makes K ill-conditioned.\n\n**3. Probabilistic numerics: condition on the equation**\n\nTreat the residual (H − ε)ψ = 0 at collocation points as the observation (the Chen, Hosseini, Owhadi and Stuart approach). θ can then be chosen by a likelihood or by Owhadi's \"kernel flows\", a cross-validation criterion: keep θ when dropping half the nodes barely changes the interpolant. For an eigenproblem it is harder, because ε is itself unknown and the problem is nonlinear.\n\n**What I'd do**\n\nSplit the two jobs:\n\n- **Accuracy:** choose θ by minimising the energy (option 1). It has a guarantee, and it comes with gradients.\n- **Error bars:** use a likelihood-type criterion (option 2 or 3) to calibrate the posterior variance, then check empirically whether that variance tracks the real eigenvalue error.\n\nThere is no reason the θ that minimises the energy also gives calibrated uncertainty. That gap is the open research question in this idea."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T07:49:12.553Z",
+   "text": "Build the 1D toy in the scratchpad, but in a way that if it proves to be interesting we can adapt to yet another \"Ideas\" section of the docs."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:49:50.035Z",
+   "name": "Bash",
+   "summary": "Check the scratchpad helper scripts"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:49:51.389Z",
+   "name": "Bash",
+   "summary": "Review style module and concept post conventions"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:50:05.511Z",
+   "name": "Bash",
+   "summary": "Explore FD, sinc-DVR and Gaussian-Galerkin errors in 1D"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:50:33.089Z",
+   "name": "Bash",
+   "summary": "Sweep kernel width and test variational selection"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:50:41.580Z",
+   "name": "Bash",
+   "summary": "Rerun with a safer overlap threshold"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:51:04.186Z",
+   "name": "Bash",
+   "summary": "Test whether GP posterior variance tracks eigenvalue error"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:51:23.707Z",
+   "name": "Bash",
+   "summary": "Compare FD8, sinc-DVR and Gaussian Galerkin on two wells"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:53:21.738Z",
+   "name": "Write",
+   "summary": "/tmp/scratchpad/gp/gp_basis.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:53:29.289Z",
+   "name": "Bash",
+   "summary": "Execute the draft post's cells and print computed values"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:53:38.586Z",
+   "name": "Bash",
+   "summary": "Debug the cardinal-function assertion"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:53:46.023Z",
+   "name": "Bash",
+   "summary": "Check cardinal interpolation conditions directly"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:53:56.039Z",
+   "name": "Bash",
+   "summary": "Measure analytic-vs-quadrature matrix differences"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:54:03.838Z",
+   "model": "claude-opus-5-5",
+   "text": "I'm checking the accuracy of the quadrature for the potential matrix. An assert caught a 3×10⁻⁶ error at a coarse grid, which matters because the variational claim depends on it."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:07.854Z",
+   "name": "Bash",
+   "summary": "Test Gauss–Hermite convergence for the potential matrix"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:15.051Z",
+   "name": "Bash",
+   "summary": "Rerun quadrature convergence with a valid reference"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:29.431Z",
+   "name": "Edit",
+   "summary": "/tmp/scratchpad/gp/gp_basis.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:33.639Z",
+   "name": "Edit",
+   "summary": "/tmp/scratchpad/gp/gp_basis.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:36.487Z",
+   "name": "Bash",
+   "summary": "Drop Gauss–Hermite and rerun the draft's cells"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:54:48.910Z",
+   "name": "Bash",
+   "summary": "Find which GP runs fell below the exact eigenvalues"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:03.082Z",
+   "name": "Bash",
+   "summary": "Locate the hard-coded thresholds"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:07.499Z",
+   "name": "Bash",
+   "summary": "Show the accuracy-loop setup lines"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:14.022Z",
+   "name": "Bash",
+   "summary": "Add a justified noise floor and rerun the draft"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:26.567Z",
+   "name": "Bash",
+   "summary": "Inspect the kernel-width sweep values"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:44.118Z",
+   "name": "Bash",
+   "summary": "Show current GP matrix code and the sweep section"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:55:56.839Z",
+   "name": "Bash",
+   "summary": "Rewrite GP matrix code (sweep section file pending)"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:56:17.351Z",
+   "name": "Write",
+   "summary": "/tmp/scratchpad/gp/sweep_section.md"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:56:30.956Z",
+   "name": "Bash",
+   "summary": "Apply the rewrite and rerun the draft's cells"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:56:44.378Z",
+   "name": "Bash",
+   "summary": "Compare Gauss–Hermite and accurate sweeps"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:56:57.889Z",
+   "name": "Bash",
+   "summary": "Sweep at N=60 and rerun the draft"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:57:06.900Z",
+   "model": "claude-opus-5-5",
+   "text": "I'm still tuning the assertions of the ℓ-sweep section to what the N = 60 data actually shows. Checking the values now."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:57:10.389Z",
+   "name": "Bash",
+   "summary": "Print sweep optima and rank-loss onsets"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:57:32.410Z",
+   "name": "Bash",
+   "summary": "Compute the rank-loss claims and rerun the draft"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:57:45.234Z",
+   "name": "Bash",
+   "summary": "Compare variational ℓ with rank-loss onset per N"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:58:00.164Z",
+   "name": "Bash",
+   "summary": "Use a grid-step tolerance and rerun the draft"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:58:21.154Z",
+   "name": "Bash",
+   "summary": "Exclude rounding-floor points from the gain and rerun"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:58:48.359Z",
+   "name": "Bash",
+   "summary": "Make the fitted-ℓ prose match the data, rerun"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T07:59:04.419Z",
+   "model": "claude-opus-5-5",
+   "text": "All cells now pass their assertions. Next I'm running ruff and rendering the draft, then exporting the charts to check them by eye."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:08.253Z",
+   "name": "Bash",
+   "summary": "Format with ruff, find long lines, render standalone"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:27.733Z",
+   "name": "Bash",
+   "summary": "Show the over-long lines"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:36.146Z",
+   "name": "Bash",
+   "summary": "Rewrap long lines, check format, export charts"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:54.545Z",
+   "name": "Bash",
+   "summary": "Rewrap the remaining long line"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:55.980Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart02.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:57.249Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart03.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T07:59:58.746Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart04.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:00.177Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart01.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:13.761Z",
+   "name": "Bash",
+   "summary": "Check how the missing axis titles are emitted"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:20.862Z",
+   "name": "Bash",
+   "summary": "Show the cardinal chart code and its prose"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T08:00:23.531Z",
+   "model": "claude-opus-5-5",
+   "text": "I'm polishing the charts: fixing axis titles that dropped out in export, dashing the sinc curve, and adjusting the prose to match what the plots actually show."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:33.557Z",
+   "name": "Bash",
+   "summary": "Apply chart and prose fixes"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:41.035Z",
+   "name": "Bash",
+   "summary": "Format log axes, check line lengths, re-export charts"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:57.678Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart02.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:00:59.120Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart04.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:01:00.547Z",
+   "name": "Read",
+   "summary": "/tmp/scratchpad/gp/png/chart01.png"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:01:07.354Z",
+   "name": "Bash",
+   "summary": "Render and check the computed sentences"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:01:31.502Z",
+   "name": "Bash",
+   "summary": "Locate the fit and wording to change"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:01:40.348Z",
+   "name": "Bash",
+   "summary": "Fit slopes on interior points and fix wording"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T08:01:43.805Z",
+   "model": "claude-opus-5-5",
+   "text": "Nearly done: I'm rewrapping two paragraphs, then doing a final render and a check of the computed sentences."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:01:49.113Z",
+   "name": "Bash",
+   "summary": "Rewrap, final render, and check sentences"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:02:12.382Z",
+   "name": "Bash",
+   "summary": "Rewrap without splitting inline code, rerender"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:02:31.945Z",
+   "name": "Bash",
+   "summary": "Confirm slope values render; tidy debug files"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T08:04:52.564Z",
+   "model": "claude-opus-5-5",
+   "text": "I've built the 1D toy as a draft Ideas post in the scratchpad. All its assertions pass, it is ruff-formatted, it renders standalone, and I exported the charts to PNG and checked them by eye.\n\n- **Draft:** `/tmp/scratchpad/gp/gp_basis.qmd`\n- **Rendered page:** `/tmp/scratchpad/gp/gp_basis.html`\n\n**The setup.** The unknowns are values at grid points, and ψ between the points is the GP posterior mean under a squared-exponential kernel. H is projected onto that space exactly (Galerkin). This span is the same as Gaussians of width ℓ centred on the nodes, so every matrix except the potential one is analytic. I compared it against sinc-DVR and 8th-order finite differences on the same nodes. There are two wells with exact eigenvalues: a harmonic oscillator, and a sharp Pöschl–Teller well (40 Ha deep, about 0.5 Bohr wide) standing in for the region near a nucleus.\n\n**What came out:**\n\n- **Accuracy at equal node count.** On the sharp well, the GP basis has 3–6× smaller errors than sinc-DVR, wherever both are above rounding error. Both converge exponentially, far faster than finite differences. On the oscillator, the GP basis and sinc-DVR are comparable and both reach rounding error within about 35 nodes.\n- **Variational bound.** No GP eigenvalue fell below the exact one; sinc-DVR and finite differences do go below.\n- **Choosing ℓ by minimising the energy** works, but on resolved grids it lands where the overlap matrix starts to lose numerical rank. In this test the principle finds the edge of linear dependence, not a length scale of the wavefunction.\n- **Posterior variance against true error.** I fitted ℓ and σ² by marginal likelihood to the calculation's own node values. On log–log axes the eigenvalue error then follows a power of the integrated variance, with slope 1.48 for the sharp well and 2.14 for the oscillator. For the sharp well the fitted ℓ stays at 0.27–0.29 Bohr at every N. That makes the variance a usable monotone proxy for the error, but not a calibrated estimate: the slope and offset differ between the two wells.\n\n**An error I made along the way, now in the post.** My first version computed the potential matrix with 80-point Gauss–Hermite quadrature. When the basis is nearly linearly dependent, that quadrature error gets amplified, and energies fell up to about 4×10³ Ha *below* exact at wide kernels. An optimiser of ℓ would walk straight into that region. I switched to accurate quadrature and kept the Gauss–Hermite run in the post as the third curve of the ℓ sweep, as the cautionary example.\n\n**Caveats the post states.** The cost comparison is per degree of freedom, not per unit of work: the GP basis needs an overlap matrix and a wider band, about 35 non-zeros per row against 9 for finite differences. It is 1D only. Both test wavefunctions are analytic functions, which is exactly what a squared-exponential prior assumes, so the post can't say how the method behaves on cusps.\n\n**To move it into the docs**, if you want to:\n- add an `ideas/` section (navbar entry, index page, a line in `docs/index.qmd`);\n- add a short `CLAUDE.md` note that ideas posts follow the concept-post rules;\n- verify the four references and move them into `references.bib`;\n- drop the standalone `format:` block from the front matter."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-06T08:14:06.695Z",
+   "text": "Lets move it into an ideas section. \n\nI also think you have a hanging background process."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:09.125Z",
+   "name": "ToolSearch",
+   "summary": "select:TaskStop"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:10.881Z",
+   "name": "TaskStop",
+   "summary": ""
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:13.017Z",
+   "name": "Bash",
+   "summary": "Check the stopped task output and current docs config"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:19.995Z",
+   "name": "Bash",
+   "summary": "Verify reference metadata against Crossref"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:29.427Z",
+   "name": "Bash",
+   "summary": "Check citation conventions and anchor lines"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:36.458Z",
+   "name": "Bash",
+   "summary": "Create ideas branch and move the post in with citations"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:40.096Z",
+   "name": "Bash",
+   "summary": "Show lines around the new citations"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:51.267Z",
+   "name": "Bash",
+   "summary": "Rewrap citation lines, add bib entries, check issue numbers"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:14:59.543Z",
+   "name": "Bash",
+   "summary": "Fix issue number and rewrap remaining long lines"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:15:03.748Z",
+   "name": "Bash",
+   "summary": "Read log format and the concept-post rules"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:15:07.657Z",
+   "name": "Bash",
+   "summary": "Check log heading formats"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T08:15:12.097Z",
+   "model": "claude-opus-5-5",
+   "text": "Now the section files, the `CLAUDE.md` rules and the log entries."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:15:18.589Z",
+   "name": "Bash",
+   "summary": "Add ideas index, navbar, home link and CLAUDE.md rules"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:15:34.124Z",
+   "name": "Bash",
+   "summary": "Add log entries and run the definition of done"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:18:54.960Z",
+   "name": "Bash",
+   "summary": "Confirm the ideas page and citations rendered"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-06T08:18:59.473Z",
+   "name": "Bash",
+   "summary": "Commit the ideas section on the ideas branch"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-06T08:19:05.803Z",
+   "model": "claude-opus-5-5",
+   "text": "The GP post now lives in a new Ideas section on the docs site, committed as 6ab21be. The full definition of done passes: ruff reports the docs formatted, all 179 tests pass, and the site renders with the new page and its citations.\n\nYou were right about the background process. It was my scratchpad cleanup command (`rm` followed by `ls`), which had already printed its output and then hung. I stopped it.\n\n**What changed:**\n- **The new section:** `docs/ideas/index.qmd` is the listing page, with a \"Ideas\" navbar entry after Concepts and a line on the home page.\n- **The post:** `docs/ideas/gp_basis.qmd` is the scratchpad draft, now using the site's bibliography. I removed the standalone format block and the \"to verify\" reference list.\n- **References:** I checked Hamilton–Light, Colbert–Miller and Pöschl–Teller against Crossref, including volume, pages and issue. Rasmussen–Williams is a book, so it has no DOI. All four are in `references.bib`.\n- **`CLAUDE.md`:** `ideas/` is added to the layout tree. A short \"Ideas posts\" subsection says the concept-post rules apply, plus two more:\n  - each post states the limits of its test and reports negative or mixed results as such;\n  - an idea reaches jaxdft only through a milestone, starting from a theory post.\n- **Logs:**\n  - The engineering log records the new section and the Gauss–Hermite mistake. It also records the 10⁻¹⁰ Ha rounding floor used to judge whether an eigenvalue is truly below exact.\n  - The research log records the three findings and the limits of the test.\n\n**Branches:** I started a new branch, `ideas`, from `concepts`, so it carries the unmerged concept-post commits as well. Nothing is merged or pushed."
+  }
+ ]
+}

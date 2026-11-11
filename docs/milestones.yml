@@ -1,0 +1,53 @@
+# The single source of truth for project milestones.
+#
+# Read by the front page (docs/_tools/front_page.py, a Quarto post-render
+# script) and by the milestone markers on engineering/project_stats.qmd.
+# Adding a milestone means adding one entry here. A milestone with a
+# validation document also needs one `featured.publish(...)` call in that
+# document, which supplies the figure and headline numbers shown on the
+# front page.
+#
+# Fields:
+#   id          short label, also the name of the published figure
+#   title       heading on the front page
+#   capability  one line: what the code can do once this is reached
+#   status      done | in-progress
+#   reached     ISO timestamp, required when status is done
+#   theory      path to the theory post, relative to docs/ (optional)
+#   validation  path to the validation document, relative to docs/ (optional)
+
+- id: "0"
+  title: "Step 0"
+  capability: "Package, environment, tests, documentation site and enforced double precision."
+  status: done
+  reached: 2026-11-05T09:04:12+01:00
+
+- id: "1a"
+  title: "Milestone 1a"
+  capability: "Empty-lattice band structure for an fcc lattice, exact against the analytic free-electron bands."
+  status: done
+  reached: 2026-11-05T09:53:28+01:00
+  theory: theory/01a_empty_lattice.qmd
+  validation: validation/01a_empty_lattice.qmd
+
+- id: "1b"
+  title: "Milestone 1b"
+  capability: "Silicon bands from the Cohen–Bergstresser empirical pseudopotential, reproducing the 1966 paper."
+  status: done
+  reached: 2026-11-05T13:58:55+01:00
+  theory: theory/01b_cohen_bergstresser.qmd
+  validation: validation/01b_cohen_bergstresser.qmd
+
+- id: "2a"
+  title: "Milestone 2a"
+  capability: "Self-consistent LDA for H₂ in a box, with total energy, forces and weight derivatives from autodiff."
+  status: done
+  reached: 2026-11-10T12:37:11+01:00
+  theory: theory/02a_scf_h2.qmd
+  validation: validation/02a_scf_h2.qmd
+
+- id: "2b"
+  title: "Milestone 2b"
+  capability: "Self-consistent LDA for silicon: nonlocal projectors and Brillouin-zone sampling."
+  status: in-progress
+  theory: theory/02b_scf_silicon.qmd

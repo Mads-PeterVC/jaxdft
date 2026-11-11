@@ -22,7 +22,7 @@ from jaxdft import (
     special_points_fcc,
 )
 from jaxdft.hamiltonian.operator import SENTINEL_FACTOR
-from jaxdft.plotting import style
+from jaxdft.plotting import featured, style
 
 style.enable()
 
@@ -163,9 +163,8 @@ point_layer = (
         ],
     )
 )
-(line_layer + point_layer).properties(
-    width=style.WIDTH, height=style.HEIGHT
-).interactive()
+band_chart = line_layer + point_layer
+band_chart.properties(width=style.WIDTH, height=style.HEIGHT).interactive()
 ```
 
 ## Deviation from the analytic bands
@@ -179,6 +178,13 @@ agreement = (
     if max_dev == 0
     else f"equal to within {max_dev:.1e} Ha "
     f"({max_dev / (eps_mach * ecut):.1f} ε_mach E_cut)"
+)
+featured.publish(
+    band_chart,
+    "1a",
+    caption="Computed fcc empty-lattice bands (lines) on the analytic "
+    "folded free-electron bands (points).",
+    headline=[("computed against analytic eigenvalues", agreement)],
 )
 ```
 

@@ -6,3 +6,206 @@
   display: flex;
   justify-content: center;
 }
+
+/* Front page: the milestone ladder (filled in by _tools/front_page.py). */
+ol.milestones {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0;
+  border-left: 2px solid #e6e5e1;
+}
+.milestone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem 2rem;
+  padding: 0 0 2.5rem 1.5rem;
+  position: relative;
+}
+.milestone::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 0.25rem;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #2a78d6;
+  border: 2px solid #fff;
+}
+.milestone-in-progress::before {
+  background: #fff;
+  border-color: #eb6834;
+}
+@media (min-width: 1000px) {
+  .milestone {
+    grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  }
+}
+.milestone h3 {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 1.2rem;
+}
+.milestone-meta {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.milestone-status {
+  font-weight: 600;
+  margin-right: 0.6rem;
+  color: #2a78d6;
+}
+.milestone-in-progress .milestone-status {
+  color: #c2410c;
+}
+.milestone-figure {
+  margin: 0;
+  overflow-x: auto;
+}
+.milestone-figure figcaption,
+.milestone-pending {
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.milestone-headline {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+}
+.milestone-headline dt {
+  display: inline;
+  font-weight: normal;
+  color: #52514e;
+}
+.milestone-headline dt::after {
+  content: ": ";
+}
+.milestone-headline dd {
+  display: inline;
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+#effort-strip {
+  margin-top: 3rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e6e5e1;
+  font-size: 0.8rem;
+  color: #52514e;
+}
+
+/* Conversation excerpts (filled in by _tools/conversations.py). */
+.transcript {
+  margin-top: 2rem;
+}
+.t-meta,
+.t-day,
+.t-gap {
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.t-day {
+  margin: 2rem 0 1rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #e6e5e1;
+  font-weight: 600;
+}
+.t-gap {
+  margin: 1.5rem 0;
+  padding: 0.5rem 1rem;
+  border: 1px dashed #c9c8c3;
+  border-radius: 6px;
+}
+.t-turn {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid #e6e5e1;
+}
+.t-user {
+  border-left-color: #eb6834;
+  background: #fdf5f0;
+}
+.t-claude {
+  border-left-color: #2a78d6;
+}
+.t-questions {
+  border-left-color: #2a78d6;
+  border-left-style: dashed;
+}
+.t-who {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.t-who time,
+.t-note {
+  margin-left: 0.4rem;
+  font-weight: normal;
+  color: #52514e;
+}
+.t-user .t-body {
+  white-space: pre-wrap;
+}
+.t-body > :last-child {
+  margin-bottom: 0;
+}
+.t-body pre {
+  padding: 0.6rem 0.8rem;
+  background: #f6f5f2;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+}
+.t-body table {
+  font-size: 0.9rem;
+}
+.t-heading {
+  margin: 1.2rem 0 0.5rem;
+  font-weight: 600;
+}
+.t-h1,
+.t-h2 {
+  font-size: 1.15rem;
+}
+.t-question {
+  margin: 0 0 0.2rem;
+}
+.t-questions ul {
+  margin-bottom: 0.8rem;
+  list-style: none;
+  padding-left: 0;
+  font-size: 0.9rem;
+  color: #52514e;
+}
+.t-questions li.t-chosen {
+  color: inherit;
+  font-weight: 600;
+}
+.t-questions li.t-chosen::before {
+  content: "✓ ";
+  color: #2a78d6;
+}
+.t-answer {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.t-work {
+  margin: 0.5rem 0 0.5rem 1rem;
+  font-size: 0.85rem;
+  color: #52514e;
+}
+.t-work summary {
+  cursor: pointer;
+}
+.t-work ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.2rem;
+  list-style: none;
+}
+.t-work li {
+  margin: 0.3rem 0;
+  color: #1f1f1d;
+}
+.t-work li.t-tool {
+  margin: 0.1rem 0 0.1rem 1rem;
+  color: #52514e;
+}

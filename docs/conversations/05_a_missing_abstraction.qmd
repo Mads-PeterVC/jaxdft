@@ -1,0 +1,24 @@
+---
+title: "A missing abstraction"
+date: 2026-11-06
+description: "Reading the SCF code after Milestone 2a, Mads-Peter finds the mixing scheme hard-coded in the solver. The fix leads to an audit of the same pattern elsewhere."
+---
+
+After Milestone 2a was validated, Mads-Peter read some of the code and found
+that the Anderson mixing scheme was written into the fixed-point solver, with
+a class that held its parameters but not the method. This is the kind of thing
+`CLAUDE.md` asks the architecture to avoid, and the tests had no way to catch
+it.
+
+Claude makes the change and shows that results are bitwise unchanged.
+Mads-Peter then asks for the same check across the rest of the package, with
+proposals before any code changes. Of the six places Claude finds, it
+recommends changing three and leaving three for the milestones that need
+them.
+
+What came of it: the entries "Mixing behind a protocol" and "SCF extension
+points" in the [engineering log](../engineering/engineering_log.qmd).
+
+```{=html}
+<div class="transcript" data-excerpt="05_a_missing_abstraction"></div><!--/transcript-->
+```

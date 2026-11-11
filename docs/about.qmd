@@ -2,8 +2,8 @@
 title: "About"
 ---
 
-jaxdft is developed by Mads-Peter Verner Christiansen, largely through agentic
-development with Claude Code. Project conventions, physics invariants and the
+jaxdft is developed by Mads-Peter, largely through agentic development with
+Claude Code. Project conventions, physics invariants and the
 milestone workflow are set out in `CLAUDE.md` at the repository root.
 
 Every number in these documents is computed from the `jaxdft` package when the

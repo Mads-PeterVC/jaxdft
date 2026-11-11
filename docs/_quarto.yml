@@ -3,6 +3,12 @@ project:
   render:
     - "*.qmd"
     - "!_*.qmd"
+  # Builds the milestone ladder on the front page from milestones.yml and the
+  # figures the validation documents publish to _results/ during the render.
+  post-render:
+    - _tools/front_page.py
+    # Inserts the conversation excerpts (conversations/data/) into their pages.
+    - _tools/conversations.py
 
 execute:
   # Documents compute their results from jaxdft at render time. Never freeze:
@@ -28,6 +34,8 @@ website:
         text: Engineering
       - href: research/index.qmd
         text: Research
+      - href: conversations/index.qmd
+        text: Conversations
       - about.qmd
 
 format:
