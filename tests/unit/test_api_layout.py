@@ -118,3 +118,37 @@ def test_every_eigensolver_can_report_its_iterations():
         eps, vecs, n_iter = solver(lambda x: H @ x, 6, 2, return_iterations=True)
         assert vecs.shape == (6, 2) and int(n_iter) >= 0
         assert len(solver(lambda x: H @ x, 6, 2)) == 2
+
+
+# --- Milestone 2b (engineering log, '2026-11-11: Milestone 2b public API') -------------
+
+
+def test_2b_public_names_live_in_subpackages_and_are_reexported():
+    from jaxdft.hamiltonian.atomic_nonlocal import AtomicNonlocal
+    from jaxdft.structure.builders.supercell import supercell
+    from jaxdft.structure.kpoints import monkhorst_pack
+
+    for obj in [AtomicNonlocal, supercell, monkhorst_pack]:
+        assert getattr(jaxdft, obj.__name__) is obj
+
+
+def test_2b_builders_subpackage_exports():
+    from jaxdft.structure import builders
+
+    assert builders.supercell is jaxdft.supercell
+
+
+def test_2b_non_reexported_modules():
+    from jaxdft.pseudo.gth import HGHChannel  # noqa: F401
+    from jaxdft.scf.occupations import grid_occupations  # noqa: F401
+
+
+def test_2b_signatures():
+    import inspect
+
+    from jaxdft.analysis.bands import band_minimum_on_segment
+
+    build = inspect.signature(jaxdft.PlaneWaveBasis.build).parameters
+    assert "kweights" in build and "fft_multiple" in build
+    assert "density" in inspect.signature(band_minimum_on_segment).parameters
+    assert "kweights" not in inspect.signature(jaxdft.total_energy).parameters

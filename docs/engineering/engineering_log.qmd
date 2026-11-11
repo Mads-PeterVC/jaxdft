@@ -1399,3 +1399,108 @@ last tool call of a turn is shown in full.
 
 **Not done.** The selection is made by hand. The excerpts so far all come
 from the first two sessions.
+
+## 2026-11-11: Milestone 2b public API, agreed before implementation
+
+Settled after the [2b theory post](../theory/02b_scf_silicon.qmd) was
+reviewed and revised, before any 2b test or code was written. Two choices
+went to the project lead; the rest were proposed in the same round and not
+objected to. The physics is in the theory post; this entry records the shape
+of the code.
+
+**k-point weights live on the basis.** `PlaneWaveBasis.build(...,
+kweights=None)` stores a `kweights` leaf of shape `(n_k,)` next to
+`kpoints`; `None` means uniform. Weights must be non-negative and sum to 1,
+or `build` raises. The weights can then never be paired with the wrong
+k-points, `scf` and `energy` keep their signatures, and the weights shard with
+the k axis. `total_energy(structure, basis, terms, orbitals, occupations)`
+loses its `kweights` argument (no caller passed it).
+`electron_density(..., kweights=None)` keeps its optional override, which
+defaults to `basis.kweights`. Rejected: weights as an SCF argument (every call
+site must pair them with the right basis, uncheckable under tracing), and a
+`KGrid` type (room for symmetry data before anything needs it). A band-path
+basis carries uniform weights that mean nothing; that is the accepted cost.
+
+**k-grids.** `monkhorst_pack(shape, shift=(0, 0, 0)) -> (kpoints, weights)`
+in `structure/kpoints.py`: k = (n + s)/N in fractional coordinates, in
+[0, 1), uniform weights. The shift exists for the positive control of the
+symmetry argument (theory post); production runs use the Γ-centred grid.
+
+**Nonlocal radial data: a tuple of channels.** A pseudopotential exposes
+`channels`, one object per angular momentum. For HGH this is
+`HGHChannel(l, r, h)` in `pseudo/gth.py`, with `h` the symmetric coupling
+matrix (Ha, a tuple of tuples) and `projectors(q2)` returning the reduced
+projectors p̂ᵢ(q)/qˡ, shape `(n_i, *q2.shape)`, Bohr^(3/2+l), as traceable
+functions of q² (theory post, decision 7). A pseudopotential without the
+attribute, or with `channels == ()`, has no projectors: hydrogen and
+Cohen–Bergstresser are unchanged. `GTH(zion, rloc, c, channels=(), source)`
+gains the field; `parse_hgh` reads the projector blocks (upper triangles of
+h, symmetrised), refuses l > 2 and (l, i) outside the theory post's table
+with `NotImplementedError`, and refuses trailing lines it does not understand
+with `ValueError`. Rejected: flat per-l methods on the pseudopotential (three
+members that must agree), and a pseudopotential that builds whole projector
+blocks from Cartesian q (every family would reimplement the solid harmonics
+and the q = 0 handling).
+
+**The nonlocal term.** `AtomicNonlocal(pseudos)` in
+`hamiltonian/atomic_nonlocal.py`, an operator term (`prepare`/`apply`, the
+`B D Bᵀ` product of the theory post). It owns the solid harmonics, the
+structure-factor phases and Ω^(-1/2). `lda_terms(pseudos)` includes it only
+when some pseudopotential has channels, so the H₂ breakdown keeps its five
+entries. Its energy is reported as `"AtomicNonlocal"`.
+
+**The HGH silicon file** `hgh_lda/si-q4.hgh` is vendored verbatim from
+PseudoLibrary, SHA-256 pinned as for hydrogen; `hgh_lda("Si")` loads it.
+
+**Occupations over the grid.** `grid_occupations(eigenvalues, kweights,
+n_electrons, *, side=-1, tol=1e-6)` in `scf/occupations.py` replaces the
+per-k `aufbau_occupations` inside the SCF and `energy` (the latter stays, for
+its own tests). Its definition, which the theory post leaves to the
+implementation:
+
+- The reference count N_ref is the even integer nearest to N (halves round
+  up). Bands n < N_ref/2 are doubly occupied at every k; that is the band
+  filling the gap guard certifies.
+- The remainder δ = N − N_ref is removed from the highest occupied states
+  (δ < 0) or added to the lowest empty ones (δ > 0), over all k-points, level
+  by level. A level is the set of states within `tol` of each other; every
+  state of a level receives the same change of f, so Σ w_k Δf_nk = δ. A level
+  that fills or empties passes the rest to the next.
+- The derivative with respect to N is one-sided at a kink: `side=-1` is the
+  level that loses charge as N decreases, `side=+1` the level that gains as N
+  increases.
+
+For one k-point with weight 1 this equals `aufbau_occupations`, so every 2a
+result is unchanged.
+
+**The gap guard** compares the lowest state of band N_ref/2 with the highest
+of band N_ref/2 − 1 over all k-points, at convergence only. The per-iteration
+`gap` in the SCF history already is this quantity. `SCFOptions` gains
+`degeneracy_tol = 1e-6` (Ha, passed to `grid_occupations`).
+
+**Buffer bands.** `SCFOptions.buffer_bands = 1`. `n_bands` keeps its meaning,
+the bands that must converge (default occupied + 1). The eigensolver
+iterates `n_bands + buffer_bands` vectors; residuals are checked, and results
+returned, for the first `n_bands` only.
+
+**FFT grids compatible with fractional translations.**
+`PlaneWaveBasis.build(..., fft_multiple=1)`, an int or a 3-tuple: each N_i is
+the smallest 2·3·5-smooth multiple of `fft_multiple[i]` at or above the
+no-wraparound bound. Diamond needs 2. Passing it together with an explicit
+`fft_shape` raises. The package does not detect symmetry; the caller states
+the multiple.
+
+**Supercells.** `supercell(structure, repeats)` in
+`structure/builders/supercell.py`: lattice rows aᵢ·nᵢ, the images of the cell
+translation by translation (translations outer, atoms inner), species and
+weights tiled.
+
+**`band_minimum_on_segment` gains `density=None`**, passed through to
+`band_structure`, for the Δ minimum of the self-consistent bands.
+
+**Tests.** Cross-check numbers that both the throwaway check and the review
+produced are labelled cross-checks, as in 2a; the test-size energy and grid
+gap come from the review alone and say so. The finite-difference tolerances
+for the fractional-charge weight derivatives are derived, not measured,
+because nobody has run fractional-charge silicon. If one fails during
+implementation it is raised with the project lead, not loosened.
