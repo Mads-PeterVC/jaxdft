@@ -1720,3 +1720,55 @@ k-point are compared after matching.
 converged bands at every k-point and the forces agree to about 10⁻¹¹ in
 atomic units, against tolerances of 10⁻⁷ Ha, 10⁻⁶ Ha and 10⁻⁶ Ha/Bohr. The
 validation document computes and shows the differences.
+
+## 2026-11-12: Running on a Slurm cluster with shephex; the k-point cost is the eigensolver
+
+**Setup.** Calculations are submitted from the laptop to the biocloud
+cluster with shephex's `RemoteSlurmExecutor`. shephex is in its own
+dependency group, `cluster`, which is a default group so `uv run hex ...`
+works locally. On the cluster a clone of the repository is synced with
+`uv sync --no-default-groups --group cluster`, which installs jaxdft
+(editable, so a `git pull` updates it), JAX and shephex but not the test or
+docs tools. The lock file pins the same shephex version on both sides, which
+shephex requires. The Slurm profile (`biocloud-jaxdft-cpu`: 8 CPUs, 16 GB,
+the clone's venv, `JAX_PLATFORMS=cpu`) lives in `~/.shephex`, not in the
+repository, because it holds cluster paths.
+
+**Layout.** `shephex/scripts/<cluster>/` holds the submit scripts (tracked),
+`shephex/data/<cluster>/` the experiment directories pulled back (ignored).
+shephex 0.5.0 maps the working directory at submission to the profile's
+remote directory and recreates the experiments' relative path under it. The
+scripts therefore change into their data directory before submitting, so
+runs land directly under the remote directory. A local-root option in
+shephex would remove that step.
+
+**Two shephex details.** `@shephex.chain` checks for duplicate experiments,
+and doing so writes the experiment directories even in a dry run;
+`@shephex.hexperiment` does not, so a dry run leaves no files. The scripts
+use `hexperiment` for now. `hex report` without `-p` is a live view that does
+not exit, so it does not belong at the end of an automated wait.
+
+**Results go through `reference/`.** Cluster results are not reproducible at
+render time, so `reference/biocloud_si_kgrid/extract.py` collects them from
+the pulled experiments into a tracked JSON, which the performance page reads.
+The README there lists the fields and the limits of the measurement.
+
+**The open item of 2026-11-11.** The k-grid scan on biocloud (performance
+page, "Milestone 2b on biocloud") reproduces the superlinear cost, and
+explains most of it without memory. The k-points are one `vmap` batch, so
+the batched LOBPCG runs until the slowest k-point has converged; the summed
+eigensolver iterations grow about as fast as the cost per k-point and SCF
+step, while the cost per k-point and eigensolver iteration stays flat and
+peak memory grows linearly. Chunking the density accumulation would not have
+helped. Two standard remedies, neither implemented:
+
+- **An adaptive eigensolver tolerance.** `scf` asks every step for residuals
+  of `EIGEN_TOL_FRACTION` × `tol`, 5 × 10⁻¹¹ by default, even while the
+  density error is of order one. Tying it to the current density residual
+  should cut the iterations of the early steps, where the large grids spend
+  most of them.
+- **More buffer bands.** `SCFOptions.buffer_bands` is 1. A wider gap between
+  the highest converged band and the block edge speeds up the slowest
+  k-points.
+
+Either changes the SCF algorithm, so it goes through the milestone workflow.

@@ -41,6 +41,9 @@ jaxdft/
 │   └── scientific/    # physical correctness against references
 ├── reference/         # scripts and stored outputs from reference codes
 ├── examples/          # runnable user scripts (shown in docs, run by tests)
+├── shephex/           # HPC runs via shephex, one subdirectory per cluster:
+│   ├── scripts/       #   submit scripts (tracked)
+│   └── data/          #   experiment directories (gitignored)
 ├── docs/              # Quarto website
 │   ├── theory/        # one theory post per milestone
 │   ├── concepts/      # pedagogical explainers (see Documentation)
