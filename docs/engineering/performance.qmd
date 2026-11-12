@@ -330,7 +330,88 @@ k-point and SCF step falls from Γ to a few k-points, as fixed costs spread,
 and then grows again. At 15 Ha the 6³ grid took 152 s against 23 s for 4³,
 6.7 times as long for 3.4 times as many k-points (measured once while sizing
 the [validation document](../validation/02b_scf_silicon.qmd), not computed
-here). The likely cause, not yet profiled, is memory: the density and the
-local potential are built for all k-points at once, through arrays of shape
-(k-points, grid points, bands), about 0.3 GB on 6³. Profiling this is an open
-item in the engineering log.
+here). The first guess was memory: the density and the local potential are
+built for all k-points at once, through arrays of shape (k-points, grid
+points, bands), about 0.3 GB on 6³. The cluster runs in the next section
+point to the eigensolver instead.
+
+## Milestone 2b on biocloud: cost against the k-grid
+
+The same silicon calculation at 12 Ha on Γ-centred n³ grids up to 8³, run on
+the biocloud Slurm cluster through shephex (one job per grid, 8 CPUs each).
+The numbers are read from `reference/biocloud_si_kgrid/`, whose README
+records how they were made; they are not recomputed at render time.
+"eig it" is the sum over SCF steps of the largest number of LOBPCG iterations
+over the k-points.
+
+```{python}
+#| echo: false
+import json
+from pathlib import Path
+
+import altair as alt
+
+from jaxdft.plotting import style
+from jaxdft.scf.scf import EIGEN_TOL_FRACTION
+
+style.enable()
+
+cluster = json.loads(
+    Path("../../reference/biocloud_si_kgrid/si_kgrid_scaling.json").read_text()
+)["experiments"]
+cluster_rows = []
+for e in cluster:
+    n_k, eig_it = e["n_kpoints"], sum(e["eig_iterations_steady"])
+    assert e["eig_iterations_first"] == e["eig_iterations_steady"]
+    cluster_rows.append({
+        "k-grid": f"{e['n']}³",
+        "k-points": n_k,
+        "node": e["node"],
+        "SCF iterations": e["n_iter"],
+        "eig it": eig_it,
+        "SCF steady (s)": e["steady_s"],
+        "ms per k-point and step": 1e3 * e["steady_s"] / n_k / e["n_iter"],
+        "ms per k-point and eig it": 1e3 * e["steady_s"] / n_k / eig_it,
+        "peak memory (GB)": e["peak_memory_gb"],
+    })
+cluster_df = pd.DataFrame(cluster_rows)
+first, last = cluster_rows[0], cluster_rows[-1]
+step_growth = last["ms per k-point and step"] / first["ms per k-point and step"]
+eig_growth = last["eig it"] / first["eig it"]
+per_it = cluster_df["ms per k-point and eig it"]
+cluster_df.style.hide(axis="index").format(precision=2)
+```
+
+```{python}
+#| echo: false
+#| column: page-inset
+long = cluster_df.melt(
+    id_vars=["k-points"],
+    value_vars=["ms per k-point and step", "ms per k-point and eig it"],
+    var_name="normalised by",
+    value_name="ms",
+)
+alt.Chart(long).mark_line(point=True).encode(
+    x=alt.X("k-points:Q", scale=alt.Scale(type="log"), title="k-points"),
+    y=alt.Y("ms:Q", scale=alt.Scale(type="log"), title="steady wall time (ms)"),
+    color=alt.Color("normalised by:N", legend=alt.Legend(orient="top")),
+    tooltip=["k-points", "normalised by", alt.Tooltip("ms:Q", format=".2f")],
+).properties(width=style.WIDTH, height=style.HEIGHT)
+```
+
+From 1 to `{python} last["k-points"]` k-points the cost per k-point and SCF
+step grows `{python} f"{step_growth:.1f}"`-fold, and the number of eigensolver
+iterations `{python} f"{eig_growth:.1f}"`-fold. Per eigensolver iteration the
+cost per k-point stays between `{python} f"{per_it.min():.1f}"` and
+`{python} f"{per_it.max():.1f}"` ms, with no trend in the batch size. The
+k-points are one `vmap` batch, so LOBPCG iterates until the slowest k-point
+has converged, and the more k-points, the slower the slowest. Every SCF step
+asks for residuals of
+`{python} f"{100 * EIGEN_TOL_FRACTION:g}"` % of the SCF tolerance, also while the density is
+far from converged. Peak memory grows linearly, to
+`{python} f"{last['peak memory (GB)']:.1f}"` GB at
+`{python} last["k-points"]` k-points, and is not the bottleneck.
+
+The jobs ran at the same time on three nodes, one measurement each; the step
+in cost per iteration between 27 and 64 k-points coincides with a change of
+node.
