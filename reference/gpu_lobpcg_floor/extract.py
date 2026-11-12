@@ -4,13 +4,26 @@ tracked JSON file.
 The runs are submitted by shephex/scripts/aicloud/gpu_residual_floor.py and
 shephex/scripts/aicloud/gpu_lobpcg_dense_steps.py and pulled into
 shephex/data/aicloud/, which is not tracked. Their results are the shephex
-contexts, which this script copies into gpu_lobpcg_floor.json. From the
-repository root:
+contexts, which this script copies into gpu_lobpcg_floor.json.
+
+The per-iteration trajectories of shephex/scripts/aicloud/lobpcg_trajectory.py
+go to lobpcg_trajectory.json, rounded to four significant digits. Its
+``gram_min_rel`` column is left out: the script pairs Gram eigenvalues with
+column norms by index, which does not identify the zero columns, so the
+column is meaningless. The same script run on the laptop with ``--local``
+(CPU only) is added when its output exists at
+shephex/data/laptop/lobpcg-trajectory/trajectories.json:
+
+    uv run python shephex/scripts/aicloud/lobpcg_trajectory.py --local \
+        shephex/data/laptop/lobpcg-trajectory/trajectories.json
+
+From the repository root:
 
     uv run python reference/gpu_lobpcg_floor/extract.py
 """
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -39,6 +52,59 @@ def run(directory: str, script: str) -> dict:
     }
 
 
+TRAJECTORY = Path(__file__).resolve().parent / "lobpcg_trajectory.json"
+SKIP = {"gram_min_rel"}
+
+
+def rounded(x: float):
+    return None if math.isnan(x) else float(f"{x:.4g}")
+
+
+def trajectory() -> dict:
+    experiments = sorted((DATA / "lobpcg-trajectory").glob("*-exp"))
+    if len(experiments) != 1:
+        sys.exit(f"Expected one experiment in {DATA / 'lobpcg-trajectory'}")
+    exp = experiments[0]
+    meta = json.loads((exp / "shephex" / "meta.json").read_text())
+    if meta["status"] != "completed":
+        sys.exit(f"{exp.name} has status {meta['status']!r}")
+    context = json.loads((exp / "shephex" / "context.json").read_text())
+    runs = compact(json.loads((exp / "trajectories.json").read_text()))
+    out = {
+        "description": (
+            "Per-iteration LOBPCG record on a V100 and the CPU of the same"
+            " node: residual, dropped directions per orthonormalisation pass,"
+            " max|T| with the penalty, Rayleigh-Ritz backward error, penalty"
+            " value. Labels are system/device/variant/mode/seed. ``runs``: aicloud"
+            " V100 node; ``laptop_runs``: Apple-silicon laptop, CPU only."
+        ),
+        "generator": "reference/gpu_lobpcg_floor/extract.py",
+        "submit_script": "shephex/scripts/aicloud/lobpcg_trajectory.py",
+        "id": exp.name,
+        "job": context.get("job-id"),
+        "devices": context.get("devices"),
+        "eig_tol": context.get("eig_tol"),
+        "runs": runs,
+    }
+    laptop = ROOT / "shephex" / "data" / "laptop" / "lobpcg-trajectory"
+    if (laptop / "trajectories.json").exists():
+        out["laptop_runs"] = compact(
+            json.loads((laptop / "trajectories.json").read_text())
+        )
+    return out
+
+
+def compact(runs: dict) -> dict:
+    for run in runs.values():
+        run["true_residual_max"] = rounded(run["true_residual_max"])
+        run["trace"] = {
+            name: [rounded(v) for v in values]
+            for name, values in run["trace"].items()
+            if name not in SKIP
+        }
+    return runs
+
+
 def main() -> None:
     data = {
         "description": (
@@ -50,6 +116,8 @@ def main() -> None:
     }
     OUTPUT.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     print(f"Wrote {OUTPUT.relative_to(ROOT)}")
+    TRAJECTORY.write_text(json.dumps(trajectory(), ensure_ascii=False) + "\n")
+    print(f"Wrote {TRAJECTORY.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
