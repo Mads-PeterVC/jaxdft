@@ -110,8 +110,8 @@ cross-checks against two independent NumPy implementations. They all pass.
 This document asks the physical questions: how fast the results converge,
 whether the discrete problem has the symmetry it should, and how the
 Kohn–Sham bands and structural properties compare with the empirical model
-of [1b](01b_cohen_bergstresser.qmd) and with the literature. The DFTK
-comparison, the third rung, is added separately, as in 2a.
+of [1b](01b_cohen_bergstresser.qmd) and with the literature. The third rung
+is DFTK, run on the same discrete problem, as in 2a.
 
 **Size of this document.** It runs at every render, so it uses cheaper
 settings than the theory post where the physics allows (decided with the
@@ -693,6 +693,134 @@ derivative is what the theory post set out to replace. The acceptance tests
 compare both sides with finite differences of fractional-charge SCF runs, at
 the displaced geometry and, for a degenerate frontier, at the ideal one.
 
+## Against DFTK
+
+```{python}
+#| echo: false
+dftk = json.loads(Path("../../reference/dftk_si/dftk_si.json").read_text())
+TOL_DFTK = {"energy": 1e-7, "eigenvalue": 1e-6, "force": 1e-6}  # theory post
+REF_TOL = 1e-10  # our SCF tolerance for the comparison
+DISPLACEMENT = np.array([[0.012, -0.005, 0.008], [0.0, 0.0, 0.0]])
+dftk_setups = {
+    "ideal": (s0, 2),
+    "displaced": (si(positions=np.asarray(s0.positions) + DISPLACEMENT), 3),
+}
+
+
+def match_k(ours, theirs):
+    """Index of the DFTK k-point equal to each of ours modulo 1."""
+    d = np.asarray(ours)[:, None] - np.asarray(theirs)[None]
+    hit = np.abs(d - np.rint(d)).max(axis=-1) < 1e-12
+    assert (hit.sum(axis=0) == 1).all() and (hit.sum(axis=1) == 1).all()
+    return hit.argmax(axis=1)
+
+
+dftk_diff = {}
+for system in dftk["systems"]:
+    s_ref, n_ref = dftk_setups[system["name"]]
+    np.testing.assert_allclose(
+        system["positions_fractional"], np.asarray(s_ref.positions), atol=1e-15
+    )
+    b_ref = basis(s_ref, system["ecut_hartree"], n_ref)
+    assert list(b_ref.fft_shape) == system["fft_size"]
+    order = match_k(b_ref.kpoints, system["kpoints_fractional"])
+    assert (
+        np.asarray(b_ref.n_pw) == np.asarray(system["n_plane_waves"])[order]
+    ).all()
+    opts_ref = SCFOptions(tol=REF_TOL)
+    r_ref = scf(s_ref, b_ref, terms, opts_ref)
+    theirs = system["energies_hartree"]
+    shift = (
+        2 * si_pp.alpha / abs(np.linalg.det(np.asarray(s_ref.lattice.vectors)))
+    )
+    eig_theirs = np.asarray(system["eigenvalues_hartree"])[order]
+    eig_ours = np.asarray(r_ref.eigenvalues)[:, :5]
+    g_ref = jax.grad(lambda st: energy(st, b_ref, terms, opts_ref))(s_ref)
+    f_ours = (
+        -np.asarray(g_ref.positions)
+        @ np.linalg.inv(np.asarray(s_ref.lattice.vectors)).T
+    )
+    dftk_diff[system["name"]] = {
+        **{
+            names[k]: float(r_ref.energies[k])
+            - theirs[k]
+            - (theirs["PspCorrection"] if k == "AtomicLocal" else 0.0)
+            for k in names
+        },
+        "total": float(r_ref.total_energy) - system["total_energy_hartree"],
+        "eigenvalues − α/Ω (max)": float(
+            np.abs(eig_ours - shift - eig_theirs).max()
+        ),
+        "eigenvalues, no shift (max)": float(
+            np.abs(eig_ours - eig_theirs).max()
+        ),
+        "forces (max)": float(
+            np.abs(f_ours - np.asarray(system["forces_hartree_per_bohr"])).max()
+        ),
+        "k-points": len(order),
+        "psp": theirs["PspCorrection"] - 8 * shift,
+        "shift": -shift,
+        "max force": float(np.abs(f_ours).max()),
+    }
+tolerance = {
+    **{k: TOL_DFTK["energy"] for k in [*names.values(), "total"]},
+    "eigenvalues − α/Ω (max)": TOL_DFTK["eigenvalue"],
+    "forces (max)": TOL_DFTK["force"],
+}
+for name, d in dftk_diff.items():
+    for quantity, tol in tolerance.items():
+        assert abs(d[quantity]) < tol, (name, quantity)
+    assert abs(d["psp"]) < 1e-12
+    assert d["eigenvalues, no shift (max)"] > 0.03  # the shift is real
+worst_dftk = max(abs(d[q]) for d in dftk_diff.values() for q in tolerance)
+pd.DataFrame([
+    {
+        "quantity": q,
+        **{
+            f"{name} (jaxdft − DFTK)": f"{d[q]:.1e}"
+            if q.endswith("(max)")
+            else f"{d[q]:+.1e}"
+            for name, d in dftk_diff.items()
+        },
+        "tolerance": f"{tol:.0e}",
+    }
+    for q, tol in tolerance.items()
+]).style.hide(axis="index")
+```
+
+DFTK [@dftk2021] (version `{python} dftk["versions"]["DFTK"]`, libxc
+`{python} dftk["versions"]["libxc"]`) was run on the same discrete problem, as
+for H₂ in 2a: the same HGH file, identified by its hash, the same cell,
+cutoff and `{python} "×".join(map(str, dftk["systems"][0]["fft_size"]))` grid,
+Γ-centred k-grids without symmetry reduction and zero temperature. The ideal
+geometry uses the 2³ test grid
+(`{python} f"{dftk_diff['ideal']['k-points']}"` k-points), the displaced
+geometry of the force test the 3³ grid
+(`{python} f"{dftk_diff['displaced']['k-points']}"` k-points, forces up to
+`{python} f"{dftk_diff['displaced']['max force']:.3f}"` Ha/Bohr). The script
+and its pinned Julia environment are in `reference/dftk_si/`. jaxdft is
+converged to `{python} f"{REF_TOL:.0e}"` for this comparison. The table lists
+signed differences for energies and the largest absolute difference over all
+k-points and bands for eigenvalues and forces.
+
+Every quantity agrees to within
+`{python} f"{worst_dftk:.0e}"`, several orders of magnitude inside the
+tolerances the theory post fixed before either code was run. This is the
+first check of the nonlocal energy, the k-point weights and the grid-wide
+occupations against an independent production code. Two conventions enter.
+DFTK reports the G = 0 part of the local pseudopotential, $N_\text{el}
+\sum_j\alpha_j/\Omega$, as a separate `PspCorrection`; it equals the closed
+form to `{python} f"{abs(dftk_diff['ideal']['psp']):.0e}"` Ha. And it leaves
+that constant out of the Hamiltonian, so its eigenvalues are higher than
+jaxdft's by $-\sum_j\alpha_j/\Omega$ =
+`{python} f"{dftk_diff['ideal']['shift']:.6f}"` Ha, the shift the post
+predicted; without it the eigenvalues differ by
+`{python} f"{dftk_diff['ideal']['eigenvalues, no shift (max)']:.4f}"` Ha.
+DFTK lists the k-points in $[-\tfrac12,\tfrac12)$ and jaxdft in $[0, 1)$; the
+comparison matches them modulo 1, so the agreement also confirms that
+relabelling a k-point by a reciprocal lattice vector leaves the problem
+unchanged.
+
 ## Corrections to the theory post
 
 ```{python}
@@ -771,7 +899,9 @@ silicon with the behaviour the theory post predicted, quantitatively:
 - the discrete problem has the full space group exactly when the FFT grid is
   even, and the symmetry breaking on odd and half-shifted grids has the size
   and the cause the post and review gave;
-- the weight derivatives use the frontier levels of the whole crystal.
+- the weight derivatives use the frontier levels of the whole crystal;
+- DFTK, solving the same discrete problem, agrees in every energy term,
+  eigenvalue and force far inside the tolerances fixed in advance.
 
 Physically, the results are the textbook LDA picture of silicon. The total
 energy converges fast in the cutoff and slowly in the k-grid; Γ-centred grids

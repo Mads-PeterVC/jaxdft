@@ -1,0 +1,132 @@
+{
+ "name": "06_a_guard_or_smearing",
+ "session": "b6a9a156-6075-4942-8a53-415d1d8e772d",
+ "lines": [
+  1385,
+  1528
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-12T07:32:59.538Z",
+   "text": "I'm a little curious, can the code do graphene now too or are there any missing pieces? (not that we should right now)"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T07:33:24.841Z",
+   "name": "Bash",
+   "summary": "Survey structure builders, k-paths and pseudopotentials"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T07:33:27.960Z",
+   "name": "Bash",
+   "summary": "Check k-path API and eigensolver used by SCF"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T07:33:59.351Z",
+   "model": "claude-opus-5-5",
+   "text": "Mostly yes. Nothing in the SCF, the operators or the nonlocal part is specific to silicon. I estimate graphene would be about a day's work, plus one physics decision. These are from reading the code; I haven't tried graphene.\n\n**Already works:**\n- `Lattice` takes any vectors and `Structure` takes fractional positions, so a hexagonal cell with vacuum along z is just input. Ewald, the FFT grid rule and the basis are already general; the fcc cell isn't orthogonal either.\n- `monkhorst_pack((n, n, 1))` already gives a 2D grid.\n- `kpath` takes any dict of labelled points, so a Γ–M–K–Γ path only needs those three points written down.\n- Carbon's HGH pseudopotential has s and p channels, well inside what `HGHChannel` handles (l ≤ 2).\n- Graphene is symmetric about its own plane, so it has no dipole and needs no dipole correction.\n\n**Small missing pieces:**\n- **Carbon pseudopotential file:** `c-q4.hgh` isn't vendored yet. It needs provenance and a hash, as for `si-q4.hgh`.\n- **Convenience functions:** there's no `hexagonal_lattice` or `graphene` builder and no `special_points_hexagonal`. You can do without them, but they belong next to `diamond` and `special_points_fcc`.\n\n**The one physics question: graphene has no gap.** In graphene the π and π* bands touch at K, exactly at the Fermi level.\n- **Grids where n is a multiple of 3** contain K. The grid gap there is exactly 0, so the default `min_gap` guard rejects the result. The occupations themselves would be right: the degenerate level at K is shared by `grid_occupations`, which gives a symmetric density. Running these grids means switching the guard off, as we did for the XC-off silicon test.\n- **Other grids** miss K. They have a finite grid gap (roughly 0.04 Ha at 13×13), so the guard passes and the result is exact for undoped graphene. The catch is that convergence with n is slower near the cone.\n- **Anything actually metallic** needs smearing, which we don't have: doped graphene, adsorbates, or deformations that move the Fermi level. That is the real gap for the \"graphene and friends\" family.\n\n**Where it would hurt in practice:**\n- **Cost:** carbon HGH is much harder than silicon. A rough estimate is 35–40 Ha cutoff with 15–20 Bohr of vacuum, which comes to about 4000 plane waves per k-point against about 750 for silicon. On top of that comes a 2D grid of 100–170 k-points with no symmetry reduction. The open item on superlinear k-point cost and memory (arrays held for every k-point at once) would bite well before the physics does.\n- **Symmetry tests:** the 2b analysis of which FFT grid sizes keep the symmetry (N even for diamond) would have to be redone for the hexagonal space group before forces vanishing at the ideal geometry can be used as a test.\n\nA natural milestone would be LDA graphene bands with the Dirac cone at K, compared against DFTK. Smearing could be part of it or a separate step."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T07:39:48.227Z",
+   "text": "Can the code facilitate \"doping\" through just adding additional electrons, say we add 0.1 extra electron in the 2-atom primitive cell without actually including a dopant atom"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T07:39:52.029Z",
+   "name": "Bash",
+   "summary": "Find how electron count and neutrality are handled"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T07:39:54.569Z",
+   "name": "Bash",
+   "summary": "Show electron-count and neutrality code lines"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T07:40:09.080Z",
+   "name": "Bash",
+   "summary": "Check the local pseudopotential's G=0 handling"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T07:40:30.230Z",
+   "model": "claude-opus-5-5",
+   "text": "Not today. The electron count is always the sum of the ionic charges (`scf.py:381`), and nothing in the API adds or removes electrons. The per-atom weights can't be used for it either: they are capped at 1, and they also scale the pseudopotential, so they change the atom rather than the electron count.\n\nAdding the option would be a few lines, an `extra_electrons` (or `charge`) setting that offsets the electron count. What matters is what each part of the code would then do with 8.1 electrons.\n\n**Electrostatics already handles a charged cell.** The code drops G = 0 in the Hartree term, gives Ewald a neutralising background, and takes the α term of the local pseudopotential from the electron count (`atomic_local.py:6`). Together that is the standard convention: the extra charge is compensated by a uniform background, as in DFTK and Quantum ESPRESSO.\n- **In bulk silicon** this is the usual way to model doping without a dopant atom.\n- **In a graphene slab** the background also fills the vacuum. That is a known artefact: the total energy then depends roughly linearly on the vacuum size, and the potential in the vacuum is distorted. Band filling and the shift of the Fermi level would still be qualitatively right. Quantitative numbers would need a counter-charge plane or 2D Coulomb truncation.\n\n**Occupations would run but are the real problem.** `grid_occupations` would treat 8 electrons as the reference and put the extra 0.1 into the lowest conduction levels on the grid, one level at a time. That is a correct zero-temperature filling of the grid, but the result is a metal without smearing:\n- The Fermi surface becomes two small circles around K and K′. At 0.1 e per cell, about 2×10¹⁴ cm⁻², they cover roughly 5 % of the Brillouin zone (my estimate). A 30×30 grid would put about 45 k-points inside.\n- Results would converge slowly and unevenly with the k-grid.\n- Worse, levels near the Fermi level can swap order between SCF iterations. Occupations then jump discontinuously and the SCF can oscillate instead of converging.\n- Smearing is what fixes this, so these are the same missing piece as before.\n\n**The gap guard doesn't apply to a metal.** It measures the gap at the reference count of 8 electrons, which for graphene is zero at K, so it would reject every run. A doped run would need the guard switched off, or replaced by a check that makes sense for a metal, such as convergence under smearing.\n\n**Derivatives would mostly survive.** Forces at fixed occupations are fine. They break where levels cross the Fermi level as atoms move, which smearing also smooths out.\n\nSo the code could take the extra charge with a small API change, and the electrostatics would follow the standard convention. Without smearing it would be unreliable, apart from very dense k-grids and possibly a converging SCF by luck. If we do graphene, I'd make smearing part of that milestone and use the extra-electron option as its first test case."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T07:43:41.499Z",
+   "text": "Please summarize the purpose and method of the gap gaurd"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T07:44:02.772Z",
+   "model": "claude-opus-5-5",
+   "text": "The gap guard checks that a converged run is a real insulator ground state on its k-grid. If it isn't, the run is reported as failed rather than returned as a valid ground state.\n\n## Purpose\n\nThe code fills bands without smearing. At every k-point it puts 2 electrons in each of the lowest N/2 bands; \"N\" here is the reference count, the nearest even integer to the electron count. That filling is the ground state only if every occupied state, at every k-point, lies below every empty state, at any k-point. If the bands overlap across k-points, the true ground state would move electrons from the top of the valence band at one k to the bottom of the conduction band at another. The fixed filling then gives a wrong density and energy, and the run would otherwise look perfectly converged.\n\nThree things depend on the gap:\n- **Energy and density:** the fixed filling is the ground state only if there is a gap.\n- **Forces:** Hellmann–Feynman forces at fixed occupations assume no level crosses the Fermi level.\n- **Weight derivatives:** the one-sided derivatives are defined by where the extra or missing charge goes, to the highest valence level or the lowest conduction level. Their difference equals Z × gap, which only means something when the gap is positive.\n\n## Method\n\n1. **Frontier levels over the whole grid:** after convergence, `frontier_gap` takes\n   - VBM = the highest value of band N/2 over all k-points,\n   - CBM = the lowest value of band N/2 + 1 over all k-points.\n2. **Check:** `gap_ok = isfinite(cbm) & (cbm − vbm > min_gap)`, with `min_gap = 1e-3` Ha by default. CBM must be finite, so the run needs at least N/2 + 1 bands; the default band count guarantees that. That band is converged together with the others (`scf.py:298`).\n3. **Applied once, at convergence:** the guard uses the final eigenvalues. VBM, CBM and the gap are also recorded every iteration in the history, so a closing gap can be seen as it develops.\n4. **On failure:** `scf` raises an error that carries the history (\"gap over all k-points … below min_gap\"), together with the other checks. The differentiable `energy()` returns NaN, and its gradient is NaN too, so a bad result can't pass silently into an optimisation.\n\n**Why the whole grid rather than each k-point separately:** in 2a there was only Γ, so the two were the same. In 2b the gap can be indirect, as in silicon, where the VBM is at Γ and the CBM is near X. A per-k check would pass a band overlap between different k-points, which is exactly the case that makes the fixed filling wrong.\n\n## What it caught in 2b\n\n- **Displaced silicon geometry on the 2³ grid:** the grid gap was only 0.12 mHa, so those tests moved to 3³.\n- **Local-only control (no nonlocal projectors):** silicon becomes a metal and the gap is negative. The test now asserts that instead of convergence.\n- **XC-off tests:** these are not meant to be physical, so `min_gap` was lowered for the supercell test and switched off (−∞) for the net-force test.\n\n## Limits\n\n- **It checks only the grid points:** a positive grid gap doesn't prove a gap in the whole Brillouin zone. Graphene on a grid that misses K would pass, correctly as it happens, but the guard can't tell that case from an accident.\n- **`min_gap` is a numerical safety margin,** not a physical threshold.\n- **It confirms that the filling assumption holds; it doesn't remove the need for that assumption.** Metals need smearing, and then the guard would be replaced by a different check."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T07:52:22.772Z",
+   "text": "In other codes I have not experienced (at least not in a way that I recognized) this kind of guard, you usually just set some degree of smearing, typically through a temperature, even for insulators."
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T07:52:43.330Z",
+   "model": "claude-opus-5-5",
+   "text": "You're right, and that's the more common setup. Codes either smear by default or let the user choose a smearing, and the smearing absorbs the problem the guard is there for. With smearing, occupations come from a Fermi level, so if the bands overlap across k-points, electrons simply flow to the lower states. There is no fixed-filling assumption that could silently be wrong, so there is nothing to guard. In an insulator with a gap much larger than the smearing width, occupations are exponentially close to 0 and 2, and the cost is negligible. That's why \"always smear a little\" is a safe habit.\n\nFrom memory of their documentation (not checked now), the defaults differ:\n- **VASP** smears by default.\n- **GPAW** uses a Fermi–Dirac smearing for periodic systems.\n- **Quantum ESPRESSO and ABINIT** default to fixed occupations, with smearing as an option for metals.\n- **DFTK** uses zero temperature unless you set one.\n\nIn the fixed-occupation codes, the check is done by the user, by choosing smearing for anything that might be metallic. The codes check little themselves.\n\nWe have a guard only because smearing doesn't exist here yet. The milestones went insulators first, so fixed occupations came first, and the guard catches the cases where that assumption fails. There was also a deliberate reason: CLAUDE.md asks that weight derivatives in gapped systems be reported as two one-sided values rather than one smeared value. Fixed occupations give those directly; smearing blends them into one number. That holds only at zero smearing. As the smearing goes to zero, the result approaches one side or the other, or the midpoint, depending on where the Fermi level settles.\n\nOnce smearing exists, I'd expect this split:\n- **Smearing becomes the normal path** for metals, doped cells and anything unknown. The SCF then minimises the free energy, which is differentiable everywhere, so forces and stress come out smoothly. Reported energies would use the usual extrapolation of the free energy to zero smearing.\n- **Fixed occupations stay as an option for insulators,** which is where the one-sided weight derivatives (the dE/dλ values for an atom's weight) and the Z × gap identity live. The guard stays with that option, as a check on a choice the user made, not as a gate every run must pass.\n\nSo the guard isn't an extra safety layer other codes lack. It stands in for something those codes get from smearing, and it would become much less central once smearing exists."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T07:59:07.734Z",
+   "text": "So smearing seems like a target for the next milestone - I mentioned graphene would it be better to pick a real metal?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T07:59:27.006Z",
+   "model": "claude-opus-5-5",
+   "text": "I'd pick a real metal, and aluminium specifically. Graphene is a poor first test for smearing. Its Fermi surface is just the points K and K′, and its density of states vanishes at the Fermi level, so it barely exercises what smearing changes. It would also bring several unrelated new things at once: vacuum, a hexagonal cell, a hard carbon pseudopotential and a large 2D k-grid. That would hit the open k-point performance item.\n\n**Why aluminium:**\n- **Mostly reuse:** it is one atom in an fcc cell, so the existing `fcc_lattice`, `special_points_fcc` and k-path code all apply. The HGH Al pseudopotential (3 valence electrons, s and p channels) is soft, comparable to silicon in cutoff, and there's no vacuum.\n- **A real Fermi surface:** it is large and fills much of the Brillouin zone. That is what smearing must handle, and it gives the classic convergence study of k-grid against smearing width.\n- **References at every rung:**\n  - *Analytic or near-analytic:* Al bands are close to free-electron bands, which ties back to the empty lattice of milestone 1a.\n  - *Published LDA values:* lattice constant about 1 % below experiment, bulk modulus near 80 GPa.\n  - *DFTK:* its own examples use Al with smearing, so a like-for-like comparison is easy.\n- **Silicon as a control:** with smearing, silicon must reproduce the fixed-occupation result as the smearing goes to zero. That is a clean limit test and needs no new references.\n\n**New physics and engineering the milestone would have to cover:**\n- **Fermi level:** solving for it every iteration, and differentiating through that solve. Forces and stress need it; implicit differentiation or a custom JVP fits the existing design.\n- **Free energy:** the entropy term, a free energy that is variational and is what `jax.grad` should differentiate, and the extrapolation of energies to zero smearing.\n- **Choice of smearing function:** Fermi–Dirac, Gaussian, or Methfessel–Paxton / Marzari–Vanderbilt. This belongs in the theory post. Each makes a different trade-off between how fast results converge with the smearing width and whether occupations stay between 0 and 2.\n- **Mixing:** metals are prone to charge sloshing, where the density oscillates over long distances from one SCF iteration to the next. In a one-atom cell this is mild. A supercell test would probably need a Kerker-type preconditioner, which damps those long-wavelength changes in the mixer.\n- **Gap guard and weight derivatives:** the guard becomes a check that applies only when fixed occupations are chosen. Weight derivatives become a single two-sided value when smearing is on, and remain one-sided when it is off.\n\n**Graphene after that:** it fits better as a later milestone about 2D systems (hexagonal cells, vacuum, possibly Coulomb truncation), ideally after the k-point performance fix. Doped graphene would then be a natural use of smearing, which would already be in place."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T08:01:01.484Z",
+   "text": "Okay, lets record this discussion somewhere - I don't think we're fully settled and there are aspects I'd like to work on before the next milestone but I think we do have the beginnings of the descriptions of the next milestone."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T08:01:08.114Z",
+   "name": "Bash",
+   "summary": "List recent engineering log entry headings"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T08:01:09.647Z",
+   "name": "Read",
+   "summary": "docs/engineering/engineering_log.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T08:01:30.767Z",
+   "name": "Edit",
+   "summary": "docs/engineering/engineering_log.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T08:01:31.522Z",
+   "name": "Bash",
+   "summary": "Render the engineering log page"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T08:01:39.899Z",
+   "model": "claude-opus-5-5",
+   "text": "I've recorded the discussion as a new engineering log entry, \"2026-11-12: Towards the next milestone: smearing, metals, graphene (open)\", and the log page renders. The entry opens by saying that nothing in it is decided and that later entries will record changes, so it can serve as a starting point without committing us.\n\nIt covers:\n- **Graphene with today's code:** what already works, the small missing pieces, and the three real obstacles: the gap guard at K, cost, and the symmetry analysis for the hexagonal group.\n- **Doping by extra electrons:** the electrostatics already follow the compensating-background convention, with the vacuum artefact in slabs; the occupations and the gap guard are the real obstacles.\n- **Gap guard versus smearing:** why other codes don't need a guard, and the expected split, with smearing as the normal path and fixed occupations kept for insulators.\n- **Aluminium as the candidate next milestone:** why it's preferred over graphene, its references, silicon as a zero-smearing control, and the open questions a theory post would have to settle.\n- **Graphene later,** as part of a milestone on 2D systems.\n\nI wrote it without the rough numbers from our discussion, such as plane-wave counts and Fermi-surface fractions. They were back-of-envelope estimates I hadn't measured.\n\nThe change is uncommitted, on `milestone-2b`. I only rendered the log page, not the whole site, and didn't rerun the tests, since no code changed.\n\nWhich aspects do you want to work on before the next milestone? If they include the two open 2b items, the DFTK comparison and the k-point profiling, I'd do the DFTK comparison first. It's the step left before 2b can be marked done."
+  }
+ ]
+}

@@ -16,6 +16,11 @@ def dftk_h2() -> dict:
     return json.loads((REFERENCE / "dftk_h2" / "dftk_h2.json").read_text())
 
 
+def dftk_si() -> dict:
+    """DFTK reference for Milestone 2b (see reference/dftk_si/README.md)."""
+    return json.loads((REFERENCE / "dftk_si" / "dftk_si.json").read_text())
+
+
 def libxc_lda() -> dict:
     """libxc lda_x and lda_c_pw on a density grid (see reference/libxc_lda/README.md)."""
     return json.loads((REFERENCE / "libxc_lda" / "libxc_lda.json").read_text())

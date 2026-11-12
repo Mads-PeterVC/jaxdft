@@ -34,3 +34,7 @@ excerpts:
   - name: 05_a_missing_abstraction
     session: 2b010b98-daf7-4625-b22b-cf01e4cadae3
     lines: [1772, 2089]
+
+  - name: 06_a_guard_or_smearing
+    session: b6a9a156-6075-4942-8a53-415d1d8e772d
+    lines: [1385, 1528]

@@ -258,10 +258,11 @@ looks wrong, stop and raise it.
   LOBPCG, total energy, forces and one-sided weight derivatives from
   `jax.grad`. Acceptance from analytic checks and invariants; DFTK and libxc
   comparisons added after implementation.
-- **Milestone 2b (in progress):** SCF LDA silicon: HGH nonlocal
-  projectors, Γ-centred k-grids with weights on the basis, occupations and
-  the gap guard over all k-points, bands from the converged density,
-  compared with Cohen–Bergstresser.
+- **Milestone 2b:** SCF LDA silicon: HGH nonlocal projectors, Γ-centred
+  k-grids with weights on the basis, occupations and the gap guard over all
+  k-points, bands from the converged density, compared with
+  Cohen–Bergstresser and published LDA results; DFTK comparison on the same
+  discrete problem.
 
 Later milestones are defined when we get there.
 

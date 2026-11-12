@@ -1608,3 +1608,115 @@ density over k-points in chunks (`lax.map` over batches, or a scan), which
 keeps k-points a batch dimension for sharding. The performance page now
 tracks the cost per k-point and SCF step, so the fix will be measurable. The
 validation document can grow back towards the post's settings afterwards.
+
+## 2026-11-12: Towards the next milestone: smearing, metals, graphene (open)
+
+A discussion with the project lead after the 2b validation, recorded as the
+beginnings of the next milestone's description. Nothing here is decided. Other
+work comes first, and later entries will record what changes.
+
+**What graphene would need today.** Nothing in the SCF, the operators or the
+nonlocal part is specific to silicon. `Lattice` takes any vectors, Ewald, the
+FFT grid rule and the basis are general, `monkhorst_pack((n, n, 1))` gives a
+2D grid, `kpath` takes any labelled points, and carbon's HGH channels (s, p)
+are within `HGHChannel`. The missing pieces are small: the vendored
+`c-q4.hgh` with provenance, a hexagonal lattice or graphene builder, and
+hexagonal special points. Three things are not small:
+
+- *The gap guard.* π and π* touch at K, at the Fermi level. Grids with n a
+  multiple of 3 contain K, the grid gap is zero and the guard rejects the run,
+  although `grid_occupations` shares the degenerate level correctly. Grids
+  without K pass, and fixed occupations are then exact for undoped graphene,
+  but convergence in n is slow near the cone.
+- *Cost.* Carbon HGH needs a much higher cutoff than silicon, the vacuum
+  multiplies the plane-wave count, and a 2D grid without symmetry reduction
+  has many k-points. The open k-point scaling item above would bite first.
+- *Symmetry.* The 2b analysis of which FFT grid sizes keep the diamond space
+  group would have to be redone for the hexagonal group before vanishing
+  forces at the ideal geometry can serve as a test.
+
+**Doping by extra electrons.** Today the electron count is always the sum of
+the ionic charges (`scf.py`, `n_el` from `ionic_charges`); the per-atom
+weights cannot stand in, since they are capped at 1 and scale the
+pseudopotential. An `extra_electrons` option would be a few lines. The
+electrostatics already follow the standard compensating-background
+convention: Hartree and Ewald drop G = 0 with a uniform background, and the
+α term of the local part uses the electron count. In bulk this is the usual
+model of doping. In a slab the background fills the vacuum too, a known
+artefact; quantitative work would need a counter-charge plane or 2D Coulomb
+truncation. The occupations are the real obstacle. The extra charge goes
+level by level into the lowest conduction levels on the grid, a correct
+zero-temperature filling, but without smearing it converges poorly with the
+k-grid and level reordering between iterations can stop the SCF converging.
+The gap guard, measured at the reference count, would reject every such run.
+
+**The gap guard compared with smearing.** Codes that smear by default, or
+leave smearing to the user, have no such guard: occupations follow a Fermi
+level, so band overlap across k-points is absorbed rather than silently
+wrong, and in an insulator with a gap much larger than the width the cost is
+negligible. The guard exists here because smearing does not exist yet, and
+because CLAUDE.md asks for one-sided weight derivatives in gapped systems,
+which fixed occupations give directly and smearing blends into one value. The
+expected split once smearing exists: smearing is the normal path (metals,
+doped cells, unknown systems), minimising a free energy that is
+differentiable everywhere; fixed occupations remain an option for insulators,
+carrying the guard, the one-sided weight derivatives and the Z × gap
+identity.
+
+**Candidate next milestone: smearing, validated on aluminium.** Graphene is a
+poor first test of smearing: its Fermi surface is two points and its density
+of states vanishes at the Fermi level. Aluminium is preferred:
+
+- one atom in the fcc cell, so the existing builders, special points and
+  k-paths apply; the HGH Al pseudopotential (3 valence electrons, s and p
+  channels) is soft and there is no vacuum;
+- a large Fermi surface, which exercises what smearing changes and gives the
+  classic k-grid against smearing-width convergence study;
+- references on every rung: nearly free-electron bands (linking back to
+  milestone 1a), published LDA lattice constant and bulk modulus, and DFTK,
+  whose own examples use smeared aluminium;
+- silicon as a control: with smearing it must reproduce the fixed-occupation
+  result as the width goes to zero.
+
+Questions the theory post would have to settle: the Fermi-level solve and
+its derivative (implicit differentiation or a custom JVP); the entropy term,
+the variational free energy that `jax.grad` differentiates, and zero-width
+extrapolation of energies; the smearing function (Fermi–Dirac, Gaussian,
+Methfessel–Paxton, Marzari–Vanderbilt), each trading convergence in the width
+against occupations staying in [0, 2]; charge sloshing in metals and whether
+a Kerker-type preconditioner is needed (mild in a one-atom cell, likely in
+supercells); and how the gap guard and the weight derivatives change when
+smearing is on.
+
+**Graphene later.** It fits a later milestone on 2D systems (hexagonal cells,
+vacuum, possibly Coulomb truncation), after the k-point performance fix, with
+doped graphene as an application of smearing.
+
+## 2026-11-12: Milestone 2b DFTK comparison
+
+**Reference data.** `reference/dftk_si/` follows `reference/dftk_h2/`: a
+Julia script, the same pinned environment (DFTK 0.8.2), a README with the
+conventions, and a JSON that identifies the pseudopotential by hash. It runs
+the two cases of the theory post: the ideal geometry on the 2³ test grid and
+the displaced force-test geometry on 3³, the grid the acceptance tests moved
+to on 2026-11-11. The post's specification says "the same k-grid", which for
+the displaced case is now 3³.
+
+**DFTK API notes (0.8.2).** The k-grid shift is not a keyword of
+`PlaneWaveBasis`; it is given through `kgrid=MonkhorstPack(n; kshift=...)`.
+With `symmetries=false` DFTK lists every grid point with weight 1/n_k, so
+time reversal is not used either; `length(basis.symmetries)` is 1 and is
+stored in the JSON. With an explicit `fft_size` the grid is used as given,
+which the script asserts, so the review's question about
+`symmetries_respect_rgrid` is settled for this comparison.
+
+**k-point labels.** The tests build jaxdft's own `monkhorst_pack` grid in
+[0, 1) and match DFTK's [−½, ½) points modulo 1, rather than feeding DFTK's
+coordinates to jaxdft. That way the comparison also covers the relabelling
+invariance the theory post names as a test, and the plane-wave counts per
+k-point are compared after matching.
+
+**Result.** All energy terms, the total, the eigenvalues of the five
+converged bands at every k-point and the forces agree to about 10⁻¹¹ in
+atomic units, against tolerances of 10⁻⁷ Ha, 10⁻⁶ Ha and 10⁻⁶ Ha/Bohr. The
+validation document computes and shows the differences.

@@ -49,6 +49,7 @@
 - id: "2b"
   title: "Milestone 2b"
   capability: "Self-consistent LDA for silicon: nonlocal projectors and Brillouin-zone sampling."
-  status: in-progress
+  status: done
+  reached: 2026-11-12T09:55:12+01:00
   theory: theory/02b_scf_silicon.qmd
   validation: validation/02b_scf_silicon.qmd

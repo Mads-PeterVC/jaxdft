@@ -6,7 +6,7 @@ bibliography: ../references.bib
 ---
 
 ::: {.callout-note}
-## Status: reviewed and implemented; DFTK comparison pending
+## Status: reviewed, implemented and validated against DFTK
 Reviewed on 2026-11-11. The review is kept at `reviews/review_02b_scf_silicon.md`.
 It rebuilt the method independently from this post (a NumPy plane-wave LDA)
 and reproduced every number quoted here. It found one physics error: the
@@ -29,8 +29,14 @@ post's numbers and corrects three expectations that were measured with the
 
 It also refines two statements. Only the upper valence bands agree closely
 with Cohen–Bergstresser; the lowest does not. And 6³ is within about 0.2 mHa
-of the k-converged energy, not 0.5. The DFTK comparison follows
-implementation, as in 2a.
+of the k-converged energy, not 0.5.
+
+DFTK, run as specified under 'Against references' (`reference/dftk_si/`),
+agrees with jaxdft far inside the tolerances below, with the `PspCorrection`
+and eigenvalue shift predicted here. The force comparison uses the displaced
+geometry on the 3³ grid, for the reason in the first item above. The
+explicit `fft_size` and `symmetries=false` left DFTK with the given grid and
+the identity as its only symmetry, as the review expected.
 
 Formulas marked *checked* were verified numerically while the post was being
 prepared, and again by the review. Numbers quoted "from the throwaway check"
