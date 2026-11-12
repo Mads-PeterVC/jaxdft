@@ -1,0 +1,437 @@
+{
+  "description": "LOBPCG residual floor on a V100: FFT, apply_H, eigh and LOBPCG variants against the CPU of the same node",
+  "generator": "reference/gpu_lobpcg_floor/extract.py",
+  "runs": {
+    "building_blocks": {
+      "id": "HVXnGQxx8qymXg3TvGmeMo-exp",
+      "submit_script": "shephex/scripts/aicloud/gpu_residual_floor.py",
+      "result": {
+        "job-id": "1166337_0",
+        "stage": "done",
+        "devices": {
+          "cpu": "cpu",
+          "gpu": "Tesla V100-SXM3-32GB"
+        },
+        "eig_tol": 5e-14,
+        "H2": {
+          "cpu": {
+            "fft_roundtrip_max_rel": 4.2835974538525863e-16,
+            "Hpsi_rel_diff_vs_cpu": 0.0,
+            "eigh": {
+              "3": {
+                "residual_rel": 4.2335569179431607e-16,
+                "orthogonality": 8.57915032140064e-16
+              },
+              "6": {
+                "residual_rel": 8.593058107916504e-16,
+                "orthogonality": 1.4145145267443503e-15
+              },
+              "9": {
+                "residual_rel": 8.600197364418514e-16,
+                "orthogonality": 2.2487162273725566e-15
+              }
+            },
+            "lobpcg": {
+              "20": {
+                "iterations": 20,
+                "true_residual_max": 0.00024105220715834601
+              },
+              "40": {
+                "iterations": 40,
+                "true_residual_max": 6.060769313477718e-08
+              },
+              "80": {
+                "iterations": 71,
+                "true_residual_max": 4.500278145966539e-14
+              },
+              "160": {
+                "iterations": 71,
+                "true_residual_max": 4.500278145966539e-14
+              },
+              "300": {
+                "iterations": 71,
+                "true_residual_max": 4.500278145966539e-14
+              }
+            },
+            "final_residual_rechecked_on_cpu": 4.500278145966539e-14,
+            "n_pad": 1503,
+            "n_solve": 3
+          },
+          "gpu": {
+            "fft_roundtrip_max_rel": 4.65528851164076e-16,
+            "Hpsi_rel_diff_vs_cpu": 9.471529938820998e-17,
+            "eigh": {
+              "3": {
+                "residual_rel": 4.526720505357348e-16,
+                "orthogonality": 1.0593706819011757e-15
+              },
+              "6": {
+                "residual_rel": 1.4042366267059746e-15,
+                "orthogonality": 3.398528279930107e-15
+              },
+              "9": {
+                "residual_rel": 1.446064034776652e-15,
+                "orthogonality": 3.1654745399973894e-15
+              }
+            },
+            "lobpcg": {
+              "20": {
+                "iterations": 20,
+                "true_residual_max": 0.00024105220663661074
+              },
+              "40": {
+                "iterations": 40,
+                "true_residual_max": 4.080775271710718e-08
+              },
+              "80": {
+                "iterations": 80,
+                "true_residual_max": 1.4036315974987644e-12
+              },
+              "160": {
+                "iterations": 160,
+                "true_residual_max": 1.4575904282154315e-12
+              },
+              "300": {
+                "iterations": 300,
+                "true_residual_max": 1.4567055471064475e-12
+              }
+            },
+            "final_residual_rechecked_on_cpu": 1.4567077146930958e-12,
+            "n_pad": 1503,
+            "n_solve": 3
+          }
+        },
+        "Si": {
+          "cpu": {
+            "fft_roundtrip_max_rel": 5.24563173404644e-16,
+            "Hpsi_rel_diff_vs_cpu": 0.0,
+            "eigh": {
+              "6": {
+                "residual_rel": 6.727148685983116e-16,
+                "orthogonality": 1.5162951867908759e-15
+              },
+              "12": {
+                "residual_rel": 1.0398611813091128e-15,
+                "orthogonality": 3.641202183420546e-15
+              },
+              "18": {
+                "residual_rel": 1.0156707243692143e-15,
+                "orthogonality": 4.025391059723461e-15
+              }
+            },
+            "lobpcg": {
+              "20": {
+                "iterations": 20,
+                "true_residual_max": 1.634181874938056e-05
+              },
+              "40": {
+                "iterations": 40,
+                "true_residual_max": 9.760369675555803e-11
+              },
+              "80": {
+                "iterations": 51,
+                "true_residual_max": 5.0176337342671834e-14
+              },
+              "160": {
+                "iterations": 51,
+                "true_residual_max": 5.0176337342671834e-14
+              },
+              "300": {
+                "iterations": 51,
+                "true_residual_max": 5.0176337342671834e-14
+              }
+            },
+            "final_residual_rechecked_on_cpu": 5.0176337342671834e-14,
+            "n_pad": 544,
+            "n_solve": 6
+          },
+          "gpu": {
+            "fft_roundtrip_max_rel": 5.754770788309646e-16,
+            "Hpsi_rel_diff_vs_cpu": 8.447017529178573e-17,
+            "eigh": {
+              "6": {
+                "residual_rel": 1.2412581693515101e-15,
+                "orthogonality": 2.0296946685503012e-15
+              },
+              "12": {
+                "residual_rel": 3.1704418856097784e-15,
+                "orthogonality": 7.974294870346172e-15
+              },
+              "18": {
+                "residual_rel": 2.1975109045654523e-15,
+                "orthogonality": 1.0282406313724864e-14
+              }
+            },
+            "lobpcg": {
+              "20": {
+                "iterations": 20,
+                "true_residual_max": 1.63418185252725e-05
+              },
+              "40": {
+                "iterations": 40,
+                "true_residual_max": 1.6485286562973557e-10
+              },
+              "80": {
+                "iterations": 80,
+                "true_residual_max": 3.936164552934301e-12
+              },
+              "160": {
+                "iterations": 160,
+                "true_residual_max": 4.206864679914218e-12
+              },
+              "300": {
+                "iterations": 300,
+                "true_residual_max": 4.206503587515964e-12
+              }
+            },
+            "final_residual_rechecked_on_cpu": 4.206502902595131e-12,
+            "n_pad": 544,
+            "n_solve": 6
+          }
+        }
+      }
+    },
+    "dense_steps": {
+      "id": "M4QGTjmLZieUCnmP5CXnHA-exp",
+      "submit_script": "shephex/scripts/aicloud/gpu_lobpcg_dense_steps.py",
+      "result": {
+        "job-id": "1166741_0",
+        "devices": {
+          "cpu": "cpu",
+          "gpu": "Tesla V100-SXM3-32GB"
+        },
+        "eig_tol": 5e-14,
+        "stage": "done",
+        "H2": {
+          "cpu/jaxdft": {
+            "iterations": 71,
+            "tracked_residual_max": NaN,
+            "true_residual_max": 4.5002706238631146e-14,
+            "eigenvalues": [
+              -0.3610075814506501,
+              -0.0138151086395577,
+              0.056415893003737935
+            ],
+            "sentinel": 20.0
+          },
+          "cpu/none": {
+            "iterations": 71,
+            "tracked_residual_max": 4.468288701455301e-14,
+            "true_residual_max": 4.5002706238631146e-14,
+            "eigenvalues": [
+              -0.3610075814506501,
+              -0.0138151086395577,
+              0.056415893003737935
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/jaxdft": {
+            "iterations": 300,
+            "tracked_residual_max": NaN,
+            "true_residual_max": 1.3040100716488739e-12,
+            "eigenvalues": [
+              -0.3610075814506433,
+              -0.013815108639557745,
+              0.05641589300373775
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/none": {
+            "iterations": 300,
+            "tracked_residual_max": 1.307676837154925e-12,
+            "true_residual_max": 1.3040100716488739e-12,
+            "eigenvalues": [
+              -0.3610075814506433,
+              -0.013815108639557745,
+              0.05641589300373775
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/rr": {
+            "iterations": 71,
+            "tracked_residual_max": 3.278667186383727e-14,
+            "true_residual_max": 3.473404318109163e-14,
+            "eigenvalues": [
+              -0.3610075814506502,
+              -0.013815108639557674,
+              0.056415893003737824
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/gram": {
+            "iterations": 300,
+            "tracked_residual_max": 1.2268351041866634e-12,
+            "true_residual_max": 1.2350811440931984e-12,
+            "eigenvalues": [
+              -0.3610075814506398,
+              -0.01381510863955794,
+              0.056415893003737005
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/qr": {
+            "iterations": 300,
+            "tracked_residual_max": 1.3655353879231512e-12,
+            "true_residual_max": 1.3662783959146412e-12,
+            "eigenvalues": [
+              -0.36100758145065015,
+              -0.013815108639557467,
+              0.05641589300373784
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/all": {
+            "iterations": 71,
+            "tracked_residual_max": 3.723274801234016e-14,
+            "true_residual_max": 3.854384882965126e-14,
+            "eigenvalues": [
+              -0.36100758145065026,
+              -0.013815108639557677,
+              0.05641589300373793
+            ],
+            "sentinel": 20.0
+          },
+          "gpu/penalty": {
+            "iterations": 71,
+            "tracked_residual_max": 3.5674759002026693e-14,
+            "true_residual_max": 3.731680129018378e-14,
+            "eigenvalues": [
+              -0.3610075814506517,
+              -0.013815108639557719,
+              0.0564158930037378
+            ],
+            "sentinel": 20.0
+          }
+        },
+        "Si": {
+          "cpu/jaxdft": {
+            "iterations": 51,
+            "tracked_residual_max": NaN,
+            "true_residual_max": 5.0177510520470326e-14,
+            "eigenvalues": [
+              -0.12290947485578052,
+              -0.028124298203201156,
+              0.18763670719161396,
+              0.18763670719161468,
+              0.2815784817321257,
+              0.3495194459413745
+            ],
+            "sentinel": 24.0
+          },
+          "cpu/none": {
+            "iterations": 51,
+            "tracked_residual_max": 3.455528558887002e-14,
+            "true_residual_max": 5.0177510520470326e-14,
+            "eigenvalues": [
+              -0.12290947485578052,
+              -0.028124298203201156,
+              0.18763670719161396,
+              0.18763670719161468,
+              0.2815784817321257,
+              0.3495194459413745
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/jaxdft": {
+            "iterations": 300,
+            "tracked_residual_max": NaN,
+            "true_residual_max": 2.858754705329587e-12,
+            "eigenvalues": [
+              -0.12290947485577515,
+              -0.02812429820320074,
+              0.1876367071916186,
+              0.1876367071916197,
+              0.28157848173212585,
+              0.349519445941374
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/none": {
+            "iterations": 300,
+            "tracked_residual_max": 2.8598810085867074e-12,
+            "true_residual_max": 2.858754705329587e-12,
+            "eigenvalues": [
+              -0.12290947485577515,
+              -0.02812429820320074,
+              0.1876367071916186,
+              0.1876367071916197,
+              0.28157848173212585,
+              0.349519445941374
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/rr": {
+            "iterations": 49,
+            "tracked_residual_max": 4.108021839810286e-14,
+            "true_residual_max": 4.3366822614964016e-14,
+            "eigenvalues": [
+              -0.12290947485578058,
+              -0.028124298203201326,
+              0.18763670719161435,
+              0.18763670719161463,
+              0.28157848173212524,
+              0.34951944594137374
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/gram": {
+            "iterations": 300,
+            "tracked_residual_max": 3.5035565450315046e-12,
+            "true_residual_max": 3.5105262503046467e-12,
+            "eigenvalues": [
+              -0.12290947485578037,
+              -0.028124298203201448,
+              0.18763670719161551,
+              0.1876367071916168,
+              0.28157848173212136,
+              0.34951944594136797
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/qr": {
+            "iterations": 300,
+            "tracked_residual_max": 3.48848734751331e-12,
+            "true_residual_max": 3.576875693162647e-12,
+            "eigenvalues": [
+              -0.12290947485578063,
+              -0.028124298203200976,
+              0.18763670719161074,
+              0.18763670719161718,
+              0.28157848173213007,
+              0.3495194459413752
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/all": {
+            "iterations": 49,
+            "tracked_residual_max": 2.5739101052728385e-14,
+            "true_residual_max": 4.6869581323543266e-14,
+            "eigenvalues": [
+              -0.12290947485578003,
+              -0.028124298203201288,
+              0.1876367071916141,
+              0.187636707191615,
+              0.2815784817321256,
+              0.3495194459413734
+            ],
+            "sentinel": 24.0
+          },
+          "gpu/penalty": {
+            "iterations": 52,
+            "tracked_residual_max": 2.463210238493124e-14,
+            "true_residual_max": 2.936829622518457e-14,
+            "eigenvalues": [
+              -0.12290947485578052,
+              -0.028124298203201406,
+              0.18763670719161377,
+              0.18763670719161488,
+              0.2815784817321256,
+              0.34951944594137385
+            ],
+            "sentinel": 24.0
+          }
+        }
+      }
+    }
+  }
+}

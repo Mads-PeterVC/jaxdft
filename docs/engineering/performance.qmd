@@ -339,7 +339,7 @@ point to the eigensolver instead.
 
 The same silicon calculation at 12 Ha on Γ-centred n³ grids up to 8³, run on
 the biocloud Slurm cluster through shephex (one job per grid, 8 CPUs each).
-The numbers are read from `reference/biocloud_si_kgrid/`, whose README
+The numbers are read from `reference/si_kgrid_scaling/`, whose README
 records how they were made; they are not recomputed at render time.
 "eig it" is the sum over SCF steps of the largest number of LOBPCG iterations
 over the k-points.
@@ -357,7 +357,7 @@ from jaxdft.scf.scf import EIGEN_TOL_FRACTION
 style.enable()
 
 cluster = json.loads(
-    Path("../../reference/biocloud_si_kgrid/si_kgrid_scaling.json").read_text()
+    Path("../../reference/si_kgrid_scaling/biocloud.json").read_text()
 )["experiments"]
 cluster_rows = []
 for e in cluster:
@@ -415,3 +415,82 @@ far from converged. Peak memory grows linearly, to
 The jobs ran at the same time on three nodes, one measurement each; the step
 in cost per iteration between 27 and 64 k-points coincides with a change of
 node.
+
+## Milestone 2b on a V100: the same scan on a GPU
+
+The same scan on one NVIDIA V100 (aicloud, one GPU per grid), from
+`reference/si_kgrid_scaling/aicloud.json`, against the biocloud runs above:
+one GPU against eight CPU cores. The energy difference is between the two
+converged SCF energies.
+
+```{python}
+#| echo: false
+gpu = json.loads(
+    Path("../../reference/si_kgrid_scaling/aicloud.json").read_text()
+)["experiments"]
+cpu_by_k = {e["n_kpoints"]: e for e in cluster}
+gpu_rows = []
+for e in gpu:
+    n_k, eig_it = e["n_kpoints"], sum(e["eig_iterations_steady"])
+    assert e["eig_iterations_first"] == e["eig_iterations_steady"]
+    c = cpu_by_k[n_k]
+    gpu_rows.append({
+        "k-grid": f"{e['n']}³",
+        "k-points": n_k,
+        "SCF steady, V100 (s)": e["steady_s"],
+        "SCF steady, 8 cores (s)": c["steady_s"],
+        "speed-up": c["steady_s"] / e["steady_s"],
+        "eig it": eig_it,
+        "ms per k-point and eig it": 1e3 * e["steady_s"] / n_k / eig_it,
+        "GPU memory (GB)": e["peak_device_memory_gb"],
+        "compile and first SCF (s)": e["first_s"],
+        "E(V100) − E(CPU) (Ha)": e["energy"] - c["energy"],
+    })
+gpu_df = pd.DataFrame(gpu_rows)
+large = gpu_df[gpu_df["k-points"] >= 64]
+max_de = gpu_df["E(V100) − E(CPU) (Ha)"].abs().max()
+gpu_per_it = large["ms per k-point and eig it"]
+gpu_eig_growth = gpu_rows[-1]["eig it"] / gpu_rows[0]["eig it"]
+compile_extra = (
+    gpu_df["compile and first SCF (s)"] - gpu_df["SCF steady, V100 (s)"]
+)
+gpu_df.style.hide(axis="index").format(
+    precision=2, subset=gpu_df.columns[:-1]
+).format("{:.1e}", subset=["E(V100) − E(CPU) (Ha)"])
+```
+
+```{python}
+#| echo: false
+#| column: page-inset
+both = pd.concat([
+    pd.DataFrame({
+        "k-points": [r["k-points"] for r in cluster_rows],
+        "s": [r["SCF steady (s)"] for r in cluster_rows],
+        "device": "8 CPU cores (biocloud)",
+    }),
+    pd.DataFrame({
+        "k-points": gpu_df["k-points"],
+        "s": gpu_df["SCF steady, V100 (s)"],
+        "device": "V100 (aicloud)",
+    }),
+])
+alt.Chart(both).mark_line(point=True).encode(
+    x=alt.X("k-points:Q", scale=alt.Scale(type="log"), title="k-points"),
+    y=alt.Y("s:Q", scale=alt.Scale(type="log"), title="steady SCF (s)"),
+    color=alt.Color("device:N", legend=alt.Legend(orient="top")),
+    tooltip=["device", "k-points", alt.Tooltip("s:Q", format=".2f")],
+).properties(width=style.WIDTH, height=style.HEIGHT)
+```
+
+The V100 reproduces the CPU energies to `{python} f"{max_de:.0e}"` Ha at
+every grid. From 64 k-points up it is
+`{python} f"{large['speed-up'].min():.0f}"`–`{python} f"{large['speed-up'].max():.0f}"`
+times faster than eight cores, and the cost per k-point and eigensolver
+iteration settles at `{python} f"{gpu_per_it.min():.2f}"`–`{python} f"{gpu_per_it.max():.2f}"`
+ms; on fewer k-points the GPU is not filled, and a single k-point is slower
+than on the CPU. The eigensolver iterations grow
+`{python} f"{gpu_eig_growth:.1f}"`-fold over the scan, as on the CPU; the
+counts differ between the two machines because rounding-level differences
+change which k-point is the slowest. Compilation and the first run add
+`{python} f"{compile_extra.min():.0f}"`–`{python} f"{compile_extra.max():.0f}"` s per
+grid.

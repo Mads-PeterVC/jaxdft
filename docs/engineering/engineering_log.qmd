@@ -1772,3 +1772,65 @@ helped. Two standard remedies, neither implemented:
   k-points.
 
 Either changes the SCF algorithm, so it goes through the milestone workflow.
+
+## 2026-11-12: First GPU runs (V100); LOBPCG's Rayleigh–Ritz step sets a residual floor on GPU
+
+**Setup on aicloud.** The package gains an optional extra `cuda`
+(`jax[cuda12]`, Linux only: the CUDA plugin has no macOS wheels, and without
+the marker `uv add` tried to install it on the laptop). CUDA 12 rather than
+13 because CUDA 13 no longer supports Volta, i.e. the V100. The driver on the
+V100 nodes is 580 (CUDA 13.0), which runs the CUDA 12 wheels. The aicloud
+clone is synced with every default group plus `cuda`, so the test suite can
+run there. The shephex profile `aicloud-jaxdft-v100` (one V100, 8 cores)
+sets `JAX_PLATFORMS=cuda,cpu`: with `cuda` alone the SCF fails at its first
+log line, because `jax.debug.callback` needs a CPU device to hand values to
+Python. A job that starts a second JAX process on the same GPU (pytest from
+a shephex job) turns preallocation off, since each process would otherwise
+reserve 75 % of the GPU memory.
+
+**Reference data moved.** The k-grid timings now live in
+`reference/si_kgrid_scaling/`, one JSON per cluster (`biocloud.json`,
+`aicloud.json`) from one `extract.py <cluster>`. The entry above names the
+earlier path, `reference/biocloud_si_kgrid/`.
+
+**k-grid scan on the V100** (performance page). Energies agree with the
+biocloud CPU runs to rounding at every grid. From 64 k-points up one V100 is
+about 12–15 times faster than eight cores, and the cost per k-point and
+eigensolver iteration is flat; the lockstep growth of eigensolver iterations
+is the same as on the CPU. The eigensolver remains the thing to fix for
+large grids, on either device.
+
+**Test suite on the V100** (`reference/aicloud_pytest/`): 634 passed, 3
+failed, 5 errors, against 642 passed on the laptop.
+
+- Seven are one problem: every test that runs the SCF at `SCF_TOL_TIGHT` =
+  1e-12 needs eigensolver residuals below 1e-13, and LOBPCG on the GPU
+  stalls near 1.5e-12 and runs into its iteration cap.
+- One is memory: `band_minimum_on_segment` (used by
+  `test_conduction_minimum_is_interior_to_gamma_x`) diagonalises 41 k-points
+  at once with the dense solver and asks for more than 9.4 GiB in one
+  allocation. The same pattern as the k-point batches: everything is
+  materialised at once. Open.
+
+**Diagnosis of the residual floor** (`reference/gpu_lobpcg_floor/`). FFTs
+and `apply_H` agree between GPU and CPU to rounding, and GPU `eigh` is
+accurate to ~1e-15 relative, so the operator is not the cause, and the floor
+is real: the CPU measures the same residual for the GPU's orbitals. In a
+diagnostic copy of `lobpcg`, moving only the Rayleigh–Ritz `eigh` to the CPU
+removes the floor (H₂ and Si converge to ~4e-14 in as many iterations as on
+the CPU); moving the Gram `eigh` or the QR and inverse does not. Keeping
+everything on the GPU and lowering the penalty on dropped directions from
+1e3 to 2 times max|T| also removes it. The mechanism: the penalty makes
+‖T‖ about a thousand times larger than the Ritz values we want, and an
+`eigh` that is accurate relative to ‖T‖ then has a thousandfold larger
+absolute error in the lowest eigenpairs. CPU LAPACK is accurate enough for
+this not to show; the GPU solver is not.
+
+`EIGEN_FLOOR` (2e-14, "‖H‖ ε") is a property of the operator; this shows the
+attainable residual also depends on the solver's dense steps and the
+hardware. Two candidate fixes, neither implemented: a penalty bounded by
+the spectrum of T rather than 1e3 max|T| (it must still keep dropped
+directions above the wanted Ritz values), or removing dropped directions
+from the Rayleigh–Ritz problem. Either changes the eigensolver, and goes
+through the milestone workflow together with the k-point work. The
+acceptance tests are unchanged.

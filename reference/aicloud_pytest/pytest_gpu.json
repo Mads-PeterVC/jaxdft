@@ -1,0 +1,66 @@
+{
+  "description": "jaxdft test suite on an aicloud V100 (JAX default device)",
+  "generator": "reference/aicloud_pytest/extract.py",
+  "submit_script": "shephex/scripts/aicloud/pytest_on_gpu.py",
+  "runs": [
+    {
+      "id": "PCLTffKEtLRRdDttSAJGLq-exp",
+      "job": "1165908_0",
+      "commit": "acd8ff8",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "returncode": 1,
+      "summary": "============= 3 failed, 634 passed, 5 errors in 1442.23s (0:24:02) =============",
+      "counts": {
+        "failed": 3,
+        "passed": 634,
+        "errors": 5
+      },
+      "elapsed_s": 1485.0284045129083,
+      "problems": [
+        {
+          "outcome": "ERROR",
+          "test": "tests/scientific/test_derivatives_silicon.py::test_weight_derivative_sides_differ_by_z_times_the_gap_over_the_grid",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.730e-12)"
+        },
+        {
+          "outcome": "ERROR",
+          "test": "tests/scientific/test_derivatives_silicon.py::test_one_sided_weight_derivative_non_degenerate_frontier[vbm-side]",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.730e-12)"
+        },
+        {
+          "outcome": "ERROR",
+          "test": "tests/scientific/test_derivatives_silicon.py::test_one_sided_weight_derivative_non_degenerate_frontier[cbm-side]",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.730e-12)"
+        },
+        {
+          "outcome": "ERROR",
+          "test": "tests/scientific/test_derivatives_silicon.py::test_one_sided_weight_derivative_degenerate_frontier",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.369e-12)"
+        },
+        {
+          "outcome": "ERROR",
+          "test": "tests/scientific/test_derivatives_silicon.py::test_nonlocal_energy_is_linear_and_homogeneous_in_the_weights",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.730e-12)"
+        },
+        {
+          "outcome": "FAILED",
+          "test": "tests/scientific/test_bands_silicon.py::test_band_structure_at_grid_k_points_equals_the_scf_eigenvalues",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.369e-12)"
+        },
+        {
+          "outcome": "FAILED",
+          "test": "tests/scientific/test_bands_silicon.py::test_conduction_minimum_is_interior_to_gamma_x",
+          "error": "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 9.44GiB with allocator GPU_0_bfc on device 0. [executable_name='jit__argmin'] [tf-allocator-allocation-error='']"
+        },
+        {
+          "outcome": "FAILED",
+          "test": "tests/scientific/test_derivatives_h2.py::test_one_sided_weight_derivative[homo-side]",
+          "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.311e-12)"
+        }
+      ]
+    }
+  ]
+}

@@ -1,11 +1,12 @@
-"""Collect the biocloud silicon k-grid scaling runs into one tracked JSON file.
+"""Collect the silicon k-grid scaling runs of one cluster into a tracked JSON.
 
-The runs are submitted by shephex/scripts/biocloud/si_kgrid_scaling.py and
-pulled into shephex/data/biocloud/si-kgrid-scaling/, which is not tracked.
+The runs are submitted by shephex/scripts/<cluster>/si_kgrid_scaling.py and
+pulled into shephex/data/<cluster>/si-kgrid-scaling/, which is not tracked.
 This script reads each experiment's shephex context and jaxdft log and writes
-si_kgrid_scaling.json next to it. From the repository root:
+<cluster>.json next to it. From the repository root:
 
-    uv run python reference/biocloud_si_kgrid/extract.py
+    uv run python reference/si_kgrid_scaling/extract.py biocloud
+    uv run python reference/si_kgrid_scaling/extract.py aicloud
 
 Every experiment must have completed; the script refuses partial data.
 """
@@ -15,8 +16,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "shephex" / "data" / "biocloud" / "si-kgrid-scaling"
-OUTPUT = Path(__file__).resolve().parent / "si_kgrid_scaling.json"
+HERE = Path(__file__).resolve().parent
 
 CONTEXT_KEYS = (
     "commit",
@@ -33,6 +33,8 @@ CONTEXT_KEYS = (
     "steady_s",
     "peak_memory_gb",
 )
+# Recorded only by the GPU runs.
+OPTIONAL_KEYS = ("devices", "backend", "peak_device_memory_gb")
 
 
 def eigensolver_iterations(log: str) -> list[list[int]]:
@@ -69,26 +71,30 @@ def experiment(directory: Path) -> dict:
     row = {"id": directory.name, "job": context["job-id"]}
     row.update(options["kwargs"])
     row.update({key: context[key] for key in CONTEXT_KEYS})
+    row.update({key: context[key] for key in OPTIONAL_KEYS if key in context})
     row["eig_iterations_first"] = runs[0]
     row["eig_iterations_steady"] = runs[1]
     return row
 
 
 def main() -> None:
-    directories = sorted(SOURCE.glob("*-exp"))
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    cluster = sys.argv[1]
+    source = ROOT / "shephex" / "data" / cluster / "si-kgrid-scaling"
+    output = HERE / f"{cluster}.json"
+    directories = sorted(source.glob("*-exp"))
     if not directories:
-        sys.exit(f"No experiments in {SOURCE}; pull them with hex remote pull")
+        sys.exit(f"No experiments in {source}; pull them with hex remote pull")
     rows = sorted(map(experiment, directories), key=lambda r: r["n_kpoints"])
     data = {
-        "description": (
-            "SCF LDA silicon on Γ-centred n³ k-grids, timed on biocloud"
-        ),
-        "generator": "reference/biocloud_si_kgrid/extract.py",
-        "submit_script": "shephex/scripts/biocloud/si_kgrid_scaling.py",
+        "description": (f"SCF LDA silicon on Γ-centred n³ k-grids, timed on {cluster}"),
+        "generator": "reference/si_kgrid_scaling/extract.py",
+        "submit_script": f"shephex/scripts/{cluster}/si_kgrid_scaling.py",
         "experiments": rows,
     }
-    OUTPUT.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    print(f"Wrote {len(rows)} experiments to {OUTPUT.relative_to(ROOT)}")
+    output.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    print(f"Wrote {len(rows)} experiments to {output.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
