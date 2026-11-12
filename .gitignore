@@ -15,3 +15,7 @@ sources/
 # Logs written by the example scripts
 examples/*.log
 *.log
+
+# shephex runs: submit scripts in shephex/scripts/ are tracked, the experiment
+# data pulled from the clusters is not
+shephex/data/
