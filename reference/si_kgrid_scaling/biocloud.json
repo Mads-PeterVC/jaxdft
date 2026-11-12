@@ -1,6 +1,6 @@
 {
   "description": "SCF LDA silicon on Γ-centred n³ k-grids, timed on biocloud",
-  "generator": "reference/biocloud_si_kgrid/extract.py",
+  "generator": "reference/si_kgrid_scaling/extract.py",
   "submit_script": "shephex/scripts/biocloud/si_kgrid_scaling.py",
   "experiments": [
     {

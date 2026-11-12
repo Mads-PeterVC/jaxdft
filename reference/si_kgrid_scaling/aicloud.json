@@ -1,0 +1,423 @@
+{
+  "description": "SCF LDA silicon on Γ-centred n³ k-grids, timed on aicloud",
+  "generator": "reference/si_kgrid_scaling/extract.py",
+  "submit_script": "shephex/scripts/aicloud/si_kgrid_scaling.py",
+  "experiments": [
+    {
+      "id": "8moWpu6vbsFG2tzeYzMjLF-exp",
+      "job": "1166339_0",
+      "n": 1,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-02.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 1,
+      "n_pw_max": 537,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 10,
+      "energy": -7.298223380480032,
+      "first_s": 10.695804964751005,
+      "steady_s": 0.3860773779451847,
+      "peak_memory_gb": 1.812103168,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 0.08862976,
+      "eig_iterations_first": [
+        51,
+        17,
+        15,
+        12,
+        11,
+        9,
+        8,
+        7,
+        8,
+        7,
+        4
+      ],
+      "eig_iterations_steady": [
+        51,
+        17,
+        15,
+        12,
+        11,
+        9,
+        8,
+        7,
+        8,
+        7,
+        4
+      ]
+    },
+    {
+      "id": "KrLe9ydckZJh9EX7jaJafN-exp",
+      "job": "1166339_1",
+      "n": 2,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-02.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 8,
+      "n_pw_max": 544,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.8361518951543525,
+      "first_s": 10.477890019770712,
+      "steady_s": 0.4935649186372757,
+      "peak_memory_gb": 1.834983424,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 0.091627776,
+      "eig_iterations_first": [
+        58,
+        50,
+        17,
+        16,
+        13,
+        12,
+        11,
+        9,
+        7,
+        2
+      ],
+      "eig_iterations_steady": [
+        58,
+        50,
+        17,
+        16,
+        13,
+        12,
+        11,
+        9,
+        7,
+        2
+      ]
+    },
+    {
+      "id": "6GUT65a8V7boAALzgDY4f4-exp",
+      "job": "1166339_2",
+      "n": 3,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-02.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 27,
+      "n_pw_max": 540,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 8,
+      "energy": -7.9088218577784515,
+      "first_s": 13.288247151765972,
+      "steady_s": 1.9231511880643666,
+      "peak_memory_gb": 1.831354368,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 0.206471936,
+      "eig_iterations_first": [
+        156,
+        53,
+        43,
+        38,
+        35,
+        32,
+        24,
+        18,
+        10
+      ],
+      "eig_iterations_steady": [
+        156,
+        53,
+        43,
+        38,
+        35,
+        32,
+        24,
+        18,
+        10
+      ]
+    },
+    {
+      "id": "8guNtz8SGdthtkRtFVjnD6-exp",
+      "job": "1166339_3",
+      "n": 4,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-03.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 64,
+      "n_pw_max": 544,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.925085649325338,
+      "first_s": 22.700736111961305,
+      "steady_s": 3.250019945204258,
+      "peak_memory_gb": 1.858404352,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 0.478717184,
+      "eig_iterations_first": [
+        84,
+        52,
+        47,
+        37,
+        36,
+        31,
+        25,
+        18,
+        10,
+        5
+      ],
+      "eig_iterations_steady": [
+        84,
+        52,
+        47,
+        37,
+        36,
+        31,
+        25,
+        18,
+        10,
+        5
+      ]
+    },
+    {
+      "id": "aCuygXH5uVgswuZy8kjjbT-exp",
+      "job": "1166339_4",
+      "n": 5,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-03.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 125,
+      "n_pw_max": 547,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.929795590709511,
+      "first_s": 26.95942330174148,
+      "steady_s": 7.753238812088966,
+      "peak_memory_gb": 1.850171392,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 0.927950848,
+      "eig_iterations_first": [
+        66,
+        94,
+        79,
+        45,
+        46,
+        37,
+        36,
+        27,
+        15,
+        7
+      ],
+      "eig_iterations_steady": [
+        66,
+        94,
+        79,
+        45,
+        46,
+        37,
+        36,
+        27,
+        15,
+        7
+      ]
+    },
+    {
+      "id": "Z669KY3LvvFGZWVyDqqq3j-exp",
+      "job": "1166339_5",
+      "n": 6,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-03.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 216,
+      "n_pw_max": 544,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.931373772673728,
+      "first_s": 33.833390451967716,
+      "steady_s": 15.075921329669654,
+      "peak_memory_gb": 1.867055104,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 1.59647872,
+      "eig_iterations_first": [
+        106,
+        105,
+        100,
+        51,
+        44,
+        41,
+        29,
+        26,
+        17,
+        8
+      ],
+      "eig_iterations_steady": [
+        106,
+        105,
+        100,
+        51,
+        44,
+        41,
+        29,
+        26,
+        17,
+        8
+      ]
+    },
+    {
+      "id": "K7eFsE7j67kN5HyHJYmvyN-exp",
+      "job": "1166339_6",
+      "n": 7,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-03.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 343,
+      "n_pw_max": 548,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.931950839560758,
+      "first_s": 46.99119038041681,
+      "steady_s": 28.049810596741736,
+      "peak_memory_gb": 1.882103808,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 2.52971392,
+      "eig_iterations_first": [
+        86,
+        109,
+        110,
+        48,
+        52,
+        42,
+        75,
+        81,
+        19,
+        9
+      ],
+      "eig_iterations_steady": [
+        86,
+        109,
+        110,
+        48,
+        52,
+        42,
+        75,
+        81,
+        19,
+        9
+      ]
+    },
+    {
+      "id": "CmGvvqMQUrT6b2UyLdfo8J-exp",
+      "job": "1166339_7",
+      "n": 8,
+      "ecut": 12.0,
+      "commit": "acd8ff8",
+      "node": "nv-ai-03.srv.aau.dk",
+      "cpu_model": "Intel(R) Xeon(R) Platinum 8168 CPU @ 2.70GHz",
+      "cpus_visible": 8,
+      "cpus_node": 96,
+      "n_kpoints": 512,
+      "n_pw_max": 546,
+      "fft_shape": [
+        24,
+        24,
+        24
+      ],
+      "n_iter": 9,
+      "energy": -7.93215951779091,
+      "first_s": 59.03150157351047,
+      "steady_s": 40.127257463522255,
+      "peak_memory_gb": 1.983946752,
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "peak_device_memory_gb": 3.776018688,
+      "eig_iterations_first": [
+        136,
+        116,
+        106,
+        55,
+        51,
+        41,
+        38,
+        33,
+        19,
+        9
+      ],
+      "eig_iterations_steady": [
+        136,
+        116,
+        106,
+        55,
+        51,
+        41,
+        38,
+        33,
+        19,
+        9
+      ]
+    }
+  ]
+}
