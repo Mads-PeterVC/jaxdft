@@ -1944,3 +1944,55 @@ criterion of the theory post:
   20 Ha are below 0.25 GiB (0.97 GiB unchunked, review §2.9); the band
   sampling of the failing V100 case stays below 2 GiB; chunked and unchunked
   results agree to rounding.
+
+## 2026-11-12: Milestone 2c acceptance tests, written before implementation
+
+The 2c tests were written from the theory post and the agreed API, and they
+fail until the implementation exists: four modules fail at collection on
+missing names, and 15 tests in existing modules fail on missing keywords or,
+for the 20 Ha memory test, on today's 1.375 GiB against the 0.25 GiB limit.
+The constants, each with its source, are in the 2c section of
+`tests/support/tolerances.py`.
+
+| file | criterion of the theory post |
+|:--|:--|
+| `tests/unit/test_api_layout.py` | the agreed names, keywords and defaults |
+| `tests/unit/test_lobpcg.py` | 1 (stopping test), 5 (stagnation, diagnostics) |
+| `tests/property/test_lobpcg_properties.py` | 4 (penalty) |
+| `tests/scientific/test_eigensolver_robustness.py` | 5 (floor, best iterate) |
+| `tests/scientific/test_scf_eigensolver_settings.py` | 2, 3 (independence, tolerance history) |
+| `tests/scientific/test_eigensolver_cost.py` | 6, 7 (the unexplained row, cost) |
+| `tests/unit/test_memory.py` | 8 (memory, chunked results) |
+
+Writing them settled details the API round left open:
+
+- **`dropped_penalty(eps)`**, a module-level function in
+  `solvers/lobpcg.py`, not re-exported, returns σ. The API entry made σ "not
+  a parameter"; the property test needs to reach it. It is the only name the
+  tests add.
+- **`_solve(structure, basis, terms, n_bands, solver, density, k_batch_size)`**
+  is the signature of `band_structure`'s jitted core, with `k_batch_size`
+  static. The band-sampling memory test lowers it, because memory can only be
+  measured on a compiled program.
+- **The test of `return_iterations` was replaced** by one of `return_info`,
+  as agreed in the API entry. The dense solver's `EigenInfo` is zeros and
+  `False`.
+- **Iteration counts with refinement.** `eig_iters` counts both
+  diagonalisations of a refined step, so "never reaches the cap" in the
+  regression test is checked as `eig_iters < 300` per step, slightly
+  stronger than the cap of one call.
+- **The stagnation bound is 200 iterations**, not the 150 first written: the
+  synthetic matrix of the unit test, with the diagonal preconditioner, still
+  improves at iteration 120 (measured with today's solver). Without the
+  preconditioner it needs 236 iterations to reach 10⁻¹⁰, so the stagnation
+  test uses it.
+- **The SCF's request** is checked with an eigensolver that records its
+  arguments at trace time: H₂ with two buffer bands must be asked for four
+  bands with `n_converge = 2`.
+- **The cost budgets** are fractions of the counts of the review (370 and
+  236.3 on the 3³ grid); the counts of the implementation go in its entry.
+
+Risk for the implementation, noted rather than tested: a stagnation stop
+with factor 0.8 over 5 iterations also fires on a run that converges slowly
+but steadily at about 4.5 % per iteration. Existing tests with unpreconditioned
+synthetic matrices (236 iterations to 10⁻¹⁰) will show whether that happens.

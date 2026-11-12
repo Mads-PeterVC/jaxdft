@@ -109,15 +109,72 @@ def test_logging_helpers_are_reexported_and_the_package_is_silent_by_default():
     assert any(isinstance(h, logging.NullHandler) for h in handlers)
 
 
-def test_every_eigensolver_can_report_its_iterations():
-    """The SCF logs eigensolver iterations: ``return_iterations=True`` appends a count."""
+def test_every_eigensolver_can_report_its_diagnostics():
+    """The SCF records eigensolver diagnostics: ``return_info=True`` appends an
+    ``EigenInfo`` (iterations, stagnated, late_drops). It replaced
+    ``return_iterations`` (engineering log, '2026-11-12: Milestone 2c public API')."""
+    import inspect
+
     import jax.numpy as jnp
+
+    from jaxdft.solvers.eigen import EigenInfo
 
     H = jnp.diag(jnp.arange(1.0, 7.0))
     for solver in (jaxdft.dense_eigensolver, jaxdft.lobpcg):
-        eps, vecs, n_iter = solver(lambda x: H @ x, 6, 2, return_iterations=True)
-        assert vecs.shape == (6, 2) and int(n_iter) >= 0
+        assert "return_iterations" not in inspect.signature(solver).parameters
+        _, vecs, info = solver(lambda x: H @ x, 6, 2, return_info=True)
+        assert isinstance(info, EigenInfo)
+        assert vecs.shape == (6, 2) and int(info.iterations) >= 0
+        assert int(info.late_drops) >= 0 and bool(info.stagnated) in (True, False)
         assert len(solver(lambda x: H @ x, 6, 2)) == 2
+    _, _, info = jaxdft.dense_eigensolver(lambda x: H @ x, 6, 2, return_info=True)
+    assert int(info.iterations) == 0 and int(info.late_drops) == 0 and not bool(info.stagnated)
+
+
+# --- Milestone 2c (engineering log, '2026-11-12: Milestone 2c public API') -------------
+
+
+def test_every_eigensolver_accepts_n_converge():
+    import inspect
+
+    for solver in (jaxdft.dense_eigensolver, jaxdft.lobpcg):
+        p = inspect.signature(solver).parameters["n_converge"]
+        assert p.default is None
+
+
+def test_2c_eigensolver_keywords():
+    import inspect
+
+    lob = inspect.signature(jaxdft.lobpcg).parameters
+    assert lob["stagnation_window"].default == 5
+    assert lob["stagnation_factor"].default == 0.8
+    assert lob["max_iter"].default == 300
+    dense = inspect.signature(jaxdft.dense_eigensolver).parameters
+    assert dense["column_batch_size"].default == 64
+
+
+def test_2c_scf_options():
+    o = jaxdft.SCFOptions()
+    assert o.eigensolver_tol_ratio > 0  # adaptive by default; the value is measured
+    assert o.eigensolver_tol_max == 5e-3
+    assert o.k_batch_size is None
+    assert o.buffer_bands == 1
+
+
+def test_2c_floor_constant_replaces_the_absolute_floor():
+    import jaxdft.scf.scf as scf_module
+
+    assert scf_module.EIGEN_FLOOR_FACTOR == 50
+    assert not hasattr(scf_module, "EIGEN_FLOOR")
+
+
+def test_2c_band_structure_signatures():
+    import inspect
+
+    from jaxdft.analysis.bands import band_minimum_on_segment
+
+    assert inspect.signature(jaxdft.band_structure).parameters["k_batch_size"].default is None
+    assert inspect.signature(band_minimum_on_segment).parameters["k_batch_size"].default == 8
 
 
 # --- Milestone 2b (engineering log, '2026-11-11: Milestone 2b public API') -------------
