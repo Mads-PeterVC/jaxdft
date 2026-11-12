@@ -16,6 +16,9 @@ requires = ["uv_build>=0.13.5,<0.14.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+cluster = [
+    "shephex>=0.5.0",
+]
 dev = [
     "hypothesis>=6.170.14",
     "pytest>=9.2.0",
@@ -33,7 +36,10 @@ docs = [
 
 [tool.uv]
 # The definition of done renders the docs, so the docs group is always needed.
-default-groups = ["dev", "docs"]
+# The cluster group (shephex) is default so `uv run hex ...` works locally; on
+# a cluster, install only what runs need: `uv sync --no-default-groups --group
+# cluster`.
+default-groups = ["dev", "docs", "cluster"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
