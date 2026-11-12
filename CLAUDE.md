@@ -123,10 +123,12 @@ pseudopotential, or basis set it uses.
   part is a form factor `local(q) -> v̂(q)` (atomic Fourier transform,
   Ha·Bohr³, cell-independent, Coulomb tail included for q > 0), plus its
   ionic charge (`None` for empirical models without point ions) and the
-  finite non-Coulomb q → 0 limit α. Nonlocal projectors and their
-  coefficients are added as further methods in the milestone that first
-  needs them; local and nonlocal parts are used by separate Hamiltonian
-  terms.
+  finite non-Coulomb q → 0 limit α. Nonlocal projectors are a tuple
+  `channels`, one per angular momentum l, each with its coupling matrix
+  `h` (Ha) and its reduced projectors p̂ᵢ(q)/qˡ as traceable functions of
+  q² (never of q, so no square root enters). A pseudopotential without
+  channels has no projectors. Local and nonlocal parts are used by
+  separate Hamiltonian terms.
 - Basis set: an object defining representation and transforms between real
   and reciprocal space (plane waves now; keep LCAO possible later)
 - Diagonaliser and k-point generation: likewise swappable
@@ -256,9 +258,11 @@ looks wrong, stop and raise it.
   LOBPCG, total energy, forces and one-sided weight derivatives from
   `jax.grad`. Acceptance from analytic checks and invariants; DFTK and libxc
   comparisons added after implementation.
-- **Next (outline only):** 2b, SCF silicon: nonlocal projectors, k-point
-  sampling, bands from the converged density, compared with
-  Cohen–Bergstresser.
+- **Milestone 2b:** SCF LDA silicon: HGH nonlocal projectors, Γ-centred
+  k-grids with weights on the basis, occupations and the gap guard over all
+  k-points, bands from the converged density, compared with
+  Cohen–Bergstresser and published LDA results; DFTK comparison on the same
+  discrete problem.
 
 Later milestones are defined when we get there.
 

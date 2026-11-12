@@ -110,3 +110,80 @@ PSP_CORRECTION_ATOL = 1e-12
 # a margin of 15 at the worst point and still fails any parameter transcription
 # error (lda_c_pw_mod differs by ~1e-6 relative).
 LIBXC_RTOL = 1e-10
+
+# --- Milestone 2b (theory post 02b, 'Tolerances' and 'Decisions from review') ---
+# Measured values are from the throwaway check and/or the review (both independent of
+# jaxdft); "derived" marks a tolerance with no measurement behind it.
+
+# Projector transforms against quadrature: the throwaway check found 5e-14 relative,
+# the review 2.7e-15. The quadrature itself is converged to ~1e-15.
+PROJECTOR_RTOL = 1e-10
+
+# Even FFT grid: forces at the ideal geometry and the space-group invariance of the
+# density are exact identities of the discrete problem, up to SCF error (theory post:
+# 1e-10). Measured 8e-16 (N = 24), review 3.8e-15 (N = 24) and 2.4e-15 (N = 26).
+SYMMETRY_FORCE_ATOL = 1e-10
+# Odd grid (N = 25, 12 Ha): 6e-7 Ha/Bohr (both). A window, so that a silently
+# symmetric odd grid also fails.
+ODD_GRID_FORCE_WINDOW = (1e-8, 5e-6)
+# Half-shifted 2^3 grid at the ideal geometry: 1.0e-3 Ha/Bohr (both). Positive control.
+SHIFTED_GRID_FORCE_MIN = 1e-4
+# Rigid translation by half a grid spacing at 12 Ha: 2.0e-7 Ha (both). A whole grid
+# spacing is exact (SCF_ENERGY_ATOL).
+EGGBOX_HALF_SPACING_MIN = 2e-8
+
+# Net force at the displaced geometry (theory post, 'Tolerances'): with XC measured
+# 5.7e-7 Ha/Bohr on 2^3 and ~5e-7 on 3^3, where the tests now run (2^3 closes the
+# gap over the grid; decided with the project lead); without XC 4e-15 on 2^3 (review
+# 2.5e-15), first order in the SCF tolerance since it vanishes only at
+# self-consistency.
+NET_FORCE_XC_MAX = 5e-6
+NET_FORCE_NO_XC_MAX = 1e-8
+
+# Finite-difference forces in fractional coordinates: step 1e-3, tolerance 1e-6 Ha
+# per unit fractional coordinate (measured 2.6e-7 on the 3^3 grid, clean h^2).
+FD_FRACTIONAL_STEP = 1e-3
+FD_FRACTIONAL_ATOL = 1e-6
+
+# Weight derivatives of silicon. DERIVED, NOT MEASURED: no fractional-charge silicon
+# run exists. The second-order one-sided stencil of 2a at delta = 1e-3 is kept, with
+# the 2a tolerance. On the 3^3 grid (w_k = 1/27) the largest step, 2 delta, moves
+# Z * 2 delta = 0.008 electrons: 0.22 in the single VBM state at Gamma, 0.11 in each
+# state of the CBM pair, inside the capacity 2 of a state. A failure is raised with
+# the project lead, not met by loosening (engineering log, 2b API).
+SI_WEIGHT_STEP = 1e-3
+SI_WEIGHT_ATOL = 1e-5
+# The degenerate-frontier variant is looser (review, open question 1); same caveat.
+SI_WEIGHT_ATOL_DEGENERATE = 5e-5
+# Left minus right derivative equals Z times the gap over the grid: the occupations
+# are exact functions of N, so only rounding separates them (2a: 1e-9 measured).
+SI_WEIGHT_GAP_ATOL = 1e-8
+
+# Monotonicity in the cutoff at a fixed FFT grid: no tolerance beyond SCF accuracy.
+MONOTONE_SLACK = 1e-10
+
+# Band-structure eigenvalues at grid k-points against the SCF eigenvalues: an exact
+# identity (theory post: 1e-10), checked at SCF_TOL_TIGHT so that the difference
+# between the last input density and the returned output density is negligible.
+BANDS_VS_SCF_ATOL = 1e-10
+
+# Clip-and-renormalise at convergence: rescaling by 1 + O(1e-16) only.
+PROJECTION_AT_CONVERGENCE_MAX = 1e-12
+
+# --- Milestone 2b cross-checks (not references) ------------------------------------
+# From independent NumPy implementations written from the theory post: the throwaway
+# check while preparing it and/or the review. They test the implementation against
+# the same specification, not the physics.
+# Point-charge Ewald energy at a = 10.263 Bohr: -8.3980 (post), -8.398009228 (review).
+CROSS_CHECK_SI_EWALD = -8.398009228
+CROSS_CHECK_SI_EWALD_ATOL = 5e-9
+# Test-size total energy, N = 24: review only.
+CROSS_CHECK_SI_ENERGY = -7.836151895
+CROSS_CHECK_SI_ENERGY_ATOL = 1e-7
+# Gap over the 2^3 grid at the test size: 0.44 eV (post), 0.443 eV (review).
+CROSS_CHECK_SI_GRID_GAP_EV = 0.443
+CROSS_CHECK_SI_GRID_GAP_ATOL_EV = 1e-3
+# dE/df_0x at the displaced geometry, 3^3 grid, 12 Ha: 0.102076953 (post) and
+# 0.102076953324 (review). At SCF_TOL the derivative carries ~1e-9 of SCF error.
+CROSS_CHECK_SI_DEDF = 0.102076953
+CROSS_CHECK_SI_DEDF_ATOL = 5e-8

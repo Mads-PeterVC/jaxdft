@@ -78,13 +78,13 @@ def test_parse_hgh_four_local_coefficients(tmp_path):
     assert tuple(x.c) == (-1.5, 0.25, 0.125, -0.0625)
 
 
-def test_parse_hgh_with_projectors_is_not_implemented_yet(tmp_path):
-    """Nonlocal projectors arrive with 2b; until then a file with them is refused,
-    never silently truncated to its local part."""
+def test_parse_hgh_reads_projector_blocks(tmp_path):
+    """Milestone 2b: the projector blocks are read, never dropped (this replaces the
+    2a test that refused such files until 2b)."""
     p = tmp_path / "si-q4.hgh"
     p.write_text(SI_Q4)
-    with pytest.raises(NotImplementedError):
-        parse_hgh(p)
+    si = parse_hgh(p)
+    assert [ch.l for ch in si.channels] == [0, 1]
 
 
 @pytest.mark.parametrize(

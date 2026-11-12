@@ -1,0 +1,927 @@
+---
+title: "Milestone 2b: self-consistent LDA silicon validation"
+description: "Silicon with HGH projectors and k-point sampling: convergence in cutoff and k-grid, the symmetry of the discrete problem, Kohn–Sham bands against Cohen–Bergstresser, the lattice constant and bulk modulus, and one-sided weight derivatives over the grid."
+date: 2026-11-11
+bibliography: ../references.bib
+---
+
+```{python}
+#| echo: false
+import json
+import time
+from pathlib import Path
+
+import altair as alt
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+
+from jaxdft import (
+    Kinetic,
+    LocalPotential,
+    PlaneWaveBasis,
+    SCFError,
+    SCFOptions,
+    Structure,
+    band_structure,
+    diamond,
+    energy,
+    kpath,
+    lda_terms,
+    lobpcg,
+    monkhorst_pack,
+    scf,
+    special_points_fcc,
+)
+from jaxdft.analysis.bands import band_minimum_on_segment
+from jaxdft.analysis.symmetry import group_levels
+from jaxdft.plotting import featured, style
+from jaxdft.pseudo.cohen_bergstresser import silicon as cb_silicon
+from jaxdft.pseudo.gth import GTH, hgh_lda
+from jaxdft.units import convert
+
+style.enable()
+T_START = time.perf_counter()
+
+A_SI = 10.263  # Bohr, the experimental 5.431 Angstrom
+A_EXPT_ANGSTROM = 5.431
+B_EXPT_GPA = 99.0  # theory post, 'Lattice constant'
+ECUT_TEST, ECUT_BANDS = 12.0, 15.0  # Ha
+SCF_TOL = 1e-9
+
+si_pp = hgh_lda("Si")
+terms = lda_terms({"Si": si_pp})
+terms_no_xc = tuple(t for t in terms if type(t).__name__ != "Xc")
+options = SCFOptions(tol=SCF_TOL)
+ev = float(convert(1.0, "Hartree", "eV"))
+angstrom = float(convert(1.0, "Bohr", "Angstrom"))
+points = special_points_fcc()
+
+
+def si(a=A_SI, positions=None, weights=None):
+    s = diamond(a, "Si", unit="Bohr")
+    f = s.positions if positions is None else jnp.asarray(positions)
+    w = None if weights is None else jnp.asarray(weights, dtype=float)
+    return Structure(s.lattice, f, s.species, w)
+
+
+def basis(s, ecut, n, shift=0.0, **build):
+    k, w = monkhorst_pack((n, n, n), shift=(shift,) * 3)
+    return PlaneWaveBasis.build(s.lattice, k, ecut, kweights=w, **build)
+
+
+def run(s, b, terms=terms, **opts):
+    return scf(s, b, terms, SCFOptions(tol=SCF_TOL, **opts))
+
+
+def grid_gap(e):
+    e = np.asarray(e)
+    return float(e[:, 4].min() - e[:, 3].max())
+
+
+def forces(s, b, terms=terms, **opts):
+    """-dE/dtau (Ha/Bohr) from jax.grad of the energy."""
+    o = SCFOptions(tol=SCF_TOL, **opts)
+    g = jax.grad(lambda st: energy(st, b, terms, o))(s)
+    return (
+        -np.asarray(g.positions)
+        @ np.linalg.inv(np.asarray(s.lattice.vectors)).T
+    )
+
+
+s0 = si()
+b_test = basis(s0, ECUT_TEST, 2)
+ref = run(s0, b_test)
+```
+
+This document validates Milestone 2b: a self-consistent LDA calculation for
+diamond-structure silicon with the HGH pseudopotential, whose separable
+nonlocal projectors are new, and with Brillouin-zone sampling on uniform
+k-grids. The physics, conventions and tolerances are in the
+[theory post](../theory/02b_scf_silicon.qmd), and its review rebuilt the method
+independently and reproduced every number the post quoted.
+
+The acceptance tests sit on the first rung of the validation ladder: exact
+identities of the discrete problem (the nonlocal operator against the
+Legendre formula, space-group invariance on even FFT grids, supercell
+equivalence), finite-difference forces and weight derivatives, and
+cross-checks against two independent NumPy implementations. They all pass.
+This document asks the physical questions: how fast the results converge,
+whether the discrete problem has the symmetry it should, and how the
+Kohn–Sham bands and structural properties compare with the empirical model
+of [1b](01b_cohen_bergstresser.qmd) and with the literature. The third rung
+is DFTK, run on the same discrete problem, as in 2a.
+
+**Size of this document.** It runs at every render, so it uses cheaper
+settings than the theory post where the physics allows (decided with the
+project lead; the cost of the larger runs is recorded in the engineering
+log). The post's numbers at 20 and 40 Ha on the 4³ grid, and on the 6³ grid,
+are quoted from the post, not recomputed. Every number computed here says
+which grid and cutoff it used.
+
+## Setup
+
+- Diamond Si at $a$ = `{python} f"{A_SI}"` Bohr
+  (`{python} f"{A_SI * angstrom:.3f}"` Å), atoms at
+  $\pm(\tfrac18,\tfrac18,\tfrac18)$, origin at the bond centre.
+- HGH LDA silicon: $Z$ = `{python} f"{si_pp.ionic_charge:g}"`, local part with
+  $r_\text{loc}$ = `{python} f"{si_pp.rloc}"` Bohr, an $s$ channel with
+  `{python} f"{si_pp.channels[0].n_projectors}"` projectors and a $p$ channel
+  with `{python} f"{si_pp.channels[1].n_projectors}"`. $\alpha$ =
+  `{python} f"{si_pp.alpha:.6f}"` Ha·Bohr³.
+- Slater + PW92, spin-unpolarised, 8 electrons per cell, Γ-centred k-grids
+  unless stated, $\tau_\text{SCF}$ = `{python} f"{SCF_TOL:g}"`.
+- Test size: $E_\text{cut}$ = `{python} f"{ECUT_TEST:g}"` Ha
+  (`{python} f"{int(b_test.n_pw.max())}"` plane waves, a
+  `{python} "×".join(map(str, b_test.fft_shape))` grid) and the 2³ k-grid.
+
+## The ground state at the test size
+
+```{python}
+#| echo: false
+parts = {k: float(v) for k, v in ref.energies.items()}
+names = {
+    "Kinetic": "kinetic",
+    "AtomicNonlocal": "nonlocal pseudopotential",
+    "AtomicLocal": "local pseudopotential",
+    "Hartree": "Hartree",
+    "Xc": "exchange–correlation",
+    "Ewald": "Ewald (ion–ion)",
+}
+assert set(parts) == set(names)
+assert abs(sum(parts.values()) - float(ref.total_energy)) < 1e-12
+assert parts["AtomicNonlocal"] > 0
+REVIEW_E, REVIEW_GAP_EV = -7.836151895, 0.443  # the review's independent code
+assert abs(float(ref.total_energy) - REVIEW_E) < 1e-7
+assert abs(grid_gap(ref.eigenvalues) * ev - REVIEW_GAP_EV) < 1e-3
+pd.DataFrame(
+    [{"term": names[k], "energy (Ha)": f"{v:+.6f}"} for k, v in parts.items()]
+    + [
+        {
+            "term": "total",
+            "energy (Ha)": f"{float(ref.total_energy):+.9f}",
+        }
+    ]
+).style.hide(axis="index")
+```
+
+The SCF converged in `{python} f"{int(ref.n_iter)}"` iterations. The total
+energy agrees with the review's independent NumPy implementation
+(`{python} f"{REVIEW_E}"` Ha) to
+`{python} f"{abs(float(ref.total_energy) - REVIEW_E):.1e}"` Ha, and the gap
+over the 2³ grid is `{python} f"{grid_gap(ref.eigenvalues) * ev:.3f}"` eV
+(review: `{python} f"{REVIEW_GAP_EV}"` eV). The nonlocal energy is large and
+positive: the projectors are repulsive in the $s$ and $p$ channels, where the
+valence states must stay orthogonal to the core states the pseudopotential
+removed. The Ewald energy is fixed by the ionic lattice alone.
+
+## Convergence with cutoff
+
+```{python}
+#| echo: false
+#| column: page-inset
+cutoffs = [5.0, 10.0, 15.0, 20.0, 30.0, 40.0]
+b_cut = {ec: basis(s0, ec, 2) for ec in cutoffs}
+e_cut = np.array([float(run(s0, b_cut[ec]).total_energy) for ec in cutoffs])
+POST_4 = [58.6, 6.30, 0.87, 0.25, 0.03]  # theory post, 4^3 grid, mHa
+err_2 = (e_cut[:-1] - e_cut[-1]) * 1e3
+assert np.all(np.diff(e_cut) < 0)
+# Cutoff convergence barely depends on the k-grid: within 10 % of the 4^3
+# differences at every cutoff from 10 Ha.
+assert np.all(np.abs(err_2[1:] / np.array(POST_4[1:]) - 1) < 0.1)
+cut_df = pd.concat([
+    pd.DataFrame({
+        "ecut": cutoffs[:-1],
+        "error": err_2,
+        "grid": "2³ (computed)",
+    }),
+    pd.DataFrame({
+        "ecut": cutoffs[:-1],
+        "error": POST_4,
+        "grid": "4³ (theory post)",
+    }),
+])
+alt.Chart(cut_df).mark_line(point=True).encode(
+    x=alt.X("ecut:Q", title="E_cut (Ha)"),
+    y=alt.Y("error:Q", title="E − E(40 Ha) (mHa)", scale=alt.Scale(type="log")),
+    color=alt.Color(
+        "grid:N",
+        title=None,
+        scale=alt.Scale(range=[style.SERIES[0], style.SERIES[1]]),
+    ),
+    tooltip=[
+        "grid:N",
+        alt.Tooltip("ecut:Q", title="E_cut (Ha)"),
+        alt.Tooltip("error:Q", title="mHa", format=".3g"),
+    ],
+).properties(width=style.WIDTH, height=280)
+```
+
+HGH silicon is soft. The energy is within 1 mHa of its 40 Ha value at 15 Ha
+(`{python} f"{err_2[2]:.2f}"` mHa on the 2³ grid) and decreases
+monotonically: here the default FFT grid changes with the cutoff, which is not
+variational, but its effect is far below the cutoff steps (theory post;
+the acceptance test holds the grid fixed). The convergence profile on the 2³
+grid matches the post's 4³ table to within 10 % from 10 Ha on, so the cutoff
+error is a property of the pseudopotential, nearly independent of the
+k-sampling. This is why the cutoff scan can run on the cheap grid.
+
+## Convergence with the k-grid
+
+```{python}
+#| echo: false
+#| column: page-inset
+ECUT_K = 15.0
+grids = [(n, 0.0) for n in (1, 2, 3, 4)] + [(2, 0.5), (3, 0.5)]
+e_k = {}
+for n, sh in grids:
+    e_k[(n, sh)] = float(run(s0, basis(s0, ECUT_K, n, sh)).total_energy)
+best = e_k[(3, 0.5)]
+POST_6 = -7.93312  # theory post, unshifted 6^3 at 15 Ha
+k_rows = [
+    {
+        "grid": f"{n}³" + (" half-shifted" if sh else ""),
+        "k-points": n**3,
+        "E (Ha)": f"{e_k[(n, sh)]:.6f}",
+        "E − E(shifted 3³) (mHa)": f"{(e_k[(n, sh)] - best) * 1e3:.2f}",
+    }
+    for n, sh in grids
+]
+k_rows.append({
+    "grid": "6³ (theory post)",
+    "k-points": 216,
+    "E (Ha)": f"{POST_6:.5f}",
+    "E − E(shifted 3³) (mHa)": f"{(POST_6 - best) * 1e3:.2f}",
+})
+# The review's claims: shifted 2^3 matches unshifted 4^3 at an eighth of the
+# k-points, and shifted 3^3 is within 0.2 mHa of unshifted 6^3.
+assert abs(e_k[(2, 0.5)] - e_k[(4, 0.0)]) < 1e-3
+assert abs(best - POST_6) < 2e-4
+err_unshifted = [e_k[(n, 0.0)] - best for n in (1, 2, 3, 4)]
+assert np.all(np.diff(err_unshifted) < 0) and min(err_unshifted) > 0
+pd.DataFrame(k_rows).style.hide(axis="index")
+```
+
+The k-grid, not the cutoff, limits the accuracy. Γ alone is
+`{python} f"{(e_k[(1, 0.0)] - best) * 1e3:.0f}"` mHa off, qualitatively
+wrong. The unshifted grids converge by roughly a factor of four per step in
+$N$, as the theory post found, from a large prefactor. The half-shifted grids
+are far better per k-point: the shifted 2³ grid is as good as the unshifted
+4³ grid with an eighth of the points, and the shifted 3³ grid lies
+`{python} f"{(best - POST_6) * 1e3:+.2f}"` mHa from the post's unshifted 6³
+value. That pins the converged energy at 15 Ha to about
+`{python} f"{best:.4f}"` Ha, within a few tenths of a mHa, and corrects the
+post's guess that 6³ was "perhaps 0.5 mHa from the limit".
+
+The shifted grids are not used for the SCF in general, because without
+density symmetrisation they break the symmetry of the density (next
+section). For energies alone the asymmetry is harmless: it is a second-order
+effect in a variational quantity. They are used for the lattice constant
+below for that reason.
+
+## The symmetry of the discrete problem
+
+```{python}
+#| echo: false
+sym_rows = []
+f_max = {}
+for label, kw in (
+    ("N = 24", {"fft_shape": (24,) * 3}),
+    ("N = 25", {"fft_shape": (25,) * 3}),
+    ("N = 26", {"fft_shape": (26,) * 3}),
+    ("N = 24, half-shifted k-grid", {"fft_shape": (24,) * 3, "shift": 0.5}),
+):
+    shift = kw.pop("shift", 0.0)
+    F = forces(s0, basis(s0, ECUT_TEST, 2, shift, **kw))
+    f_max[label] = np.abs(F).max()
+    sym_rows.append({
+        "setting": label,
+        "largest force (Ha/Bohr)": f"{np.abs(F).max():.1e}",
+        "net force (Ha/Bohr)": f"{np.abs(F.sum(axis=0)).max():.1e}",
+    })
+assert f_max["N = 24"] < 1e-10 and f_max["N = 26"] < 1e-10
+assert 1e-8 < f_max["N = 25"] < 5e-6
+assert f_max["N = 24, half-shifted k-grid"] > 1e-4
+pd.DataFrame(sym_rows).style.hide(axis="index")
+```
+
+Forces at the ideal geometry vanish by symmetry, so their size measures how
+much symmetry the discrete problem has (12 Ha, 2³ grid). The review's
+correction to the theory post is confirmed: the FFT grid carries the diamond
+space group when $N$ is even, not only when $4\mid N$. On $N$ = 26 the forces
+vanish to machine precision, like on $N$ = 24. On the odd grid they are at
+the egg-box level, about `{python} f"{f_max['N = 25']:.0e}"` Ha/Bohr, because
+the twelve operations with a half-lattice-vector translation no longer map the
+grid onto itself; the net force still vanishes, because inversion does. The
+half-shifted k-grid breaks the symmetry at the $10^{-3}$ level: it contains a
+quarter of every star of k-points, which keeps band energies symmetric but not
+the density, and nothing symmetrises the density.
+
+## Kohn–Sham bands against Cohen–Bergstresser
+
+```{python}
+#| echo: false
+#| column: page-inset
+b_bands = basis(s0, ECUT_BANDS, 4)
+r_bands = run(s0, b_bands)
+rho = r_bands.density
+assert abs(float(r_bands.total_energy) - (-7.92685)) < 5e-6  # theory post
+
+
+def levels(k):
+    b = PlaneWaveBasis.build(s0.lattice, jnp.asarray(k)[None], ECUT_BANDS)
+    return np.asarray(
+        band_structure(s0, b, 8, terms=terms, density=rho).eigenvalues[0]
+    )
+
+
+G, X, L = levels(points["G"]), levels(points["X"]), levels(points["L"])
+t_min, e_min = band_minimum_on_segment(
+    s0,
+    points["G"],
+    points["X"],
+    band=4,
+    ecut=ECUT_BANDS,
+    terms=terms,
+    density=rho,
+)
+vbm = G[3]
+# The default grid at 15 Ha is N = 25, odd: degeneracies hold to the egg-box
+# level only (previous section), so levels are grouped at 1e-5 Ha.
+assert b_bands.fft_shape == (25, 25, 25)
+level_sets = {
+    "Γ": (G, [1, 3, 3, 1]),
+    "X": (X, [2, 2, 2, 2]),
+    "L": (L[:7], [1, 1, 2, 1, 2]),
+}
+max_split = 0.0
+for e_k, pattern in level_sets.values():
+    assert [d for _, d in group_levels(e_k, 1e-5)] == pattern
+    start = 0
+    for d in pattern:
+        max_split = max(max_split, float(np.ptp(e_k[start : start + d])))
+        start += d
+assert 1e-12 < max_split < 1e-6
+lda = {
+    "Γ₁ (valence-band width)": (G[0] - vbm) * ev,
+    "Γ₂₅′ – Γ₁₅": (G[4] - vbm) * ev,
+    "Γ₂₅′ – Γ₂′": (G[7] - vbm) * ev,
+    "Γ₂₅′ – L₁": (L[4] - vbm) * ev,
+    "indirect gap (Δ₁ minimum)": (e_min - vbm) * ev,
+    "conduction level at X": (X[4] - vbm) * ev,
+    "L₃′ – L₁": (L[4] - L[2]) * ev,
+    "L₃′ – L₃": (L[5] - L[2]) * ev,
+    "X₄ – X₁": (X[4] - X[2]) * ev,
+}
+POST = [-11.98, 2.54, 3.12, 1.41, 0.47, 0.61, 2.61, 4.51, 3.47]  # 4^3, 15 Ha
+for v, p in zip(lda.values(), POST):
+    assert abs(v - p) < 6e-3
+table = json.loads(
+    Path("../../reference/cohen_bergstresser_1966/si_table1.json").read_text()
+)
+published = {r["id"]: r["calculated"] for r in table["splittings"]}
+cb_ids = {
+    "Γ₂₅′ – Γ₁₅": "Gamma25p-Gamma15",
+    "Γ₂₅′ – Γ₂′": "Gamma25p-Gamma2p",
+    "Γ₂₅′ – L₁": "Gamma25p-L1",
+    "indirect gap (Δ₁ minimum)": "Gamma25p-X1(Delta1)",
+    "L₃′ – L₁": "L3p-L1",
+    "L₃′ – L₃": "L3p-L3",
+    "X₄ – X₁": "X4-X1",
+}
+HL = {"Γ₂₅′ – Γ₁₅": 2.57, "indirect gap (Δ₁ minimum)": 0.52}  # LDA, [HL 1986]
+band_rows = [
+    {
+        "level or splitting (eV)": name,
+        "LDA (jaxdft, 4³, 15 Ha)": f"{v:.2f}",
+        "LDA, Hybertsen–Louie": f"{HL[name]:.2f}" if name in HL else "—",
+        "CB 1966, published": f"{published[cb_ids[name]]:.1f}"
+        if name in cb_ids
+        else "—",
+    }
+    for name, v in lda.items()
+]
+gaps_smaller = [lda[n] < published[i] for n, i in cb_ids.items()]
+assert all(gaps_smaller)
+shortfall = [published[i] - lda[n] for n, i in cb_ids.items()]
+
+# Bands along the 1b path, the LDA from the converged density and the
+# empirical model on its own converged basis (1b), both from their own VBM.
+path = kpath(
+    s0.lattice,
+    points,
+    [["L", "G", "X", "U"], ["K", "G"]],
+    n_points=150,
+)
+pb = PlaneWaveBasis.build(s0.lattice, path.kpoints, ECUT_BANDS)
+e_lda = np.asarray(
+    band_structure(
+        s0, pb, 8, terms=terms, solver=lobpcg, density=rho
+    ).eigenvalues
+)
+cb = cb_silicon()
+s_cb = diamond(cb.lattice_constant_angstrom, "Si", unit="Angstrom")
+cb_terms = (Kinetic(), LocalPotential({"Si": cb}))
+pb_cb = PlaneWaveBasis.build(s_cb.lattice, path.kpoints, 6.0)
+e_cb = np.asarray(band_structure(s_cb, pb_cb, 8, terms=cb_terms).eigenvalues)
+g_index = int(np.argmin(np.linalg.norm(np.asarray(path.kpoints), axis=1)))
+x = np.asarray(path.distance)
+frames = []
+for name, e in (("LDA (jaxdft)", e_lda), ("Cohen–Bergstresser (1b)", e_cb)):
+    top = e[g_index, 3]
+    frames.append(
+        pd.DataFrame([
+            {
+                "distance": x[i],
+                "band": n,
+                "energy": (e[i, n] - top) * ev,
+                "model": name,
+            }
+            for n in range(8)
+            for i in range(len(x))
+        ])
+    )
+lines = pd.concat(frames)
+diff = (e_lda - e_lda[g_index, 3]) * ev - (e_cb - e_cb[g_index, 3]) * ev
+rms_valence = np.sqrt(np.mean(diff[:, :4] ** 2, axis=0))  # per band, eV
+shift_conduction = diff[:, 4:].mean(axis=0)  # per band, eV
+width_cb = (e_cb[g_index, 3] - e_cb[g_index, 0]) * ev
+t_cb, _ = band_minimum_on_segment(
+    s_cb, points["G"], points["X"], band=4, ecut=6.0, terms=cb_terms
+)
+# The theory post's expectation: valence bands agree much better than
+# conduction bands. True of the upper valence bands, not of the lowest.
+assert rms_valence[2:].max() < 0.15
+assert np.all(shift_conduction < -0.4)
+assert abs(t_min - t_cb) < 0.02
+ticks = [float(t) for t in path.tick_positions]
+lookup = (
+    "{"
+    + ", ".join(
+        f"'{t:.6f}': '{lab}'" for lab, t in zip(path.tick_labels, ticks)
+    )
+    + "}"
+)
+band_chart = (
+    alt
+    .Chart(lines)
+    .mark_line(clip=True)
+    .encode(
+        x=alt.X(
+            "distance:Q",
+            title=None,
+            scale=alt.Scale(domain=[0, float(x[-1])], nice=False),
+            axis=alt.Axis(
+                values=ticks,
+                labelExpr=f"{lookup}[format(datum.value, '.6f')]",
+                grid=True,
+            ),
+        ),
+        y=alt.Y(
+            "energy:Q",
+            title="Energy − valence-band maximum (eV)",
+            scale=alt.Scale(domain=[-13, 6]),
+        ),
+        color=alt.Color(
+            "model:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["LDA (jaxdft)", "Cohen–Bergstresser (1b)"],
+                range=[style.SERIES[0], style.SERIES[1]],
+            ),
+        ),
+        detail="band:N",
+        tooltip=["model:N", alt.Tooltip("energy:Q", format=".2f")],
+    )
+)
+band_chart.properties(width=style.WIDTH, height=style.HEIGHT).interactive()
+```
+
+The bands are computed non-self-consistently from the density of the 4³ SCF
+at 15 Ha, as the theory post prescribes; the path uses LOBPCG and the
+tabulated levels the dense solver. The degeneracies are those of 1b: 1, 3, 3,
+1 at Γ, pairs at X and 1, 1, 2, 1, 2 at L. They are not exact here: the
+default FFT grid at 15 Ha is the odd $N$ = 25, and the largest splitting
+within a level is `{python} f"{max_split:.0e}"` Ha, the egg-box level of the
+previous section and far below anything in the table.
+
+```{python}
+#| echo: false
+pd.DataFrame(band_rows).style.hide(axis="index")
+```
+
+The shapes agree closely, and every LDA gap is smaller than
+Cohen–Bergstresser's, by `{python} f"{min(shortfall):.1f}"` to
+`{python} f"{max(shortfall):.1f}"` eV. That is the expected result, not a
+defect. The empirical form factors were fitted to measured optical
+transitions, while Kohn–Sham eigenvalue differences are not excitation
+energies: the LDA underestimates the gap of silicon by about half, and
+quasiparticle corrections restore it [@hybertsen_louie1986]. Against the LDA
+values of that paper, which used a different pseudopotential, the agreement is
+within `{python} f"{max(abs(lda[n] - v) for n, v in HL.items()):.2f}"` eV; the
+review found that the k-grid error of the 4³ density alone moves the indirect
+gap by about 0.02 eV towards their value. The conduction minimum lies on Γ–X at
+`{python} f"{t_min:.3f}"` of the way to X, against
+`{python} f"{t_cb:.3f}"` in the empirical model.
+
+Along the whole path, measured from each model's own valence-band maximum,
+the two upper valence bands agree to
+`{python} f"{rms_valence[2]:.2f}"` and `{python} f"{rms_valence[3]:.2f}"` eV
+RMS, as the theory post expected. The lowest valence band does not: the LDA
+valence band is `{python} f"{lda['Γ₁ (valence-band width)'] * -1:.2f}"` eV wide
+against `{python} f"{width_cb:.2f}"` eV in the empirical model, so its bottom
+differs by `{python} f"{rms_valence[0]:.2f}"` eV RMS. The empirical model was
+fitted to optical transitions near the gap and is not constrained there. The
+four conduction bands lie lower in the LDA by
+`{python} f"{-shift_conduction.max():.2f}"` to
+`{python} f"{-shift_conduction.min():.2f}"` eV on average.
+
+```{python}
+#| echo: false
+_ = featured.publish(
+    band_chart,
+    "2b",
+    caption="Self-consistent LDA bands of silicon (blue) against the "
+    "Cohen–Bergstresser empirical bands of 1b (orange), both from their own "
+    "valence-band maximum.",
+    headline=[
+        ("LDA indirect gap", f"{lda['indirect gap (Δ₁ minimum)']:.2f} eV"),
+        ("experiment", "1.17 eV"),
+    ],
+)
+```
+
+## Lattice constant and bulk modulus
+
+```{python}
+#| echo: false
+#| column: page-inset
+a_values = np.linspace(9.9, 10.5, 7)
+
+
+def e_of_a(ecut, n, shift):
+    out = []
+    for a in a_values:
+        s = si(float(a))
+        out.append(float(run(s, basis(s, ecut, n, shift)).total_energy))
+    return np.array(out)
+
+
+def equilibrium(e):
+    """Cubic fit E(a); a0 (Bohr) and B0 = V d2E/dV2 (GPa), V = a^3 / 4."""
+    c = np.polyfit(a_values, e, 3)
+    d1, d2 = np.polyder(c), np.polyder(c, 2)
+    roots = [
+        r.real
+        for r in np.roots(d1)
+        if abs(r.imag) < 1e-12 and a_values[0] < r.real < a_values[-1]
+    ]
+    (a0,) = [r for r in roots if np.polyval(d2, r) > 0]
+    dV = 3 * a0**2 / 4
+    b0 = (a0**3 / 4) * np.polyval(d2, a0) / dV**2
+    return a0, float(convert(b0, "Hartree/Bohr^3", "GPa"))
+
+
+curves = {
+    "shifted 3³, 15 Ha": e_of_a(15.0, 3, 0.5),
+    "shifted 2³, 15 Ha": e_of_a(15.0, 2, 0.5),
+    "shifted 2³, 20 Ha": e_of_a(20.0, 2, 0.5),
+}
+eq = {k: equilibrium(v) for k, v in curves.items()}
+a_best, b_best = eq["shifted 3³, 15 Ha"]
+d_cut = eq["shifted 2³, 20 Ha"][0] - eq["shifted 2³, 15 Ha"][0]
+POST_A0, POST_B0 = 10.193, 97.0  # theory post: 4^3, 20 Ha
+assert abs(d_cut) < 0.01
+assert abs(a_best * angstrom / A_EXPT_ANGSTROM - 1) < 0.015
+assert abs(b_best / B_EXPT_GPA - 1) < 0.05
+eq_rows = [
+    {
+        "sampling": k,
+        "a₀ (Bohr)": f"{a0:.3f}",
+        "a₀ (Å)": f"{a0 * angstrom:.3f}",
+        "B₀ (GPa)": f"{b0:.1f}",
+    }
+    for k, (a0, b0) in eq.items()
+] + [
+    {
+        "sampling": "4³, 20 Ha (theory post)",
+        "a₀ (Bohr)": f"{POST_A0:.3f}",
+        "a₀ (Å)": f"{POST_A0 * angstrom:.3f}",
+        "B₀ (GPa)": f"{POST_B0:.0f}",
+    },
+    {
+        "sampling": "experiment",
+        "a₀ (Bohr)": f"{A_EXPT_ANGSTROM / angstrom:.3f}",
+        "a₀ (Å)": f"{A_EXPT_ANGSTROM:.3f}",
+        "B₀ (GPa)": f"≈{B_EXPT_GPA:.0f}",
+    },
+]
+ea_df = pd.concat([
+    pd.DataFrame({
+        "a": a_values,
+        "E": (v - v.min()) * 1e3,
+        "sampling": k,
+    })
+    for k, v in curves.items()
+])
+alt.Chart(ea_df).mark_line(point=True).encode(
+    x=alt.X("a:Q", title="a (Bohr)", scale=alt.Scale(zero=False)),
+    y=alt.Y("E:Q", title="E − E_min (mHa per cell)"),
+    color=alt.Color(
+        "sampling:N",
+        title=None,
+        scale=alt.Scale(range=list(style.SERIES[:3])),
+    ),
+    tooltip=["sampling:N", "a:Q", alt.Tooltip("E:Q", format=".3f")],
+).properties(width=style.WIDTH, height=300)
+```
+
+```{python}
+#| echo: false
+pd.DataFrame(eq_rows).style.hide(axis="index")
+```
+
+Each curve is seven SCF runs at fixed cutoff, each with its own basis (the
+theory post explains why the autodiff cell derivative is not used for this),
+fitted by a cubic. The best-converged sampling, the half-shifted 3³ grid,
+gives $a_0$ = `{python} f"{a_best * angstrom:.3f}"` Å,
+`{python} f"{(a_best * angstrom / A_EXPT_ANGSTROM - 1) * 100:+.1f}"` % from
+experiment, and $B_0$ = `{python} f"{b_best:.0f}"` GPa. Raising the cutoff
+from 15 to 20 Ha moves $a_0$ by `{python} f"{d_cut * 1e3:+.1f}"` mBohr; the
+k-grid matters more: the post's 4³ grid at 20 Ha gave
+`{python} f"{POST_A0}"` Bohr, `{python} f"{(POST_A0 - a_best - d_cut) * 1e3:.0f}"`
+mBohr above the shifted 3³ value corrected to 20 Ha. A lattice constant
+slightly below experiment and a bulk modulus within a few per cent is the
+usual LDA result for silicon [@yin_cohen1982]; the sign of the small
+deviation depends on the correlation parametrisation and the
+pseudopotential, which was fitted with a different LDA (theory post).
+
+## One-sided weight derivatives over the grid
+
+```{python}
+#| echo: false
+TIGHT = SCFOptions(tol=1e-12)
+r_tight = scf(s0, b_test, terms, TIGHT)
+eps = np.asarray(r_tight.eigenvalues)
+grad = {
+    side: np.asarray(
+        jax.grad(lambda st: energy(st, b_test, terms, TIGHT, side=side))(
+            s0
+        ).weights
+    )
+    for side in (-1, 1)
+}
+z = si_pp.ionic_charge
+split = (grad[1][0] - grad[-1][0]) / z
+bz_average = float(np.dot(np.asarray(b_test.kweights), eps[:, 4] - eps[:, 3]))
+assert abs(split - grid_gap(eps)) < 1e-9
+assert bz_average > 4 * grid_gap(eps)
+```
+
+With per-atom weights, $\partial E/\partial\lambda_j$ is one-sided at the
+integer electron count, and the two sides differ by $Z_j$ times the gap over
+the whole k-grid (Janak's theorem with the frontier levels taken over all
+k-points). At the test size the two derivatives are
+`{python} f"{grad[-1][0]:.6f}"` Ha (valence side) and
+`{python} f"{grad[1][0]:.6f}"` Ha (conduction side). Their difference
+divided by $Z$ is `{python} f"{split * 1e3:.4f}"` mHa, the gap over the grid
+to `{python} f"{abs(split - grid_gap(eps)):.0e}"` Ha. The 2a occupations
+would instead have returned the Brillouin-zone average of the band-5 minus
+band-4 difference, `{python} f"{bz_average * 1e3:.1f}"` mHa here: that wrong
+derivative is what the theory post set out to replace. The acceptance tests
+compare both sides with finite differences of fractional-charge SCF runs, at
+the displaced geometry and, for a degenerate frontier, at the ideal one.
+
+## Against DFTK
+
+```{python}
+#| echo: false
+dftk = json.loads(Path("../../reference/dftk_si/dftk_si.json").read_text())
+TOL_DFTK = {"energy": 1e-7, "eigenvalue": 1e-6, "force": 1e-6}  # theory post
+REF_TOL = 1e-10  # our SCF tolerance for the comparison
+DISPLACEMENT = np.array([[0.012, -0.005, 0.008], [0.0, 0.0, 0.0]])
+dftk_setups = {
+    "ideal": (s0, 2),
+    "displaced": (si(positions=np.asarray(s0.positions) + DISPLACEMENT), 3),
+}
+
+
+def match_k(ours, theirs):
+    """Index of the DFTK k-point equal to each of ours modulo 1."""
+    d = np.asarray(ours)[:, None] - np.asarray(theirs)[None]
+    hit = np.abs(d - np.rint(d)).max(axis=-1) < 1e-12
+    assert (hit.sum(axis=0) == 1).all() and (hit.sum(axis=1) == 1).all()
+    return hit.argmax(axis=1)
+
+
+dftk_diff = {}
+for system in dftk["systems"]:
+    s_ref, n_ref = dftk_setups[system["name"]]
+    np.testing.assert_allclose(
+        system["positions_fractional"], np.asarray(s_ref.positions), atol=1e-15
+    )
+    b_ref = basis(s_ref, system["ecut_hartree"], n_ref)
+    assert list(b_ref.fft_shape) == system["fft_size"]
+    order = match_k(b_ref.kpoints, system["kpoints_fractional"])
+    assert (
+        np.asarray(b_ref.n_pw) == np.asarray(system["n_plane_waves"])[order]
+    ).all()
+    opts_ref = SCFOptions(tol=REF_TOL)
+    r_ref = scf(s_ref, b_ref, terms, opts_ref)
+    theirs = system["energies_hartree"]
+    shift = (
+        2 * si_pp.alpha / abs(np.linalg.det(np.asarray(s_ref.lattice.vectors)))
+    )
+    eig_theirs = np.asarray(system["eigenvalues_hartree"])[order]
+    eig_ours = np.asarray(r_ref.eigenvalues)[:, :5]
+    g_ref = jax.grad(lambda st: energy(st, b_ref, terms, opts_ref))(s_ref)
+    f_ours = (
+        -np.asarray(g_ref.positions)
+        @ np.linalg.inv(np.asarray(s_ref.lattice.vectors)).T
+    )
+    dftk_diff[system["name"]] = {
+        **{
+            names[k]: float(r_ref.energies[k])
+            - theirs[k]
+            - (theirs["PspCorrection"] if k == "AtomicLocal" else 0.0)
+            for k in names
+        },
+        "total": float(r_ref.total_energy) - system["total_energy_hartree"],
+        "eigenvalues − α/Ω (max)": float(
+            np.abs(eig_ours - shift - eig_theirs).max()
+        ),
+        "eigenvalues, no shift (max)": float(
+            np.abs(eig_ours - eig_theirs).max()
+        ),
+        "forces (max)": float(
+            np.abs(f_ours - np.asarray(system["forces_hartree_per_bohr"])).max()
+        ),
+        "k-points": len(order),
+        "psp": theirs["PspCorrection"] - 8 * shift,
+        "shift": -shift,
+        "max force": float(np.abs(f_ours).max()),
+    }
+tolerance = {
+    **{k: TOL_DFTK["energy"] for k in [*names.values(), "total"]},
+    "eigenvalues − α/Ω (max)": TOL_DFTK["eigenvalue"],
+    "forces (max)": TOL_DFTK["force"],
+}
+for name, d in dftk_diff.items():
+    for quantity, tol in tolerance.items():
+        assert abs(d[quantity]) < tol, (name, quantity)
+    assert abs(d["psp"]) < 1e-12
+    assert d["eigenvalues, no shift (max)"] > 0.03  # the shift is real
+worst_dftk = max(abs(d[q]) for d in dftk_diff.values() for q in tolerance)
+pd.DataFrame([
+    {
+        "quantity": q,
+        **{
+            f"{name} (jaxdft − DFTK)": f"{d[q]:.1e}"
+            if q.endswith("(max)")
+            else f"{d[q]:+.1e}"
+            for name, d in dftk_diff.items()
+        },
+        "tolerance": f"{tol:.0e}",
+    }
+    for q, tol in tolerance.items()
+]).style.hide(axis="index")
+```
+
+DFTK [@dftk2021] (version `{python} dftk["versions"]["DFTK"]`, libxc
+`{python} dftk["versions"]["libxc"]`) was run on the same discrete problem, as
+for H₂ in 2a: the same HGH file, identified by its hash, the same cell,
+cutoff and `{python} "×".join(map(str, dftk["systems"][0]["fft_size"]))` grid,
+Γ-centred k-grids without symmetry reduction and zero temperature. The ideal
+geometry uses the 2³ test grid
+(`{python} f"{dftk_diff['ideal']['k-points']}"` k-points), the displaced
+geometry of the force test the 3³ grid
+(`{python} f"{dftk_diff['displaced']['k-points']}"` k-points, forces up to
+`{python} f"{dftk_diff['displaced']['max force']:.3f}"` Ha/Bohr). The script
+and its pinned Julia environment are in `reference/dftk_si/`. jaxdft is
+converged to `{python} f"{REF_TOL:.0e}"` for this comparison. The table lists
+signed differences for energies and the largest absolute difference over all
+k-points and bands for eigenvalues and forces.
+
+Every quantity agrees to within
+`{python} f"{worst_dftk:.0e}"`, several orders of magnitude inside the
+tolerances the theory post fixed before either code was run. This is the
+first check of the nonlocal energy, the k-point weights and the grid-wide
+occupations against an independent production code. Two conventions enter.
+DFTK reports the G = 0 part of the local pseudopotential, $N_\text{el}
+\sum_j\alpha_j/\Omega$, as a separate `PspCorrection`; it equals the closed
+form to `{python} f"{abs(dftk_diff['ideal']['psp']):.0e}"` Ha. And it leaves
+that constant out of the Hamiltonian, so its eigenvalues are higher than
+jaxdft's by $-\sum_j\alpha_j/\Omega$ =
+`{python} f"{dftk_diff['ideal']['shift']:.6f}"` Ha, the shift the post
+predicted; without it the eigenvalues differ by
+`{python} f"{dftk_diff['ideal']['eigenvalues, no shift (max)']:.4f}"` Ha.
+DFTK lists the k-points in $[-\tfrac12,\tfrac12)$ and jaxdft in $[0, 1)$; the
+comparison matches them modulo 1, so the agreement also confirms that
+relabelling a k-point by a reciprocal lattice vector leaves the problem
+unchanged.
+
+## Corrections to the theory post
+
+```{python}
+#| echo: false
+disp = np.asarray(s0.positions) + np.array([
+    [0.012, -0.005, 0.008],
+    [0.0, 0.0, 0.0],
+])
+s_disp = si(positions=disp)
+no_guard = {"min_gap": -np.inf}
+gap_disp = {
+    n: grid_gap(
+        run(s_disp, basis(s_disp, ECUT_TEST, n), **no_guard).eigenvalues
+    )
+    for n in (2, 3)
+}
+r_noxc = run(s0, b_test, terms=terms_no_xc, **no_guard)
+gap_noxc = grid_gap(r_noxc.eigenvalues)
+perk_noxc = float(
+    np.min(np.asarray(r_noxc.eigenvalues)[:, 4] - r_noxc.eigenvalues[:, 3])
+)
+local_only = GTH(si_pp.zion, si_pp.rloc, si_pp.c)
+lo_terms = lda_terms({"Si": local_only})
+try:
+    run(s0, b_test, terms=lo_terms)
+    raise AssertionError("local-only silicon was accepted")
+except SCFError as err:
+    lo_hist = err.history
+lo_gap = float(lo_hist["gap"][-1])
+lo_res = float(lo_hist["residual"][-1])
+assert 0 < gap_disp[2] < 1e-3 < gap_disp[3]
+assert gap_noxc < 0 < perk_noxc
+assert lo_gap < -0.05 and lo_res > 1e-4
+```
+
+Three of the post's expectations were measured while it was written with the
+2a per-k-point gap guard, and do not survive the guard over the whole grid.
+The acceptance tests were changed accordingly, with the project lead's
+agreement; no tolerance was loosened. Two more expectations are refined by
+the results of this document.
+
+- **The displaced geometry of the force test is nearly gapless on the 2³
+  grid.** Moving one atom by 0.11 Bohr splits the Γ₂₅′ maximum and lowers an
+  X-point conduction state until the gap over the 2³ grid is
+  `{python} f"{gap_disp[2] * 1e3:.2f}"` mHa, below `min_gap` = 1 mHa. On the
+  3³ grid it is `{python} f"{gap_disp[3] * 1e3:.1f}"` mHa, the review's value,
+  and the displaced-geometry tests run there. The post's force measurements
+  were made on 3³ already.
+- **Silicon without XC is a semimetal on these grids.** Its gap over the 2³
+  grid is `{python} f"{gap_noxc * 1e3:.0f}"` mHa while every per-k gap is
+  positive (smallest `{python} f"{perk_noxc * 1e3:.0f}"` mHa). The XC-off
+  net-force control therefore runs without the guard: the identity it tests
+  holds at any self-consistent fixed point.
+- **The gap-guard positive control does not converge.** Local-only silicon is
+  rejected for a gap over the grid of `{python} f"{lo_gap:.3f}"` Ha, as the
+  post said, but its SCF with fixed band filling does not converge (residual
+  `{python} f"{lo_res:.0e}"` after 100 iterations): a band crossing at the
+  Fermi level makes fixed occupations slosh. The post's "accepted a converged
+  state" described the 2a SCF stopping at a looser tolerance.
+- **Valence bands agree better than conduction bands only near the top.** The
+  post expected the valence bands to agree with Cohen–Bergstresser much
+  better than the conduction bands. That holds for the upper two valence
+  bands; the lowest differs by about as much as the conduction bands, because
+  the empirical valence band is wider (band section above).
+- **Six-cubed is closer to the limit than guessed** (k-grid section above),
+  and the post's "4 ∣ N" was already corrected by the review; both are
+  confirmed here.
+
+## Interpretation
+
+The implementation solves the self-consistent Kohn–Sham problem for bulk
+silicon with the behaviour the theory post predicted, quantitatively:
+
+- every energy the post and its review quoted at a setting computed here is
+  reproduced, to the digits quoted;
+- the discrete problem has the full space group exactly when the FFT grid is
+  even, and the symmetry breaking on odd and half-shifted grids has the size
+  and the cause the post and review gave;
+- the weight derivatives use the frontier levels of the whole crystal;
+- DFTK, solving the same discrete problem, agrees in every energy term,
+  eigenvalue and force far inside the tolerances fixed in advance.
+
+Physically, the results are the textbook LDA picture of silicon. The total
+energy converges fast in the cutoff and slowly in the k-grid; Γ-centred grids
+are the least efficient uniform grids, and the half-shifted ones show what
+density symmetrisation would buy. The band structure has the shape of the
+empirical one with every gap too small by a few tenths of an eV, the
+well-known Kohn–Sham band-gap problem rather than an error of the code, and
+agrees with published LDA values to within the differences expected between
+pseudopotentials. The lattice constant is within about one per
+cent of experiment and the bulk modulus within a few per cent.
+
+The surprises are about the gap guard over the grid, not about silicon: two
+of the post's test settings sat on near-gapless or semimetallic discrete
+problems that the old per-k guard could not see. That the new guard caught
+them is the point of having it. The research log records the interpretation.
+
+```{python}
+#| echo: false
+RENDER_SECONDS = time.perf_counter() - T_START
+```
+
+*This document took `{python} f"{RENDER_SECONDS / 60:.1f}"` minutes to compute
+on the machine that rendered it.*

@@ -19,10 +19,19 @@ def valence_band_maximum(bands, n_valence: int) -> float:
 
 
 def band_minimum_on_segment(
-    structure, k_start, k_end, band: int, ecut: float, terms, n_samples: int = 41, xtol: float = 1e-6
+    structure,
+    k_start,
+    k_end,
+    band: int,
+    ecut: float,
+    terms,
+    n_samples: int = 41,
+    xtol: float = 1e-6,
+    density=None,
 ) -> tuple[float, float]:
     """Minimum of band ``band`` (0-based) along k(t) = k_start + t (k_end - k_start),
-    t in [0, 1], fractional k. Returns (t, energy in Ha).
+    t in [0, 1], fractional k. Returns (t, energy in Ha). ``density`` is passed to
+    ``band_structure`` (energy terms evaluated at a fixed density, e.g. an SCF result).
 
     Dense vmapped sampling, then golden-section refinement of the bracket around the best
     sample. Golden section needs no derivative, so it tolerates the tiny steps from the
@@ -32,7 +41,7 @@ def band_minimum_on_segment(
     lattice = structure.lattice
     ts = jnp.linspace(0.0, 1.0, n_samples)
     samples = PlaneWaveBasis.build(lattice, k_start + ts[:, None] * (k_end - k_start), ecut)
-    e = band_structure(structure, samples, n_bands=band + 1, terms=terms).eigenvalues[:, band]
+    e = band_structure(structure, samples, n_bands=band + 1, terms=terms, density=density).eigenvalues[:, band]
     n_pad = samples.n_pad + max(16, samples.n_pad // 20)
 
     def energy(t):
@@ -43,7 +52,7 @@ def band_minimum_on_segment(
         except ValueError:  # this k needs a larger basis than any sample: grow once
             n_pad = PlaneWaveBasis.build(lattice, k, ecut).n_pad + 16
             basis = PlaneWaveBasis.build(lattice, k, ecut, n_pad=n_pad)
-        return float(band_structure(structure, basis, n_bands=band + 1, terms=terms).eigenvalues[0, band])
+        return float(band_structure(structure, basis, n_bands=band + 1, terms=terms, density=density).eigenvalues[0, band])
 
     i = int(jnp.argmin(e))
     lo, hi = float(ts[max(i - 1, 0)]), float(ts[min(i + 1, n_samples - 1)])

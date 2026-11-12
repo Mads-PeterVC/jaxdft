@@ -1399,3 +1399,324 @@ last tool call of a turn is shown in full.
 
 **Not done.** The selection is made by hand. The excerpts so far all come
 from the first two sessions.
+
+## 2026-11-11: Milestone 2b public API, agreed before implementation
+
+Settled after the [2b theory post](../theory/02b_scf_silicon.qmd) was
+reviewed and revised, before any 2b test or code was written. Two choices
+went to the project lead; the rest were proposed in the same round and not
+objected to. The physics is in the theory post; this entry records the shape
+of the code.
+
+**k-point weights live on the basis.** `PlaneWaveBasis.build(...,
+kweights=None)` stores a `kweights` leaf of shape `(n_k,)` next to
+`kpoints`; `None` means uniform. Weights must be non-negative and sum to 1,
+or `build` raises. The weights can then never be paired with the wrong
+k-points, `scf` and `energy` keep their signatures, and the weights shard with
+the k axis. `total_energy(structure, basis, terms, orbitals, occupations)`
+loses its `kweights` argument (no caller passed it).
+`electron_density(..., kweights=None)` keeps its optional override, which
+defaults to `basis.kweights`. Rejected: weights as an SCF argument (every call
+site must pair them with the right basis, uncheckable under tracing), and a
+`KGrid` type (room for symmetry data before anything needs it). A band-path
+basis carries uniform weights that mean nothing; that is the accepted cost.
+
+**k-grids.** `monkhorst_pack(shape, shift=(0, 0, 0)) -> (kpoints, weights)`
+in `structure/kpoints.py`: k = (n + s)/N in fractional coordinates, in
+[0, 1), uniform weights. The shift exists for the positive control of the
+symmetry argument (theory post); production runs use the Γ-centred grid.
+
+**Nonlocal radial data: a tuple of channels.** A pseudopotential exposes
+`channels`, one object per angular momentum. For HGH this is
+`HGHChannel(l, r, h)` in `pseudo/gth.py`, with `h` the symmetric coupling
+matrix (Ha, a tuple of tuples) and `projectors(q2)` returning the reduced
+projectors p̂ᵢ(q)/qˡ, shape `(n_i, *q2.shape)`, Bohr^(3/2+l), as traceable
+functions of q² (theory post, decision 7). A pseudopotential without the
+attribute, or with `channels == ()`, has no projectors: hydrogen and
+Cohen–Bergstresser are unchanged. `GTH(zion, rloc, c, channels=(), source)`
+gains the field; `parse_hgh` reads the projector blocks (upper triangles of
+h, symmetrised), refuses l > 2 and (l, i) outside the theory post's table
+with `NotImplementedError`, and refuses trailing lines it does not understand
+with `ValueError`. Rejected: flat per-l methods on the pseudopotential (three
+members that must agree), and a pseudopotential that builds whole projector
+blocks from Cartesian q (every family would reimplement the solid harmonics
+and the q = 0 handling).
+
+**The nonlocal term.** `AtomicNonlocal(pseudos)` in
+`hamiltonian/atomic_nonlocal.py`, an operator term (`prepare`/`apply`, the
+`B D Bᵀ` product of the theory post). It owns the solid harmonics, the
+structure-factor phases and Ω^(-1/2). `lda_terms(pseudos)` includes it only
+when some pseudopotential has channels, so the H₂ breakdown keeps its five
+entries. Its energy is reported as `"AtomicNonlocal"`.
+
+**The HGH silicon file** `hgh_lda/si-q4.hgh` is vendored verbatim from
+PseudoLibrary, SHA-256 pinned as for hydrogen; `hgh_lda("Si")` loads it.
+
+**Occupations over the grid.** `grid_occupations(eigenvalues, kweights,
+n_electrons, *, side=-1, tol=1e-6)` in `scf/occupations.py` replaces the
+per-k `aufbau_occupations` inside the SCF and `energy` (the latter stays, for
+its own tests). Its definition, which the theory post leaves to the
+implementation:
+
+- The reference count N_ref is the even integer nearest to N (halves round
+  up). Bands n < N_ref/2 are doubly occupied at every k; that is the band
+  filling the gap guard certifies.
+- The remainder δ = N − N_ref is removed from the highest occupied states
+  (δ < 0) or added to the lowest empty ones (δ > 0), over all k-points, level
+  by level. A level is the set of states within `tol` of each other; every
+  state of a level receives the same change of f, so Σ w_k Δf_nk = δ. A level
+  that fills or empties passes the rest to the next.
+- The derivative with respect to N is one-sided at a kink: `side=-1` is the
+  level that loses charge as N decreases, `side=+1` the level that gains as N
+  increases.
+
+For one k-point with weight 1 this equals `aufbau_occupations`, so every 2a
+result is unchanged.
+
+**The gap guard** compares the lowest state of band N_ref/2 with the highest
+of band N_ref/2 − 1 over all k-points, at convergence only. The per-iteration
+`gap` in the SCF history already is this quantity. `SCFOptions` gains
+`degeneracy_tol = 1e-6` (Ha, passed to `grid_occupations`).
+
+**Buffer bands.** `SCFOptions.buffer_bands = 1`. `n_bands` keeps its meaning,
+the bands that must converge (default occupied + 1). The eigensolver
+iterates `n_bands + buffer_bands` vectors; residuals are checked, and results
+returned, for the first `n_bands` only.
+
+**FFT grids compatible with fractional translations.**
+`PlaneWaveBasis.build(..., fft_multiple=1)`, an int or a 3-tuple: each N_i is
+the smallest 2·3·5-smooth multiple of `fft_multiple[i]` at or above the
+no-wraparound bound. Diamond needs 2. Passing it together with an explicit
+`fft_shape` raises. The package does not detect symmetry; the caller states
+the multiple.
+
+**Supercells.** `supercell(structure, repeats)` in
+`structure/builders/supercell.py`: lattice rows aᵢ·nᵢ, the images of the cell
+translation by translation (translations outer, atoms inner), species and
+weights tiled.
+
+**`band_minimum_on_segment` gains `density=None`**, passed through to
+`band_structure`, for the Δ minimum of the self-consistent bands.
+
+**Tests.** Cross-check numbers that both the throwaway check and the review
+produced are labelled cross-checks, as in 2a; the test-size energy and grid
+gap come from the review alone and say so. The finite-difference tolerances
+for the fractional-charge weight derivatives are derived, not measured,
+because nobody has run fractional-charge silicon. If one fails during
+implementation it is raised with the project lead, not loosened.
+
+## 2026-11-11: Milestone 2b implementation
+
+The nonlocal term, k-point weights on the basis, grid occupations, buffer bands,
+`fft_multiple`, `monkhorst_pack` and `supercell` are implemented as agreed in the
+API entry above. These are the decisions made during implementation, and the
+changes to acceptance tests, each agreed with the project lead.
+
+**The nonlocal operator.** `AtomicNonlocal.prepare` builds B, of shape
+`(n_pad, N_proj)`, once per k-point. Its columns are
+Ω^(-1/2) e^(-2πi m·f_a) S_lm(q) p̂ᵢ(q)/qˡ, masked to the basis. D is the block
+diagonal of λ_a hˡ, repeated for each m. `apply` is B(D(B†ψ)), with no FFT.
+The real solid harmonics up to l = 2 are written out as polynomials in
+(q_x, q_y, q_z), and the projectors are functions of q², so no |q| and no q̂
+appear anywhere. First and second derivatives with respect to the cell,
+positions and k at Γ are finite (a property test).
+
+**Grid occupations.** `grid_occupations` is a `custom_jvp`. The value sorts all
+candidate states (empty ones for added charge, occupied ones by −ε for removed
+charge), groups them into levels where consecutive sorted energies differ by
+more than `tol`, and fills levels by a clipped cumulative capacity. Every step is
+a traced array operation, so it runs inside the jitted SCF and under `vmap`.
+The JVP picks the active level from the side argument, half-open toward the
+side, so the derivative at an integer count is exactly one-sided. Eigenvalues
+and weights are stop-gradiented. In `energy()` they already are, and the
+Hellmann–Feynman argument needs nothing through them.
+
+**SCF changes.** The occupations are recomputed from the eigenvalues at every
+iteration, so a fractional frontier follows the current spectrum. The gap guard
+uses `frontier_gap`: CBM − VBM over all k-points of the band filling at N_ref,
+evaluated at convergence. The history's `homo`, `lumo` and `gap` are the same
+quantity at each iteration. The eigensolver iterates `n_bands + buffer_bands`
+vectors, capped by the smallest basis. Only the first `n_bands` are checked,
+recorded and returned. The SCF error message now quotes the gap over the grid.
+
+**Four acceptance-test changes, agreed with the project lead.** None loosens a
+tolerance. Each comes from the new gap guard meeting a state that the theory
+post had measured with the 2a per-k guard.
+
+- **The displaced geometry runs on the 3³ grid, not 2³.** On 2³ the
+  0.11 Bohr displacement splits Γ₂₅′ and lowers an X-point conduction state
+  until the gap over the grid is 0.12 mHa, below `min_gap` = 1 mHa. Per-k gaps
+  stay at 72 mHa. On 3³ the gap is 10.3 mHa, the review's value. The post's
+  finite-difference force measurements were already made on 3³. On 3³ the
+  conduction-side frontier is the time-reversal pair (k, −k), and the test
+  asserts that pair instead of a single state.
+- **The XC-off net-force control runs with the guard disabled.** Silicon
+  without XC is a semimetal on every grid tried: −0.042 Ha (2³) and −0.025 Ha
+  (3³) at the ideal geometry. The identity it tests, a vanishing net force when
+  only translation-covariant terms remain, holds at any self-consistent fixed
+  point with fixed occupations.
+- **The XC-off supercell comparison runs with `min_gap` = 1e-4.** Its gap over
+  the 2×1×1 grid is +0.33 mHa: positive, so the band filling is the ground
+  state.
+- **The gap-guard positive control no longer requires convergence.**
+  Local-only silicon is rejected for a gap over the grid of −0.063 Ha (the
+  review's value). With fixed occupations it also never converges, since a band
+  crossing at the Fermi level (smallest per-k gap 10⁻⁴ Ha) makes them slosh.
+  Residuals stay at 10⁻³–10⁻¹ after 300 iterations with any mixer tried. The
+  theory post's "accepted a converged state" described the 2a SCF stopping at a
+  looser tolerance.
+
+Two further corrections were errors in the tests themselves, not in their
+expectations: a read-only NumPy view written to, and a count of partially
+occupied states that included the empty conduction bands.
+
+**The unmeasured tolerances held.** Both one-sided weight derivatives at the
+displaced geometry, and the degenerate valence side at the ideal geometry,
+agree with the second-order finite differences within 10⁻⁵ Ha (5×10⁻⁵ for the
+degenerate case). The Z × gap identity holds to 10⁻⁸.
+
+## 2026-11-11: Milestone 2b validation document, and an open performance item
+
+**The validation document is sized to its render cost.** Reproducing all of
+the theory post's settings at every render would take 20–30 minutes on the
+laptop. The 4³ grid at 40 Ha takes 207 s, 6³ at 15 Ha 152 s, and 8³ 423 s.
+With the project lead it was decided to keep the document lean and to profile
+later. The document renders in about 7 minutes. Its cheaper settings:
+
+- the cutoff scan runs on the 2³ grid; its convergence profile matches the
+  post's 4³ table within 10 %;
+- the k-scan stops at 4³ and adds the half-shifted 2³ and 3³ grids;
+- E(a) uses half-shifted grids, whose density asymmetry does not matter for
+  energies.
+
+The post's 20 Ha, 40 Ha and 6³ numbers are quoted, not recomputed. The band
+path, 150 k-points with about 760 plane waves each, uses LOBPCG rather than
+dense diagonalisation, to keep the render short.
+
+**Units.** `units.py` gains the atomic unit of pressure, E_h/a₀³ in GPa,
+from the CODATA 2022 E_h and a₀, for bulk moduli. It is tested against its
+derivation and against the CODATA 2018 value, which differs by 2×10⁻⁹
+relative because a₀ changed between the two adjustments.
+
+**Open item: superlinear cost in the number of k-points.** At 15 Ha, 6³ takes
+6.7 times as long as 4³ for 3.4 times as many k-points and the same number of
+SCF steps. The suspected cause, not yet profiled, is memory. The density and
+the local-potential application are `vmap`ped over all k-points at once. They
+therefore materialise (n_k, N³, n_bands) complex arrays, about 0.3 GB at 6³,
+plus FFT workspace. If profiling confirms it, the fix is to accumulate the
+density over k-points in chunks (`lax.map` over batches, or a scan), which
+keeps k-points a batch dimension for sharding. The performance page now
+tracks the cost per k-point and SCF step, so the fix will be measurable. The
+validation document can grow back towards the post's settings afterwards.
+
+## 2026-11-12: Towards the next milestone: smearing, metals, graphene (open)
+
+A discussion with the project lead after the 2b validation, recorded as the
+beginnings of the next milestone's description. Nothing here is decided. Other
+work comes first, and later entries will record what changes.
+
+**What graphene would need today.** Nothing in the SCF, the operators or the
+nonlocal part is specific to silicon. `Lattice` takes any vectors, Ewald, the
+FFT grid rule and the basis are general, `monkhorst_pack((n, n, 1))` gives a
+2D grid, `kpath` takes any labelled points, and carbon's HGH channels (s, p)
+are within `HGHChannel`. The missing pieces are small: the vendored
+`c-q4.hgh` with provenance, a hexagonal lattice or graphene builder, and
+hexagonal special points. Three things are not small:
+
+- *The gap guard.* π and π* touch at K, at the Fermi level. Grids with n a
+  multiple of 3 contain K, the grid gap is zero and the guard rejects the run,
+  although `grid_occupations` shares the degenerate level correctly. Grids
+  without K pass, and fixed occupations are then exact for undoped graphene,
+  but convergence in n is slow near the cone.
+- *Cost.* Carbon HGH needs a much higher cutoff than silicon, the vacuum
+  multiplies the plane-wave count, and a 2D grid without symmetry reduction
+  has many k-points. The open k-point scaling item above would bite first.
+- *Symmetry.* The 2b analysis of which FFT grid sizes keep the diamond space
+  group would have to be redone for the hexagonal group before vanishing
+  forces at the ideal geometry can serve as a test.
+
+**Doping by extra electrons.** Today the electron count is always the sum of
+the ionic charges (`scf.py`, `n_el` from `ionic_charges`); the per-atom
+weights cannot stand in, since they are capped at 1 and scale the
+pseudopotential. An `extra_electrons` option would be a few lines. The
+electrostatics already follow the standard compensating-background
+convention: Hartree and Ewald drop G = 0 with a uniform background, and the
+α term of the local part uses the electron count. In bulk this is the usual
+model of doping. In a slab the background fills the vacuum too, a known
+artefact; quantitative work would need a counter-charge plane or 2D Coulomb
+truncation. The occupations are the real obstacle. The extra charge goes
+level by level into the lowest conduction levels on the grid, a correct
+zero-temperature filling, but without smearing it converges poorly with the
+k-grid and level reordering between iterations can stop the SCF converging.
+The gap guard, measured at the reference count, would reject every such run.
+
+**The gap guard compared with smearing.** Codes that smear by default, or
+leave smearing to the user, have no such guard: occupations follow a Fermi
+level, so band overlap across k-points is absorbed rather than silently
+wrong, and in an insulator with a gap much larger than the width the cost is
+negligible. The guard exists here because smearing does not exist yet, and
+because CLAUDE.md asks for one-sided weight derivatives in gapped systems,
+which fixed occupations give directly and smearing blends into one value. The
+expected split once smearing exists: smearing is the normal path (metals,
+doped cells, unknown systems), minimising a free energy that is
+differentiable everywhere; fixed occupations remain an option for insulators,
+carrying the guard, the one-sided weight derivatives and the Z × gap
+identity.
+
+**Candidate next milestone: smearing, validated on aluminium.** Graphene is a
+poor first test of smearing: its Fermi surface is two points and its density
+of states vanishes at the Fermi level. Aluminium is preferred:
+
+- one atom in the fcc cell, so the existing builders, special points and
+  k-paths apply; the HGH Al pseudopotential (3 valence electrons, s and p
+  channels) is soft and there is no vacuum;
+- a large Fermi surface, which exercises what smearing changes and gives the
+  classic k-grid against smearing-width convergence study;
+- references on every rung: nearly free-electron bands (linking back to
+  milestone 1a), published LDA lattice constant and bulk modulus, and DFTK,
+  whose own examples use smeared aluminium;
+- silicon as a control: with smearing it must reproduce the fixed-occupation
+  result as the width goes to zero.
+
+Questions the theory post would have to settle: the Fermi-level solve and
+its derivative (implicit differentiation or a custom JVP); the entropy term,
+the variational free energy that `jax.grad` differentiates, and zero-width
+extrapolation of energies; the smearing function (Fermi–Dirac, Gaussian,
+Methfessel–Paxton, Marzari–Vanderbilt), each trading convergence in the width
+against occupations staying in [0, 2]; charge sloshing in metals and whether
+a Kerker-type preconditioner is needed (mild in a one-atom cell, likely in
+supercells); and how the gap guard and the weight derivatives change when
+smearing is on.
+
+**Graphene later.** It fits a later milestone on 2D systems (hexagonal cells,
+vacuum, possibly Coulomb truncation), after the k-point performance fix, with
+doped graphene as an application of smearing.
+
+## 2026-11-12: Milestone 2b DFTK comparison
+
+**Reference data.** `reference/dftk_si/` follows `reference/dftk_h2/`: a
+Julia script, the same pinned environment (DFTK 0.8.2), a README with the
+conventions, and a JSON that identifies the pseudopotential by hash. It runs
+the two cases of the theory post: the ideal geometry on the 2³ test grid and
+the displaced force-test geometry on 3³, the grid the acceptance tests moved
+to on 2026-11-11. The post's specification says "the same k-grid", which for
+the displaced case is now 3³.
+
+**DFTK API notes (0.8.2).** The k-grid shift is not a keyword of
+`PlaneWaveBasis`; it is given through `kgrid=MonkhorstPack(n; kshift=...)`.
+With `symmetries=false` DFTK lists every grid point with weight 1/n_k, so
+time reversal is not used either; `length(basis.symmetries)` is 1 and is
+stored in the JSON. With an explicit `fft_size` the grid is used as given,
+which the script asserts, so the review's question about
+`symmetries_respect_rgrid` is settled for this comparison.
+
+**k-point labels.** The tests build jaxdft's own `monkhorst_pack` grid in
+[0, 1) and match DFTK's [−½, ½) points modulo 1, rather than feeding DFTK's
+coordinates to jaxdft. That way the comparison also covers the relabelling
+invariance the theory post names as a test, and the plane-wave counts per
+k-point are compared after matching.
+
+**Result.** All energy terms, the total, the eigenvalues of the five
+converged bands at every k-point and the forces agree to about 10⁻¹¹ in
+atomic units, against tolerances of 10⁻⁷ Ha, 10⁻⁶ Ha and 10⁻⁶ Ha/Bohr. The
+validation document computes and shows the differences.

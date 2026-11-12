@@ -40,9 +40,34 @@ def min_fft_shape(lattice: Lattice, ecut: float) -> tuple[int, int, int]:
     return tuple(2 * math.floor(2 * gmax * float(a) / (2 * math.pi)) + 1 for a in norms)
 
 
-def rule_fft_shape(lattice: Lattice, ecut: float) -> tuple[int, int, int]:
-    """The default grid: ``min_fft_shape`` rounded up to 2-3-5-smooth sizes."""
-    return tuple(_smooth_235(n) for n in min_fft_shape(lattice, ecut))
+def _smooth_multiple(n: int, multiple: int) -> int:
+    """Smallest 2-3-5-smooth multiple of ``multiple`` that is >= n."""
+    m = max(1, -(-n // multiple)) * multiple
+    while _smooth_235(m) != m:
+        m += multiple
+    return m
+
+
+def rule_fft_shape(lattice: Lattice, ecut: float, fft_multiple=1) -> tuple[int, int, int]:
+    """The default grid: ``min_fft_shape`` rounded up to 2-3-5-smooth sizes, each a
+    multiple of ``fft_multiple`` (int or 3-tuple). A multiple of 2 makes the grid carry
+    fractional translations by half a lattice vector, as diamond's space group needs
+    (theory post 2b, 'Grid symmetry')."""
+    multiples = _multiples(fft_multiple)
+    return tuple(_smooth_multiple(n, m) for n, m in zip(min_fft_shape(lattice, ecut), multiples))
+
+
+def _multiples(fft_multiple) -> tuple[int, int, int]:
+    if isinstance(fft_multiple, int | np.integer):
+        multiples = (int(fft_multiple),) * 3
+    else:
+        multiples = tuple(int(m) for m in fft_multiple)
+    if len(multiples) != 3 or min(multiples) < 1:
+        raise ValueError(f"fft_multiple must be a positive int or three positive ints, got {fft_multiple}")
+    for m in multiples:
+        if _smooth_235(m) != m:
+            raise ValueError(f"fft_multiple {m} has a prime factor above 5: no 2-3-5-smooth multiple exists")
+    return multiples
 
 
 def grid_miller(fft_shape) -> jax.Array:
@@ -69,19 +94,20 @@ class PlaneWaveBasis:
     """Plane-wave bases B_k = {G : 1/2 |k+G|^2 <= ecut} for a batch of k-points.
 
     Leaves (leading k axis in the batched form, absent for a single k-point):
-        miller:  (n_k, n_pad, 3) integer Miller indices m, with G = m B.
-        mask:    (n_k, n_pad) True for real basis functions, False for padding.
-        kpoints: (n_k, 3) fractional k-points.
+        miller:   (n_k, n_pad, 3) integer Miller indices m, with G = m B.
+        mask:     (n_k, n_pad) True for real basis functions, False for padding.
+        kpoints:  (n_k, 3) fractional k-points.
+        kweights: (n_k,) Brillouin-zone weights, non-negative, summing to 1.
     Static: ``ecut`` (Ha), ``n_pad`` and ``fft_shape``.
 
     Real entries come first in each row. Padding entries have Miller index 0 and
     carry no physical meaning; the Hamiltonian decouples them.
     """
 
-    __slots__ = ("miller", "mask", "kpoints", "ecut", "n_pad", "fft_shape")
+    __slots__ = ("miller", "mask", "kpoints", "kweights", "ecut", "n_pad", "fft_shape")
 
-    def __init__(self, miller, mask, kpoints, ecut: float, n_pad: int, fft_shape):
-        values = (miller, mask, kpoints, float(ecut), int(n_pad), tuple(int(n) for n in fft_shape))
+    def __init__(self, miller, mask, kpoints, kweights, ecut: float, n_pad: int, fft_shape):
+        values = (miller, mask, kpoints, kweights, float(ecut), int(n_pad), tuple(int(n) for n in fft_shape))
         for name, value in zip(self.__slots__, values):
             object.__setattr__(self, name, value)
 
@@ -132,7 +158,7 @@ class PlaneWaveBasis:
         return jnp.where(mask, coeffs, 0)
 
     def tree_flatten(self):
-        return (self.miller, self.mask, self.kpoints), (self.ecut, self.n_pad, self.fft_shape)
+        return (self.miller, self.mask, self.kpoints, self.kweights), (self.ecut, self.n_pad, self.fft_shape)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
@@ -150,6 +176,8 @@ class PlaneWaveBasis:
         n_pad: int | None = None,
         fft_shape=None,
         allow_aliasing: bool = False,
+        kweights=None,
+        fft_multiple=1,
     ) -> PlaneWaveBasis:
         """Enumerate B_k for each fractional k-point (host side, before tracing).
 
@@ -161,12 +189,29 @@ class PlaneWaveBasis:
         A shape below the rule aliases the density and raises unless
         ``allow_aliasing=True`` (the grid-rule positive control). A shape that cannot
         hold the basis itself (distinct basis vectors on one grid point) always raises.
+        ``fft_multiple`` (int or 3-tuple) makes the rule grid a multiple of it in each
+        direction (see ``rule_fft_shape``); it cannot be combined with ``fft_shape``.
+
+        ``kweights`` (n_k,) are the Brillouin-zone weights, non-negative and summing to
+        1; None means uniform.
         """
         kpoints = jnp.asarray(kpoints, dtype=jnp.float64)
         if kpoints.ndim != 2 or kpoints.shape[1] != 3:
             raise ValueError(f"kpoints must have shape (n_k, 3), got {kpoints.shape}")
         if not ecut > 0:
             raise ValueError(f"ecut must be positive, got {ecut}")
+        n_k = kpoints.shape[0]
+        if kweights is None:
+            kweights = jnp.full(n_k, 1.0 / n_k, dtype=jnp.float64)
+        else:
+            kweights = jnp.asarray(kweights, dtype=jnp.float64)
+            if kweights.shape != (n_k,):
+                raise ValueError(f"kweights must have shape ({n_k},), got {kweights.shape}")
+            if bool(jnp.any(kweights < 0)) or abs(float(jnp.sum(kweights)) - 1.0) > 1e-12:
+                raise ValueError(f"kweights must be non-negative and sum to 1, got sum {float(jnp.sum(kweights))}")
+        multiples = _multiples(fft_multiple)
+        if fft_shape is not None and multiples != (1, 1, 1):
+            raise ValueError("pass either fft_shape or fft_multiple, not both")
 
         B = lattice.reciprocal
         gmax = jnp.sqrt(2.0 * ecut)
@@ -195,7 +240,7 @@ class PlaneWaveBasis:
         miller = jnp.where(mask[..., None], miller, 0)
 
         bound = min_fft_shape(lattice, ecut)
-        shape = rule_fft_shape(lattice, ecut) if fft_shape is None else tuple(int(n) for n in fft_shape)
+        shape = rule_fft_shape(lattice, ecut, multiples) if fft_shape is None else tuple(int(n) for n in fft_shape)
         if len(shape) != 3 or min(shape) < 1:
             raise ValueError(f"fft_shape must be three positive integers, got {fft_shape}")
         span = np.zeros(3, dtype=int)
@@ -209,4 +254,4 @@ class PlaneWaveBasis:
                 f"fft_shape {shape} is below the no-wraparound bound {bound}: the density would alias. "
                 "Pass allow_aliasing=True only to test the rule itself."
             )
-        return cls(miller, mask, kpoints, float(ecut), n_pad, shape)
+        return cls(miller, mask, kpoints, kweights, float(ecut), n_pad, shape)

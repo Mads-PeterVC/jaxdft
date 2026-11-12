@@ -108,3 +108,23 @@ def kpath(
         tick_positions=jnp.asarray(ticks, dtype=jnp.float64),
         tick_labels=tuple(labels),
     )
+
+
+def monkhorst_pack(shape, shift=(0.0, 0.0, 0.0)) -> tuple[jax.Array, jax.Array]:
+    """Uniform k-grid (theory post 2b, 'Brillouin-zone sampling'): fractional
+    k = (n + s) / N for n_i = 0..N_i - 1, wrapped into [0, 1), with uniform weights.
+
+    ``shift`` s is in units of the grid spacing: 0 is the Gamma-centred grid used by
+    the SCF, 1/2 the half-shifted grid (which, without density symmetrisation, breaks
+    the symmetry of the density; theory post 2b). Returns (kpoints (n, 3), weights (n,)).
+    """
+    shape = tuple(int(n) for n in shape)
+    if len(shape) != 3 or min(shape) < 1:
+        raise ValueError(f"k-grid shape must be three positive integers, got {shape}")
+    shift = tuple(float(s) for s in shift)
+    if len(shift) != 3:
+        raise ValueError(f"shift must have three components, got {shift}")
+    axes = [[((i + s) / n) % 1.0 for i in range(n)] for n, s in zip(shape, shift)]
+    k = jnp.asarray([[a, b, c] for a in axes[0] for b in axes[1] for c in axes[2]], dtype=jnp.float64)
+    n = math.prod(shape)
+    return k, jnp.full(n, 1.0 / n, dtype=jnp.float64)

@@ -88,3 +88,27 @@ def test_harmonic_frequency_of_known_oscillator():
     mu = units.PROTON_MASS_IN_ELECTRON_MASS / 2
     omega = units.convert(np.sqrt(0.37 / mu), "Hartree", "cm-1")
     assert 4300 < float(omega) < 4500
+
+
+# --- pressure (Milestone 2b validation: bulk modulus) -------------------------------
+
+
+def test_atomic_unit_of_pressure_in_gpa():
+    """E_h / a_0^3 from the CODATA 2022 E_h and a_0. The CODATA 2018 value of the
+    atomic unit of pressure, 2.9421015697e13 Pa, differs by 2e-9 relative because
+    a_0 changed by 6.8e-10 between the two adjustments."""
+    e_h, a0 = 4.3597447222060e-18, 0.529177210544e-10  # J, m
+    np.testing.assert_allclose(units.HARTREE_PER_BOHR3_IN_GPA, e_h / a0**3 * 1e-9, rtol=1e-14)
+    np.testing.assert_allclose(units.HARTREE_PER_BOHR3_IN_GPA, 29421.015697, rtol=5e-9)
+    np.testing.assert_allclose(float(units.convert(1.0, "Hartree/Bohr^3", "GPa")), units.HARTREE_PER_BOHR3_IN_GPA, rtol=1e-15)
+
+
+@given(st.floats(-1e3, 1e3, allow_nan=False))
+def test_pressure_round_trip(x):
+    back = units.convert(units.convert(x, "GPa", "Hartree/Bohr^3"), "Hartree/Bohr^3", "GPa")
+    np.testing.assert_allclose(float(back), x, rtol=1e-14, atol=1e-12)
+
+
+def test_pressure_does_not_convert_to_energy():
+    with pytest.raises(ValueError):
+        units.convert(1.0, "GPa", "Hartree")

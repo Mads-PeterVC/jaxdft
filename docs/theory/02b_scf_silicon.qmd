@@ -5,13 +5,43 @@ date: 2026-11-10
 bibliography: ../references.bib
 ---
 
-::: {.callout-warning}
-## Status: draft, awaiting review
-Not yet reviewed. No acceptance test or implementation exists. Formulas
-marked *checked* were verified numerically while the post was being prepared.
-Numbers quoted "from the throwaway check" come from a scratch nonlocal term
-run through the 2a SCF. They are expectations, not acceptance values. The
-[open questions](#open-questions-for-review) at the end are for the review.
+::: {.callout-note}
+## Status: reviewed, implemented and validated against DFTK
+Reviewed on 2026-11-11. The review is kept at `reviews/review_02b_scf_silicon.md`.
+It rebuilt the method independently from this post (a NumPy plane-wave LDA)
+and reproduced every number quoted here. It found one physics error: the
+FFT-grid condition for the symmetry of diamond is $N$ even, not $4 \mid N$.
+It also changed the argument for the Γ-centred grid, the evidence for buffer
+bands and the form of the projector protocol, and answered the open
+questions. The decisions are recorded at the [end of this
+post](#decisions-from-review).
+
+The [validation document](../validation/02b_scf_silicon.qmd) confirms the
+post's numbers and corrects three expectations that were measured with the
+2a per-k-point gap guard. With the guard over the whole grid:
+
+- the displaced force-test geometry is nearly gapless on the 2³ grid
+  (0.12 mHa), so its tests run on the 3³ grid;
+- silicon without XC is a semimetal on these grids, so the XC-off net-force
+  control runs without the guard;
+- local-only silicon is rejected, as stated below, but its SCF does not
+  converge either, so "a converged state" overstates what the 2a SCF found.
+
+It also refines two statements. Only the upper valence bands agree closely
+with Cohen–Bergstresser; the lowest does not. And 6³ is within about 0.2 mHa
+of the k-converged energy, not 0.5.
+
+DFTK, run as specified under 'Against references' (`reference/dftk_si/`),
+agrees with jaxdft far inside the tolerances below, with the `PspCorrection`
+and eigenvalue shift predicted here. The force comparison uses the displaced
+geometry on the 3³ grid, for the reason in the first item above. The
+explicit `fft_size` and `symmetries=false` left DFTK with the given grid and
+the identity as its only symmetry, as the review expected.
+
+Formulas marked *checked* were verified numerically while the post was being
+prepared, and again by the review. Numbers quoted "from the throwaway check"
+come from a scratch nonlocal term run through the 2a SCF; numbers quoted
+"from the review" come from the review's independent code.
 :::
 
 ## Scope
@@ -20,7 +50,8 @@ Milestone 2b takes the 2a machinery from a molecule at Γ to a bulk
 semiconductor. The test system is diamond-structure silicon with the HGH LDA
 pseudopotential [@hgh1998], spin-unpolarised, with Slater + PW92 as in 2a.
 Two things are new physics, and both are needed at once, because silicon has
-neither a local-only pseudopotential nor a converged energy at Γ:
+neither a local-only pseudopotential nor a usable energy at Γ alone (the
+Γ-only energy is 0.63 Ha off, and the Γ-only gap is 2.13 eV against 0.47 eV):
 
 - **Nonlocal projectors.** The HGH silicon pseudopotential has separable
   projectors in the $s$ and $p$ channels. They enter the Hamiltonian as a new
@@ -104,7 +135,9 @@ The radial transforms are analytic [@hgh1998]. With $y = (q r_l)^2$:
 
 *Checked* against numerical quadrature of the defining integral at
 $q = 0.3, 1, 3, 7$ Bohr⁻¹ for all eight entries: the worst relative
-difference was $5\times10^{-14}$. These are cell-independent, in Bohr$^{3/2}$.
+difference was $5\times10^{-14}$ ($3\times10^{-15}$ in the review). These are
+cell-independent, in Bohr$^{3/2}$; the reduced form $\hat p_i^l(q)/q^l$ used
+by the protocol below carries Bohr$^{3/2+l}$.
 [@hgh1998] quotes them with the factor $\Omega^{-1/2}$ included; we keep that
 factor outside, for the same reason the local form factor is kept free of
 $1/\Omega$: the pseudopotential object must not know the cell. Silicon needs
@@ -115,8 +148,9 @@ $l$ and $i$ are refused until an element needs them.
 ### Matrix elements and the operator
 
 Summing over atoms $a$ with per-atom weights $\lambda_a$, the phases
-$e^{\pm i\mathbf{k}\cdot\boldsymbol\tau}$ and the factors $i^{\,l}$ cancel
-between bra and ket:
+$e^{\pm i\mathbf{k}\cdot\boldsymbol\tau}$ cancel between bra and ket, and so
+do the factors $i^{\,l}$, because $h$ is diagonal in $l$ and no cross-$l$
+terms exist:
 
 $$
 \langle\mathbf{k}+\mathbf{G}|V_\text{nl}|\mathbf{k}+\mathbf{G}'\rangle
@@ -126,7 +160,10 @@ $$
 $$
 
 and by the addition theorem $\sum_m Y_{lm}(\hat{\mathbf{q}})Y_{lm}(\hat{\mathbf{q}}')
-= \tfrac{2l+1}{4\pi}P_l(\hat{\mathbf{q}}\cdot\hat{\mathbf{q}}')$. The structure
+= \tfrac{2l+1}{4\pi}P_l(\hat{\mathbf{q}}\cdot\hat{\mathbf{q}}')$. The sum over
+$m$ is therefore the same for any real orthonormal basis of the
+$(2l+1)$-dimensional shell: the real-harmonic convention and the ordering of
+$m$ need not match DFTK's for the comparison to agree. The structure
 factor sign is that of 1b. Unlike the local term, the matrix element depends
 on $\mathbf{k}+\mathbf{G}$ and $\mathbf{k}+\mathbf{G}'$ separately, not on their
 difference: that is what "nonlocal" means in reciprocal space, and why this
@@ -163,12 +200,20 @@ is undefined at $q = 0$ for $l > 0$, and its derivative with respect to the
 cell or to $\mathbf{k}$ is singular there. But $\hat p_i^l(q) \propto q^l$
 times a function of $q^2$, and $q^l\,Y_{lm}(\hat{\mathbf{q}})$ is a
 homogeneous polynomial in the Cartesian components of $\mathbf{q}$ (a solid
-harmonic): $q\,Y_{1m} = \sqrt{3/4\pi}\,(q_x, q_y, q_z)$. **Rule:** the
+harmonic): $q\,Y_{1m} = \sqrt{3/4\pi}\,(q_x, q_y, q_z)$. The other factor,
+$\hat p_i^l(q)/q^l$, is by the table above a polynomial in $y = q^2r_l^2$
+times $e^{-y/2}$. The whole matrix element is thus a polynomial in
+$q_x, q_y, q_z$ times a Gaussian, with no square root anywhere. **Rule:** the
 implementation evaluates the product
-$\big[q^lY_{lm}(\hat{\mathbf{q}})\big]\cdot\big[\hat p_i^l(q)/q^l\big]$, both
-factors smooth in $\mathbf{q}$, and never forms $\hat{\mathbf{q}}$. Then the
-$\Gamma$ point needs no special case and every derivative is finite. This is
-the nonlocal counterpart of the double-`where` guards of 2a.
+$\big[q^lY_{lm}(\hat{\mathbf{q}})\big]\cdot\big[\hat p_i^l(q)/q^l\big]$, the
+first factor from the Cartesian components of $\mathbf{q}$ and the second
+from $q^2$. It never forms $\hat{\mathbf{q}}$ and never forms $q$. Then the
+$\Gamma$ point needs no special case and derivatives of every order are
+finite. This differs from the local term of 2a, where `local(q)` takes the
+magnitude and needs a double-`where` guard around the square root. A guarded
+square root would also give correct first derivatives here, but only
+because $\nabla q^2 = 0$ where $q = 0$, and it would fail for the second
+derivatives that phonons will need. The review pointed this out.
 
 ### Energy and derivatives
 
@@ -226,10 +271,22 @@ Two derived constants fix conventions sharply, where hydrogen could not:
 The same caveat as in 2a applies to the functional: the parameters were
 fitted with the Padé LDA and are used with PW92.
 
+**Ghost states.** A separable pseudopotential is not equivalent to the
+semilocal one it was derived from, except on the atomic reference states.
+Away from them it can support spurious, deeply bound *ghost* states below
+the physical valence levels. The usual cause in the Kleinman–Bylander
+construction is a poor choice of the local channel. HGH has an analytic
+local part rather than a chosen channel, and its silicon parameters are
+known to be free of ghosts, but the failure mode exists in general and is
+cheap to test for. The lowest eigenvalue at every k-point of the grid must
+belong to the $3s$-derived band: in the review the lowest level is Γ₁ at
+$-11.98$ eV below the valence-band maximum, with nothing below it. The same
+assert would catch a mis-signed $h^l$ or a mis-parsed projector block.
+
 **Protocol.** The pseudopotential object gains its nonlocal radial data, in
 the spirit of `local(q)`: for each channel, $l$, the coupling matrix $h^l$
 (Ha) and the reduced projectors $\hat p_i^l(q)/q^l$ as traceable functions of
-$q$ (cell-independent). A pseudopotential without projectors exposes no
+$q^2$, not of $q$ (cell-independent, Bohr$^{3/2+l}$). A pseudopotential without projectors exposes no
 channels, and the nonlocal term is then zero; hydrogen and Cohen–Bergstresser
 are unchanged. The nonlocal Hamiltonian term reads only this interface, and
 only the parser reads the file. The exact signatures are agreed in the
@@ -239,9 +296,8 @@ engineering log before implementation, as for earlier milestones.
 
 In a crystal the Kohn–Sham orbitals are labelled by a wavevector
 $\mathbf{k}$ in the Brillouin zone, and the density and every energy are
-averages over it. For an insulator the integrand is a smooth, periodic
-function of $\mathbf{k}$, and the average over a uniform grid converges
-exponentially with the grid density [@monkhorst_pack1976]:
+averages over it, approximated by a sum over a uniform grid
+[@monkhorst_pack1976]:
 
 $$
 \frac{1}{\Omega_\text{BZ}}\int_\text{BZ} g(\mathbf{k})\,d\mathbf{k}
@@ -250,6 +306,17 @@ $$
 \mathbf{k} = \sum_{i=1}^{3}\frac{n_i + s_i}{N_i}\,\mathbf{b}_i,
 \quad n_i = 0,\dots,N_i-1,\quad w_\mathbf{k} = \frac{1}{N_1N_2N_3}.
 $$
+
+For an insulator this sum converges exponentially with the grid density.
+The grid sum is the periodic trapezoid rule, whose error is the set of
+Fourier coefficients of $g$ at the aliasing vectors, and those decay
+exponentially when $g$ is analytic in $\mathbf{k}$. Individual band energies
+are *not* analytic: bands are degenerate at symmetry points and cross inside
+the valence manifold, so each $\varepsilon_{n\mathbf{k}}$ has kinks. What is
+analytic is the projector onto the occupied manifold, and with it
+$\sum_{n\le4}\varepsilon_{n\mathbf{k}}$ and $\rho_\mathbf{k}$, which are what
+the energy and the density are built from. It is analytic because the gap
+does not close, and that is the only place the insulating condition enters.
 
 The 2a formulas for $\rho$, $E_\text{kin}$ and the band sum already carry
 $\mathbf{k}$ and $w_\mathbf{k}$. What 2b adds is the grid, the weights as an
@@ -272,22 +339,22 @@ Three choices are made here, each with a consequence for the invariants.
   point-group operation of the crystal. The discrete problem then has the
   full symmetry of the structure, and "the SCF solution preserves the
   symmetry of the input structure" (`CLAUDE.md`) holds without symmetrising
-  anything. A half-shifted grid in the fcc primitive basis is not invariant
-  under the cubic group. From the throwaway check, at the ideal geometry
-  with $E_\text{cut} = 12$ Ha: the largest force component is
-  $8\times10^{-16}$ Ha/Bohr on the unshifted $2^3$ grid and
-  $1.0\times10^{-3}$ Ha/Bohr on the $2^3$ grid shifted by
-  $(\tfrac14,\tfrac14,\tfrac14)$. Forces that should vanish by symmetry are
-  the sharpest symptom. The price is slower convergence with $N$ than
-  shifted grids give (table below).
+  anything. A half-shifted grid does not have this property, and the price
+  of avoiding it is slower convergence with $N$; both are quantified below
+  the list.
 - **No symmetry reduction.** The full grid is used with uniform weights. The
   SCF nevertheless takes $w_\mathbf{k}$ as an input and assumes nothing about
   it except $\sum w_\mathbf{k} = 1$, so an irreducible wedge with unequal
   weights and a symmetrised density can be added later without touching the
   SCF. Time-reversal ($\varepsilon_{n,-\mathbf{k}} = \varepsilon_{n\mathbf{k}}$,
-  $\psi_{n,-\mathbf{k}} = \overline{\psi_{n\mathbf{k}}}$) would halve the work;
-  it is not exploited, and so it is a test: the eigenvalues at $\mathbf{k}$
-  and $-\mathbf{k}$ on the grid must agree.
+  $\psi_{n,-\mathbf{k}} = \overline{\psi_{n\mathbf{k}}}$) would halve the work.
+  It is exactly free, because
+  $\rho_{-\mathbf{k}} = \overline{\rho_\mathbf{k}} = \rho_\mathbf{k}$: folding
+  $\mathbf{k}$ with $-\mathbf{k}$ changes nothing in the density, and the
+  review reproduced the unfolded energy bit for bit from the folded $2^3$
+  grid. It is a pure factor of two with no physics attached, so it is
+  deferred to a milestone where cost matters. Until then it is a test: the
+  eigenvalues at $\mathbf{k}$ and $-\mathbf{k}$ on the grid must agree.
 - **Fractional coordinates in $[0, 1)$.** DFTK lists the same grid in
   $[-\tfrac12, \tfrac12)$. The two differ by reciprocal lattice vectors, and
   the basis $\{\mathbf{G}: \tfrac12|\mathbf{k}+\mathbf{G}|^2 \le E_\text{cut}\}$
@@ -297,6 +364,63 @@ Three choices are made here, each with a consequence for the invariants.
 k-points remain a batch dimension: one `vmap` over the grid, as since 1a.
 The density on the FFT grid has no k index, so the SCF state and the mixer
 are unchanged.
+
+**What a shifted grid breaks, and what the unshifted grid costs.** Shifted
+Monkhorst–Pack grids are the standard choice for fcc, so the choice above
+needs its reason stated. The review decomposed the grids into stars, the
+sets of k-points related by the 48 cubic operations:
+
+| grid | stars touched | members present / full star size |
+|:--|:--:|:--|
+| unshifted $2^3$ | 3 | 1/1, 4/4, 3/3 |
+| unshifted $4^3$ | 8 | all members of every star |
+| half-shifted $2^3$ | 2 | 2/8, 6/24 |
+| half-shifted $4^3$ | 10 | one quarter of every star |
+
+The shifted grid is not closed under the cubic group, but it contains the
+*same fraction* of every star it touches. A uniform-weight sum over it of
+any quantity that is invariant under the point group therefore equals the
+fully symmetric star-weighted average exactly. That is why the shifted
+$2^3$ grid reduces to the two special points of Chadi and Cohen
+[@chadi_cohen1973] with weights $\tfrac14$ and $\tfrac34$, and why band
+energies and eigenvalue sums are symmetry-correct on a shifted grid. The
+density is different: $\rho_{R\mathbf{k}}$ is a rotated copy of
+$\rho_\mathbf{k}$, not equal to it, so $\sum_\mathbf{k}w_\mathbf{k}\rho_\mathbf{k}$
+is symmetric only if the grid contains every member of each star. A code
+that does not symmetrise the density converges to a slightly asymmetric
+$\rho$ on a shifted grid. Forces that should vanish are the sharpest
+symptom: at the ideal geometry with $E_\text{cut} = 12$ Ha, the largest force
+component is $8\times10^{-16}$ Ha/Bohr on the unshifted $2^3$ grid and
+$1.0\times10^{-3}$ Ha/Bohr on the $2^3$ grid shifted by
+$(\tfrac14,\tfrac14,\tfrac14)$ (throwaway check, confirmed by the review).
+DFTK can use shifted grids because it symmetrises the density; jaxdft in 2b
+does not, so it must use the Γ-centred grid.
+
+The price, from the review, at $E_\text{cut} = 15$ Ha:
+
+| grid | k-points | $E$ (Ha) | $E - E(\text{unshifted }6^3)$ (mHa) |
+|:--|:--:|:--:|:--:|
+| unshifted $2^3$ | 8 | −7.838092 | 95.0 |
+| half-shifted $2^3$ | 8 | −7.927201 | 5.9 |
+| unshifted $4^3$ | 64 | −7.926852 | 6.3 |
+| half-shifted $3^3$ | 27 | −7.933259 | −0.1 |
+| unshifted $6^3$ | 216 | −7.933125 | 0 |
+
+A half-shifted grid matches the unshifted grid of twice the linear size, at
+an eighth of the k-points. That is what the symmetry choice costs, and it is
+large enough that a shifted grid with density symmetrisation is a natural
+candidate for a later milestone.
+
+**The FFT grid at $\mathbf{k} \ne 0$.** The aliasing argument of 2a does not
+depend on $\mathbf{k}$: two basis vectors at the same $\mathbf{k}$ differ by
+at most $2G_\text{max}$, so the grid rule carries over unchanged. The
+placement of $\psi$ on the grid does depend on it. The sphere around
+$-\mathbf{k}$ reaches $|\mathbf{G}| \le G_\text{max} + |\mathbf{k}|$, so the
+largest Miller index grows with the k-grid, and it must stay below $N_i/2$
+or two basis functions share a grid frequency. It holds with room here
+(from the review: $\max|m_i| = 6$ against $N/2 = 12$ at 12 Ha, and 11
+against 22.5 at 40 Ha), and the basis enumeration already includes the
+largest $|\mathbf{k}|$ in its bound. The basis asserts the inequality.
 
 ### Occupations, the gap and the frontier over all k-points
 
@@ -315,11 +439,21 @@ gap at every k-point separately does not imply it. The 2a guard compares
 band $N_\text{el}/2 + 1$ with band $N_\text{el}/2$ per k-point. Run on a
 local-only silicon-like potential, which is a semimetal, it accepted a
 "converged" state with $\varepsilon_\text{CBM} - \varepsilon_\text{VBM} = -0.03$ Ha.
-**Rule:** the guard is on the gap over all k-points of the grid,
+The review confirmed the behaviour at $E_\text{cut} = 12$ Ha on the $2^3$
+grid: a gap over the grid of $-0.063$ Ha while the smallest per-k gap was
+$+0.0001$ Ha. **Rule:** the guard is on the gap over all k-points of the grid,
 $\varepsilon_\text{CBM} - \varepsilon_\text{VBM} > $ `min_gap`. It is still a
 numerical criterion: it says the fixed occupations are the ground-state
 occupations of this discrete problem, not that the material is an insulator
 at a finer grid.
+
+The guard is evaluated **at convergence**, as the acceptance criterion of
+the result. During the SCF the fixed occupations can be non-aufbau for
+several iterations even when the converged state is gapped (the initial
+Gaussian density has a much smaller gap), so a guard applied to every
+iterate would reject healthy runs. The gap over the grid is recorded in the
+SCF history at every iteration, so that a closing gap is visible before the
+run ends.
 
 **Fractional electron counts and the weight derivatives.** With per-atom
 weights, $N_\text{el} = \sum_j\lambda_jZ_j$ need not be an even integer.
@@ -342,8 +476,10 @@ k-point the same occupations $f_n(N_\text{el})$, so at more than one k-point
 it returns $Z_j\sum_\mathbf{k}w_\mathbf{k}\varepsilon_{n\mathbf{k}}$, the
 Brillouin-zone *average* of a band rather than its edge. In the throwaway
 check on a displaced geometry with a $3^3$ grid, the two sides differed by
-$Z\times0.112$ Ha, while the gap over the grid was 0.010 Ha. That is a
-wrong derivative, not a convention, and 2b must replace it.
+$Z\times0.112$ Ha, while the gap over the grid was 0.010 Ha (the review
+reproduced both: 0.1122 and 0.0103 Ha). That is a wrong derivative, not a
+convention, and 2b must replace it. The structural identity alone detects
+it, with no fractional-charge SCF.
 
 The frontier level is generally degenerate: the valence-band maximum at
 $\Gamma$ is a triplet, the conduction minimum on a $\Gamma$-centred grid is
@@ -355,8 +491,20 @@ $\sum_{\text{frontier}} w_\mathbf{k}\,df_{n\mathbf{k}} = dN_\text{el}$. To first
 order the energy change does not depend on how the charge is shared, since
 all those states have the same eigenvalue. Sharing equally keeps the density
 symmetric, in line with the preference of `CLAUDE.md` for quantities
-invariant within degenerate subspaces. How far 2b tests this with actual
-fractional-charge SCF runs is [open question 1](#open-questions-for-review).
+invariant within degenerate subspaces.
+
+2b implements these occupations and tests both sides against finite
+differences of fractional-charge SCF runs
+([decision 1](#decisions-from-review)). Two points from the review keep
+that test well-posed. The frontier is at least two-fold degenerate whenever
+its k-point is not time-reversal invariant, so the main test uses a
+geometry and grid whose frontier sits at a time-reversal-invariant point
+of the grid, where the level is non-degenerate and the sharing rule is not
+exercised; a degenerate frontier is a separate, looser test. And because
+the frontier set is defined by a tolerance, $E(\lambda)$ is only piecewise
+smooth: the finite difference is one-sided, with $\delta$ small enough that
+the frontier set is the same at $\lambda$ and $\lambda \mp \delta$, and the
+test asserts that the two sets are equal.
 
 ### Bands, buffer bands and the eigensolver
 
@@ -371,19 +519,42 @@ ill-conditioned and LOBPCG converges it slowly. From the throwaway check
 iterations in total over the SCF, and 8 bands took 424, with total energies
 equal to $10^{-14}$ Ha.
 
-**Rule:** the eigensolver carries a few *buffer* bands above those the SCF
-needs. Convergence is required, and asserted, only for the needed bands
-($N_\text{el}/2 + 1$); the buffer bands improve the convergence of the ones
-below and are otherwise ignored. The effect measured here is modest, so the
-number of buffer bands is a setting with a small default rather than a
-physical requirement. It matters more for the next point.
+Iterations are not the cost, though. Each band in the block costs a pair of
+FFTs per iteration, so the cost is iterations times block width. The review
+counted band-applications over a full SCF at the same size, with LOBPCG at
+the same tolerance:
+
+| bands requested | band-applications | SCF steps | $E$ (Ha) |
+|:--:|:--:|:--:|:--:|
+| 5 | 37 036 | 11 | −7.926851643 |
+| 6 | 43 467 | 11 | −7.926851643 |
+| 8 | 64 571 | 11 | −7.926851643 |
+| 10 | 67 026 | 11 | −7.926851644 |
+
+Iterations per band fall with buffer bands, as in the throwaway check, but
+the total work rises by 74 % from 5 to 8 bands for the same energy. On a
+GPU a wider block is cheaper per column, so the balance can go the other
+way. Whether buffer bands pay is a wall-clock question on the target
+device, and the two iteration counts above do not answer it.
+
+**Rule:** convergence is required, and asserted, only for the bands the SCF
+needs ($N_\text{el}/2 + 1$). The eigensolver may carry *buffer* bands above
+them, which speed up the convergence of the ones below and are otherwise
+ignored. Their number is a setting, not a physical requirement, with a
+default of one, to be revisited by wall-clock measurement on the GPU
+([decision 2](#decisions-from-review)). The result must not depend on it.
 
 **Bands from the converged density.** The band structure along a path is
 *not* self-consistent: the density $\rho^\ast$ from the grid SCF is fixed,
-and $H[\rho^\ast](\mathbf{k})$ is diagonalised at arbitrary $\mathbf{k}$. This
-is exact, not an approximation: the Kohn–Sham Hamiltonian depends on the
-orbitals only through $\rho$, so its eigenvalues at any $\mathbf{k}$ are
-those of the same converged potential. `band_structure` already accepts a
+and $H[\rho^\ast](\mathbf{k})$ is diagonalised at arbitrary $\mathbf{k}$. The
+diagonalisation step is exact, not an approximation: the Kohn–Sham
+Hamiltonian depends on the orbitals only through $\rho$, so its eigenvalues
+at any $\mathbf{k}$ are those of the same converged potential. But
+$\rho^\ast$ is the density of the discrete k-grid problem, and the bands
+inherit its k-grid error (about 0.02 eV on the $4^3$ grid; see the band
+table below). The path needs more bands than the SCF: the L₃ and X₁
+conduction levels quoted below require eight to ten, not five.
+`band_structure` already accepts a
 fixed density, and the FFT grid depends only on the cell and the cutoff, so
 a path basis and the SCF basis share one grid. A consistency test follows:
 at a k-point that is on the SCF grid, the band-structure eigenvalues must
@@ -399,7 +570,8 @@ choices are expected to carry over:
   semiconductor has neither problem: the smallest nonzero $|\mathbf{G}|$ is
   large, and the screening is finite. The throwaway check converged to
   $\|F(\rho)-\rho\| < 10^{-9}$ in 9 or 10 Anderson steps at every cutoff and
-  grid tried. No Kerker preconditioning in 2b.
+  grid tried, and the review's Pulay mixer in 10 to 12 with no stalls. No
+  Kerker preconditioning in 2b.
 - **Initial density.** Atomic Gaussians of width 0.8 Bohr, as in 2a, were
   adequate. The converged result must not depend on them.
 - **Vacuum.** There is none: the density is bounded away from zero, so
@@ -411,32 +583,60 @@ choices are expected to carry over:
 matrices in fractional coordinates, so they map an $N\times N\times N$ grid
 onto itself. Diamond is nonsymmorphic: with the origin at the bond centre
 (the 1b convention), inversion is a pure point operation, but the operations
-of the tetrahedral site group carry fractional translations that are
-multiples of $\tfrac14$ of the lattice vectors. They map the grid onto itself
-only if $4 \mid N$. Since XC is evaluated on the grid, the discrete problem
-has the full symmetry of the crystal only then. From the throwaway check at
-the ideal geometry, where every force should vanish:
+of the tetrahedral site group carry fractional translations. For a
+tetrahedral operation $R$ about the atom at $\boldsymbol\tau$ the translation
+is $\boldsymbol\tau - R\boldsymbol\tau$; for the twofold rotation about $x$
+it is $\tfrac{a}{4}(0,1,1) = \tfrac12\mathbf{a}_1$. The review enumerated the
+whole space group: 48 operations, with translations $(0,0,0)$,
+$(\tfrac12,0,0)$, $(0,\tfrac12,0)$ and $(0,0,\tfrac12)$ in the primitive
+fractional basis, 12 operations each. These are *halves* of primitive
+lattice vectors. (In cubic fractional coordinates the same vectors have
+components of $\tfrac14$, which is where the draft of this post went wrong
+and required $4 \mid N$.) The FFT grid is laid out along the primitive
+vectors, so the operations map the grid onto itself if and only if **$N$ is
+even in every direction**. Since XC is evaluated on the grid, the discrete
+problem has the full symmetry of the crystal only then. At the ideal
+geometry, where every force should vanish:
 
-| $E_\text{cut}$ (Ha) | grid $N$ | $4 \mid N$ | largest force (Ha/Bohr) | net force (Ha/Bohr) |
+| $E_\text{cut}$ (Ha) | grid $N$ | $N$ even | operations mapping the grid onto itself | largest force (Ha/Bohr) |
 |:--:|:--:|:--:|:--:|:--:|
-| 12 | 24 | yes | $8\times10^{-16}$ | $5\times10^{-16}$ |
-| 12 | 25 | no | $6\times10^{-7}$ | $6\times10^{-16}$ |
-| 15 | 25 | no | $1\times10^{-7}$ | $9\times10^{-16}$ |
-| 15 | 28 | yes | $1\times10^{-15}$ | $6\times10^{-16}$ |
+| 12 | 24 | yes | 48/48 | $8\times10^{-16}$ |
+| 12 | 25 | no | 12/48 | $6\times10^{-7}$ |
+| 12 | 26 | yes | 48/48 | $2\times10^{-15}$ |
+| 15 | 25 | no | 12/48 | $1\times10^{-7}$ |
+| 15 | 26 | yes | 48/48 | $5\times10^{-15}$ |
+| 15 | 28 | yes | 48/48 | $1\times10^{-15}$ |
 
-The net force vanishes on every grid, because inversion about the origin
-always maps the grid onto itself. This is the egg-box effect of 2a in
-another guise, and it is larger here than for H₂: translating the crystal
-rigidly by half a grid spacing at $E_\text{cut} = 12$ Ha changed the energy
-by $2.0\times10^{-7}$ Ha, against $2\times10^{-11}$ Ha for H₂ at its test size,
-while a translation by a whole grid spacing changed it by $2\times10^{-15}$ Ha.
-The silicon density has more weight at large $|\mathbf{G}|$ relative to the
-grid than the H₂ density had. Consequences: symmetry tests are exact
-(tolerance $10^{-10}$) on grids with $4 \mid N$ and hold only to the egg-box
-level otherwise; the test size uses such a grid; and the default grid rule
-is *not* changed to enforce it, since the residual is small and the rule is
-shared with DFTK. Whether a symmetry-compatible grid should become an option
-is [open question 3](#open-questions-for-review).
+The $N = 24$, 25 and 28 rows are from the throwaway check and were
+reproduced by the review; the $N = 26$ rows and the operation counts are
+from the review. $N = 26$ is the discriminating case: even, not a multiple
+of 4, and symmetric to machine precision.
+
+The net force vanishes on every grid (to $10^{-15}$ Ha/Bohr), because
+inversion about the origin always maps the grid onto itself. This is the
+egg-box effect of 2a in another guise, and it is larger here than for H₂:
+translating the crystal rigidly by half a grid spacing at
+$E_\text{cut} = 12$ Ha changed the energy by $2.0\times10^{-7}$ Ha, against
+$2\times10^{-11}$ Ha for H₂ at its test size, while a translation by a whole
+grid spacing changed it by $2\times10^{-15}$ Ha. Presumably the silicon
+density has more weight at large $|\mathbf{G}|$ relative to the grid than
+the H₂ density had; this was not measured. The mechanism is indirect, since
+the XC energy has no explicit dependence on the positions. The XC
+quadrature is the only term that is not exactly translation-covariant, so
+it is the only term that lets the self-consistent density break the
+symmetry. The asymmetric density then produces a force through the terms
+that do depend on the positions ($E_\text{loc}$, $E_\text{nl}$,
+$E_\text{Ewald}$). Switching XC off tests that chain (see the forces below).
+
+Consequences: symmetry tests are exact (tolerance $10^{-10}$) on grids with
+even $N$ and hold only to the egg-box level otherwise, and the test size
+uses an even grid. The default grid rule is *not* changed, since the
+residual is small and the rule is shared with DFTK. It already returns an
+even $N$ whenever it rounds an odd bound up to an even FFT-friendly size
+(23 → 24 at 12 Ha, 29 → 30 at 20 Ha), and an odd $N$ only when the bound is
+itself FFT-friendly (25 at 15 Ha). The basis gains an option that rounds up
+to a size compatible with given fractional translations
+([decision 3](#decisions-from-review)).
 
 ## Forces and the cell
 
@@ -491,11 +691,19 @@ $\Gamma$-centred grids, the default FFT grid, $\tau_\text{SCF} = 10^{-9}$.
 
 - HGH silicon is a **soft** pseudopotential, unlike HGH hydrogen: 1 mHa at
   15 Ha, against 80 Ha for comparable convergence of H₂. The energy decreases
-  monotonically with the cutoff, as it must.
+  monotonically with the cutoff. It must do so at a fixed FFT grid. The
+  table uses the default grid, which changes at every column ($N = 15$, 24,
+  25, 30, 36, 45), and changing the grid at a fixed cutoff is not
+  variational: from the review, $E = -7.836151895$, $-7.836151704$ and
+  $-7.836151623$ Ha on $N = 24$, 25, 26 at 12 Ha, a spread of
+  $2.7\times10^{-7}$ Ha with the largest grid highest. That is a hundred
+  times smaller than the smallest step in the table, so the monotonicity
+  seen here is safe, but the assert holds the grid fixed.
 - The k-grid, not the cutoff, limits the accuracy. The error falls by a
   factor of about 4 per step in $N$, consistent with exponential convergence
   for an insulator, but from a large prefactor: the unshifted grid is the
-  slowest-converging uniform grid, and $6^3$ is itself perhaps 0.5 mHa from
+  slowest-converging uniform grid. The half-shifted $3^3$ grid of the review
+  lies 0.13 mHa *below* the $6^3$ value, so $6^3$ is within about 0.2 mHa of
   the limit. Convergence with $N$ is **not variational** and need not be
   monotone in general, though it is here. $\Gamma$ alone is useless (0.6 Ha
   off).
@@ -506,21 +714,27 @@ $\Gamma$-centred grids, the default FFT grid, $\tau_\text{SCF} = 10^{-9}$.
   standing in for the orthogonality to the core states.
 
 **Kohn–Sham bands** from the converged density ($E_\text{cut} = 15$ Ha, $4^3$
-grid), in eV from the valence-band maximum, with the Cohen–Bergstresser
-values of the 1b reference table for comparison:
+grid), in eV from the valence-band maximum, with the published
+Cohen–Bergstresser values (Table I of [@cb1966], not the converged
+reproduction of 1b) for comparison. The third column, from the review, uses
+the density of the $6^3$ grid instead:
 
-| Level or splitting | LDA (throwaway check) | CB calculated [@cb1966] |
-|:--|:--:|:--:|
-| Γ₁ (valence-band width) | −11.98 | — |
-| Γ₂₅′ – Γ₁₅ | 2.54 | 3.4 |
-| Γ₂₅′ – Γ₂′ | 3.12 | 3.8 |
-| Γ₂₅′ – L₁ | 1.41 | 1.9 |
-| indirect gap (Δ₁ minimum) | 0.47, at 0.85 of Γ–X | 0.8 |
-| conduction level at X | 0.61 | — |
-| L₃′ – L₁ | 2.61 | 3.1 |
-| L₃′ – L₃ | 4.51 | 5.2 |
-| X₄ – X₁ | 3.47 | 4.0 |
+| Level or splitting | LDA, $4^3$ density | LDA, $6^3$ density | CB published [@cb1966] |
+|:--|:--:|:--:|:--:|
+| Γ₁ (valence-band width) | −11.98 | −11.97 | — |
+| Γ₂₅′ – Γ₁₅ | 2.54 | 2.55 | 3.4 |
+| Γ₂₅′ – Γ₂′ | 3.12 | 3.12 | 3.8 |
+| Γ₂₅′ – L₁ | 1.41 | 1.42 | 1.9 |
+| indirect gap (Δ₁ minimum) | 0.47, at 0.85 of Γ–X | 0.50, at 0.84 of Γ–X | 0.8 |
+| conduction level at X | 0.61 | 0.63 | — |
+| L₃′ – L₁ | 2.61 | | 3.1 |
+| L₃′ – L₃ | 4.51 | | 5.2 |
+| X₄ – X₁ | 3.47 | | 4.0 |
 
+- The bands carry about 0.02 eV of k-grid error through the density. That
+  is negligible against the differences from Cohen–Bergstresser, and the
+  denser grid moves the indirect gap towards the published LDA value quoted
+  below.
 - The degeneracies are those of 1b: 1, 3, 3, 1 at Γ; pairs at X; 1, 1, 2, 1,
   2 at L. They are structural checks that need no reference.
 - **Every gap is smaller than Cohen–Bergstresser's, by 0.3 to 0.9 eV.** This
@@ -546,8 +760,9 @@ values of the 1b reference table for comparison:
 
 **Lattice constant.** Total-energy calculations in the LDA have reproduced
 the lattice constant and bulk modulus of silicon to about a per cent and a
-few per cent since [@yin_cohen1982], with the LDA tending to overbind
-slightly. From the throwaway check at $E_\text{cut} = 20$ Ha on the $4^3$
+few per cent since [@yin_cohen1982]. The sign of the deviation depends on
+the correlation parametrisation and the pseudopotential, so no sign is
+claimed here beyond the one measured. From the throwaway check at $E_\text{cut} = 20$ Ha on the $4^3$
 grid, a cubic fit to seven energies between 9.9 and 10.5 Bohr gives
 $a_0 = 10.193$ Bohr (5.394 Å, 0.7 % below the experimental 5.431 Å) and
 $B_0 = 97$ GPa (experiment: about 99 GPa). The $4^3$ grid is not converged
@@ -581,7 +796,10 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
   unchanged.
 - Rank: the matrix has at most $N_\text{proj}$ nonzero eigenvalues.
 - Finite value and finite derivatives with respect to cell, positions and
-  $\mathbf{k}$ when the basis contains $\mathbf{k}+\mathbf{G} = 0$.
+  $\mathbf{k}$ when the basis contains $\mathbf{k}+\mathbf{G} = 0$. This is
+  the regression test for the square-root-free form.
+- No ghost states: at every k-point of the grid the lowest eigenvalue
+  belongs to the $3s$-derived band.
 - $E_\text{nl}$ from the direct functional equals
   $\sum w f\langle\psi|V_\text{nl}|\psi\rangle$ evaluated with the dense matrix.
 
@@ -591,15 +809,26 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
   under $\mathbf{k}\to-\mathbf{k}$ and under the point group of the lattice,
   modulo reciprocal lattice vectors.
 - $\int\rho = N_\text{el}$ for any weights summing to 1.
+- The largest Miller index of every per-k basis is below $N_i/2$.
 - Supercell equivalence, on a system small enough for the laptop: the energy
   per cell of a $\Gamma$-only calculation in a $2\times1\times1$ supercell
-  equals that of a $2\times1\times1$ grid in the primitive cell.
+  equals that of a $2\times1\times1$ grid in the primitive cell. The FFT
+  grids are passed explicitly, $(2N_1, N_2, N_3)$ against $(N_1, N_2, N_3)$;
+  the two discrete problems are then identical, because the supercell Γ
+  basis is the union of the primitive per-k bases at the same cutoff. The
+  supercell problem also admits densities with only the supercell period,
+  so the test starts from the symmetric atomic density and asserts, besides
+  the energy, that the converged supercell density is invariant under the
+  primitive translation. It runs first with XC switched off, where agreement
+  is at solver tolerance, and then with XC
+  ([decision 4](#decisions-from-review)).
 - Empty-lattice rung: with no potential the grid energy of 1a's free
   electrons is the weighted sum of the analytic band energies.
 - $\varepsilon_{n,-\mathbf{k}} = \varepsilon_{n\mathbf{k}}$ on the grid.
 - The gap guard rejects a converged state whose gap over the grid is
   negative although every per-k gap is positive (the local-only silicon-like
-  potential is the positive control).
+  potential is the positive control). The SCF history records the gap over
+  the grid at every iteration.
 
 **SCF silicon** (test size below)
 
@@ -609,10 +838,12 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
 - Independence of the initial density, mixing parameters and number of
   buffer bands. Iterative and dense eigensolvers agree.
 - Clip-and-renormalise makes no change at convergence.
-- On a grid with $4 \mid N$: the density is invariant under the operations
+- On a grid with even $N$: the density is invariant under the operations
   of the diamond space group, forces at the ideal geometry vanish, and the
-  degeneracies at Γ, X and L are exact, all to $10^{-10}$. On the default
-  grid when $4 \nmid N$: inversion and the net force are still exact.
+  degeneracies at Γ, X and L are exact, all to $10^{-10}$. This is asserted
+  on $N = 24$ and on $N = 26$, which is not a multiple of 4. On an odd grid
+  ($N = 25$): inversion and the net force are still exact, and the largest
+  force is at the egg-box level, not zero.
 - Band-structure eigenvalues at grid k-points equal the SCF eigenvalues.
 - Level degeneracies at Γ, X and L as in 1b; the conduction minimum is
   interior to Γ–X.
@@ -626,8 +857,10 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
   SCF accuracy with XC switched off.
 - Cell gradient against finite differences at a fixed basis.
 - One-sided $\partial E/\partial\lambda_j$: the two sides differ by $Z_j$
-  times the gap over the grid. Comparison with fractional-charge SCF runs
-  subject to [open question 1](#open-questions-for-review).
+  times the gap over the grid. Each side against a one-sided finite
+  difference of fractional-charge SCF runs, with the frontier set asserted
+  equal at both ends of the step: once with a non-degenerate frontier at a
+  time-reversal-invariant k-point, once (looser) with a degenerate one.
 
 **Against references** (after implementation, as in 2a)
 
@@ -637,7 +870,12 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
    (`AtomicNonlocal` is new), the total, all eigenvalues of the needed bands
    at every k-point with the asserted shift of $+0.036\,829$ Ha, and forces
    at the displaced geometry. DFTK's `PspCorrection` must equal
-   $-0.294\,634$ Ha. Script and outputs in `reference/dftk_si/`.
+   $-0.294\,634$ Ha. Script and outputs in `reference/dftk_si/`. According
+   to the review, DFTK has its own notion of a symmetry-compatible grid
+   (`symmetries_respect_rgrid`, `next_compatible_fft_size`), which is
+   inactive when an explicit `fft_size` is given. With `symmetries=false`
+   as well, it cannot affect the comparison; this is confirmed when the
+   reference is run.
 2. Published LDA band energies [@hybertsen_louie1986] and structural
    properties [@yin_cohen1982], in the validation document only: different
    pseudopotentials make them a plausibility check, not an acceptance value.
@@ -647,17 +885,24 @@ Everything listed in 2a continues to hold and is not repeated. New in 2b:
 ### Test size
 
 $a = 10.263$ Bohr, $E_\text{cut} = 12$ Ha (544 plane waves, a $24^3$ grid,
-so $4 \mid N$) and the $2^3$ grid (8 k-points). The gap over that grid is
+so $N$ is even) and the $2^3$ grid (8 k-points). The gap over that grid is
 0.44 eV, so the state is gapped. A full SCF took 10 iterations and 6 s on
-the laptop in the throwaway check, compilation included. The displaced geometry
-of the force test and one run on a $25^3$ grid (the control for grid
-symmetry) are the only additions.
+the laptop in the throwaway check, compilation included. The additions are
+the displaced geometry of the force test, one run each on a $25^3$ and a
+$26^3$ grid (the discriminating pair for grid symmetry), and the
+$2\times1\times1$ supercell.
 
 ### Tolerances
 
 - **Exact identities** (projector transforms, operator against the Legendre
-  formula, Hermiticity, covariances, symmetry on a $4 \mid N$ grid, grid
+  formula, Hermiticity, covariances, symmetry on an even grid, grid
   k-points against SCF eigenvalues): $10^{-10}$ in the relevant unit.
+- **Symmetry on the odd grid** ($N = 25$, 12 Ha): the largest force at the
+  ideal geometry is between $10^{-8}$ and $5\times10^{-6}$ Ha/Bohr (measured
+  $6\times10^{-7}$). The lower bound makes it a control: the test fails if
+  the odd grid is silently symmetric.
+- **Monotonicity in $E_\text{cut}$:** asserted at a fixed FFT grid, with no
+  tolerance beyond SCF accuracy.
 - **SCF tolerance:** $\tau_\text{SCF} = 10^{-9}$, as in 2a.
 - **Finite-difference forces:** fractional step $h = 10^{-3}$, tolerance
   $10^{-6}$ Ha per unit fractional coordinate (measured $2.6\times10^{-7}$,
@@ -670,38 +915,72 @@ symmetry) are the only additions.
   eigenvalues, $10^{-6}$ Ha/Bohr for forces, as in 2a and for the same
   reason: both codes solve the same discrete problem.
 
-## Open questions for review
+## Decisions from review
 
-1. **Fractional electron counts at several k-points.** The post fixes the
-   one-sided weight derivatives (frontier levels over all k-points, charge
-   shared equally within a degenerate frontier level). Verifying them by
-   finite differences needs SCF runs at $\lambda = 1 \mp \delta$, whose
-   occupations then depend on the eigenvalues during the SCF: the set of
-   frontier states can change between iterations, and partially filled
-   degenerate levels are where SCF convergence is fragile. Options: (a)
-   implement these occupations in 2b and test both sides by finite
-   differences on a displaced geometry, as in 2a; (b) in 2b implement only
-   the derivative and test the structural identity ($Z\times$ grid gap), and
-   make fractional-charge SCF at several k-points an explicit error until a
-   milestone with smearing. I lean to (a) with (b) as the fallback if the
-   SCF proves fragile, because a derivative that has never been compared
-   with a finite difference is an untested claim.
-2. **Buffer bands.** Is "converge $N_\text{el}/2 + 1$ bands, carry a few more
-   unconverged" the right rule, and what default (the check suggests 3)? The
-   alternative is to keep requiring all bands to converge, at the measured
-   cost of about 25 % more eigensolver iterations.
-3. **Grid symmetry.** Should the basis offer a grid rule that rounds up to a
-   size compatible with the fractional translations of the structure
-   ($4 \mid N$ for diamond), or is the egg-box-level symmetry breaking on the
-   default grid acceptable everywhere outside the symmetry tests?
-4. **Supercell equivalence test.** A $2\times1\times1$ silicon supercell at
-   Γ is affordable, but the supercell and the primitive cell get different
-   FFT grids from the rule unless both are passed explicitly. Is the test
-   worth that care, or is the DFTK comparison enough to pin the k-point
-   weights?
-5. **Time-reversal reduction.** Not exploiting $\mathbf{k}\to-\mathbf{k}$
-   doubles the cost of every run. It is left out to keep the first k-point
-   milestone simple; the review may disagree.
+The draft of this post ended with five open questions. The review answered
+them, and these are the decisions taken. Where a decision goes beyond what
+the review measured, that is said.
+
+1. **Fractional electron counts at several k-points: implemented and tested
+   in 2b.** Occupations with the frontier taken over all k-points and
+   charge shared equally within a degenerate frontier level, and both
+   one-sided weight derivatives compared with finite differences of
+   fractional-charge SCF runs. A derivative never compared with a finite
+   difference is an untested claim. The main test places the frontier at a
+   time-reversal-invariant k-point, where it is non-degenerate; a degenerate
+   frontier is a separate, looser test; the finite difference is one-sided
+   and the frontier set is asserted unchanged over the step. The fallback,
+   if the fractional-charge SCF proves fragile, is to keep the derivative
+   with the structural $Z\times$gap test and make fractional-charge SCF at
+   several k-points an explicit error until a milestone with smearing. That
+   fallback is raised with the user, not taken silently.
+2. **Buffer bands: converge only the needed bands; default of one buffer
+   band.** The rule stands, but the draft's evidence for it did not: in
+   band-applications 8 bands cost 74 % more than 5 for the same energy, and
+   6 bands 17 % more. The draft suggested three buffer bands. The default is
+   one, the setting is exposed, and the default is revisited by wall-clock
+   measurement on the GPU, recorded in the performance log. The choice of
+   one rather than zero or two is mine; the review called "one or two"
+   reasonable.
+3. **Grid symmetry: an option, not the default.** The condition for diamond
+   is $N$ even. The basis offers a grid rule that rounds each $N_i$ up to
+   the next FFT-friendly size compatible with a given denominator of the
+   fractional translations (2 for diamond). The symmetry tests use it; the
+   default rule is unchanged and stays shared with DFTK. The cost of the
+   option is the step to the next compatible size, which can be appreciable
+   (25 → 30 is 1.7 times the grid points if only the radices 2, 3 and 5 are
+   allowed). The name and signature are agreed in the engineering log.
+4. **Supercell equivalence: tested**, with explicit FFT grids, the symmetric
+   initial density, an assert on the translation invariance of the supercell
+   density, and an XC-off variant first. It is the only test that checks the
+   k-point weights against something other than DFTK, and it exercises the
+   per-atom sum of the nonlocal term and the $\mathbf{G}=0$ bookkeeping at
+   a different $\Omega$ and $N_\text{el}$.
+5. **Time-reversal reduction: left out of 2b.** It is a pure factor of two
+   with no physics attached (see the k-grid section), so it belongs to a
+   milestone where cost matters. When it is added, the gap guard and the
+   frontier search must run over the representatives with their weights,
+   which is the same set of eigenvalues as the unfolded grid.
+6. **The grid condition was wrong in the draft.** $4 \mid N$ came from
+   reading the fractional translations in cubic coordinates. The draft's
+   only negative control, $N = 25$, is odd and fails both rules, so its
+   table could not tell them apart. The tests now include $N = 26$.
+7. **The projector protocol takes $q^2$**, and the nonlocal term contains no
+   square root. `local(q)` keeps its 2a signature; changing it is outside
+   this milestone.
+8. **The Γ-centred grid is kept**, for the reason given in the k-grid
+   section (no density symmetrisation), with its cost now measured. A
+   shifted grid with density symmetrisation is a candidate for a later
+   milestone and is not designed here.
+9. **The gap guard is evaluated at convergence**; the gap over the grid is
+   logged in the history at every iteration.
+10. **Not adopted or not verified.** The review suggested checking the
+    silicon lattice constant of [@yin_cohen1982] against the "overbinds"
+    remark; the paper was not consulted, and the remark was removed instead.
+    The review did not check the DFTK comparison, the statement that H₂
+    needs 80 Ha (that is from the 2a validation document), the 6 s wall
+    time, or the $-0.03$ Ha of the gap-guard anecdote, for which it measured
+    $-0.063$ Ha at its own setting.
 
 ## References
 

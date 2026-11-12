@@ -1,0 +1,5 @@
+[deps]
+DFTK = "acf6eb54-70d9-11e9-0013-234b7a5f5337"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+Libxc = "66e17ffc-8502-11e9-23b5-c9248d0eb96d"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"

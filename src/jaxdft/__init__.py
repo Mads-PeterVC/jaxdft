@@ -15,6 +15,7 @@ from jaxdft.analytic.free_electron import free_electron_bands
 from jaxdft.basis.planewave import PlaneWaveBasis
 from jaxdft.calculations.bands import Bands, band_structure
 from jaxdft.hamiltonian.atomic_local import AtomicLocal
+from jaxdft.hamiltonian.atomic_nonlocal import AtomicNonlocal
 from jaxdft.hamiltonian.ewald import Ewald
 from jaxdft.hamiltonian.hartree import Hartree
 from jaxdft.hamiltonian.kinetic import Kinetic
@@ -27,14 +28,15 @@ from jaxdft.scf.mixing import Anderson
 from jaxdft.scf.scf import SCFError, SCFOptions, SCFResult, energy, scf, total_energy
 from jaxdft.solvers.eigen import dense_eigensolver
 from jaxdft.solvers.lobpcg import lobpcg
-from jaxdft.structure.builders import diamond, dimer_in_box, empty, fcc_lattice
-from jaxdft.structure.kpoints import KPath, kpath, special_points_fcc
+from jaxdft.structure.builders import diamond, dimer_in_box, empty, fcc_lattice, supercell
+from jaxdft.structure.kpoints import KPath, kpath, monkhorst_pack, special_points_fcc
 from jaxdft.structure.lattice import Lattice
 from jaxdft.structure.structure import Structure
 
 __all__ = [
     "Anderson",
     "AtomicLocal",
+    "AtomicNonlocal",
     "Bands",
     "Ewald",
     "Hartree",
@@ -69,5 +71,7 @@ __all__ = [
     "hamiltonian",
     "is_double_precision",
     "kpath",
+    "monkhorst_pack",
+    "supercell",
     "special_points_fcc",
 ]

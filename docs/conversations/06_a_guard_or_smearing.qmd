@@ -1,0 +1,26 @@
+---
+title: "A guard or smearing"
+date: 2026-11-12
+description: "After Milestone 2b, a question about graphene turns into a comparison of jaxdft's gap guard with the smearing other codes use, and into a first sketch of the next milestone."
+---
+
+Milestone 2b was validated: self-consistent LDA silicon with k-point
+sampling. Its band filling is fixed, with no smearing, so the SCF carries a
+gap guard that rejects any result whose occupied and empty states overlap
+across the k-grid. During the milestone the guard had caught two test
+settings that sat on nearly gapless problems.
+
+The conversation starts from a side question, whether the code could already
+do graphene, and moves through doping by extra electrons to the guard
+itself. Mads-Peter points out that other codes have no such guard; they
+smear. Claude explains that the guard stands in for smearing rather than
+adding a layer other codes lack, and the two settle on aluminium rather than
+graphene as the system that would test smearing best. Nothing is decided;
+Mads-Peter asks for the discussion to be recorded as a starting point.
+
+What came of it: the entry "Towards the next milestone: smearing, metals,
+graphene (open)" in the [engineering log](../engineering/engineering_log.qmd).
+
+```{=html}
+<div class="transcript" data-excerpt="06_a_guard_or_smearing"></div><!--/transcript-->
+```
