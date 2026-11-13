@@ -2178,3 +2178,11 @@ the project lead it is now asserted below the run's own final residual
 independence test's buffer variants (now 0 and 1 against the default 3),
 the best-iterate slack, and `SYMMETRY_FORCE_ATOL`. All 681 tests pass on the
 laptop.
+
+## 2026-11-13: The test suite passes on the V100
+
+The full suite at `f5b9c6f`, with the final 2c defaults (three buffer bands,
+k-chunks of 64), on an aicloud V100 (job 1169391,
+`reference/aicloud_pytest/`): 681 passed in 28 minutes. Before 2c it was 634
+passed with 8 failing (`acd8ff8`), and 680 passed with the best-iterate slack
+failing at `fe43ee5`. Laptop and GPU now pass the same suite.

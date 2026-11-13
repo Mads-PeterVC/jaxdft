@@ -4,6 +4,22 @@
   "submit_script": "shephex/scripts/aicloud/pytest_on_gpu.py",
   "runs": [
     {
+      "id": "JH4rbBMCFagsiLfJYXyAU8-exp",
+      "job": "1169391_0",
+      "commit": "f5b9c6f",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "returncode": 0,
+      "summary": "======================= 681 passed in 1629.35s (0:27:09) =======================",
+      "counts": {
+        "passed": 681
+      },
+      "elapsed_s": 1660.3234883025289,
+      "problems": []
+    },
+    {
       "id": "PCLTffKEtLRRdDttSAJGLq-exp",
       "job": "1165908_0",
       "commit": "acd8ff8",
