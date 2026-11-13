@@ -300,7 +300,8 @@ for label, kw in (
         "largest force (Ha/Bohr)": f"{np.abs(F).max():.1e}",
         "net force (Ha/Bohr)": f"{np.abs(F.sum(axis=0)).max():.1e}",
     })
-assert f_max["N = 24"] < 1e-10 and f_max["N = 26"] < 1e-10
+# Within the SCF force error at tol 1e-9 (engineering log, 2c cluster runs).
+assert f_max["N = 24"] < 1e-8 and f_max["N = 26"] < 1e-8
 assert 1e-8 < f_max["N = 25"] < 5e-6
 assert f_max["N = 24, half-shifted k-grid"] > 1e-4
 pd.DataFrame(sym_rows).style.hide(axis="index")
@@ -310,7 +311,12 @@ Forces at the ideal geometry vanish by symmetry, so their size measures how
 much symmetry the discrete problem has (12 Ha, 2³ grid). The review's
 correction to the theory post is confirmed: the FFT grid carries the diamond
 space group when $N$ is even, not only when $4\mid N$. On $N$ = 26 the forces
-vanish to machine precision, like on $N$ = 24. On the odd grid they are at
+vanish to the convergence error, like on $N$ = 24: the largest is
+`{python} f"{max(f_max['N = 24'], f_max['N = 26']):.0e}"` Ha/Bohr, below the
+SCF force error of about $10^{-8}$ Ha/Bohr at this tolerance. Before
+[Milestone 2c](../theory/02c_eigensolver.qmd) they vanished to machine
+precision; the loose first eigensolver steps now leave a small asymmetric
+remnant in the density. On the odd grid they are at
 the egg-box level, about `{python} f"{f_max['N = 25']:.0e}"` Ha/Bohr, because
 the twelve operations with a half-lattice-vector translation no longer map the
 grid onto itself; the net force still vanishes, because inversion does. The

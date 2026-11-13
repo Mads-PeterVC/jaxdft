@@ -2101,3 +2101,80 @@ import `EIGEN_FLOOR` and use `return_iterations`; they ran at `acd8ff8`
 the cluster runs of the theory post: the test suite and the per-iteration
 diagnosis on the V100, the k-grid scans on both clusters, and the V100
 scan of buffer bands and k-chunk sizes.
+
+## 2026-11-13: Milestone 2c cluster runs; buffer bands and k-chunks set by measurement
+
+The runs the 2c theory post asks for, on `fe43ee5` (branch `milestone-2c`,
+checked out on both cluster clones), plus a k-chunk scan the project lead
+asked for before choosing that default. Data in `reference/eigensolver_2c/`,
+`reference/si_kgrid_scaling/*_2c.json` and `reference/aicloud_pytest/`.
+
+**The GPU fix, checked directly.** The implemented `lobpcg`, called as the
+SCF calls it, on the two problems of the GPU residual diagnosis, three
+starts each: on the V100 every run reaches the per-k floor (46–50
+iterations) while dropping 14–43 directions late, and an unreachable
+tolerance ends by the stagnation stop after 54–64 iterations at 2–5×10⁻¹⁴.
+The CPU of the same node drops none. Before 2c the same runs on the V100
+held at 1–6×10⁻¹² for 300 iterations.
+
+**Test suite on the V100**: 680 passed, 1 failed, against 634 passed and 8
+failing before 2c; the tight-tolerance failures and the out-of-memory band
+scan are gone. The failure was the best-iterate test of 2c: on the V100 the
+returned residual went 4.7×10⁻¹⁴ (`max_iter=50`) → 6.3×10⁻¹⁴ (60 and
+more), beyond the 10⁻¹⁴ slack it allowed. LOBPCG ranks iterates by its
+in-loop residual, which is updated rather than recomputed, and on the GPU
+it drifts from the true residual by about 1.5×10⁻¹⁴. The slack was a
+guess, not a measurement; with the project lead it became the floor of the
+problem (1.3×10⁻¹³), which still fails the climbs to 10⁻⁸ the test exists
+for. Recomputing A X before ranking was rejected: about +50 % of LOBPCG's
+FFT work.
+
+**k-grid scans** (silicon, 12 Ha, 1³–8³, one buffer band, one batch, as in
+2b): energies equal the 2b runs to 6×10⁻¹⁴ Ha. On biocloud's 8 cores the
+steady time is 3.5–6.9 times shorter from 3³ up (8³: 621 → 90 s), on the
+V100 3–4.2 times (8³: 40 → 9.5 s). The summed per-step maximum of LOBPCG
+iterations stays between 72 and 142 instead of growing to 600–700. The
+lockstep efficiency (mean over max) falls to about 0.4 on large grids,
+because the counts are now small and Γ is slower than the rest.
+
+**Buffer bands: three by default** (2b, decision 2, left this to the V100).
+8³ on the V100, one batch: 0, 1, 2, 3 buffer bands take 16.1, 9.5, 7.8 and
+6.0 s, with 137, 4, 0, 0 late drops. On the laptop CPU (best of three) three
+cost nothing: 1.59 s against 1.57 s on 3³ and 4.31 against 4.64 s on 4³;
+two are the slow case there. Two or more also remove the Γ refinement
+spike of the implementation entry. Decided with the project lead.
+
+**k-chunks: 64 by default.** At one buffer band, chunks of 64 were 16 %
+faster on the V100 and used 60 % less memory; the project lead asked for
+the CPU before deciding. At three buffer bands, 8³:
+
+| k_batch_size | V100 | V100 memory | biocloud CPU | CPU memory |
+|:--:|:--:|:--:|:--:|:--:|
+| one batch | 6.02 s | 5.05 GB | 81.5 s | 8.85 GB |
+| 64 | 6.09 s | 1.60 GB | 70.4 s | 2.85 GB |
+| 128 | 6.02 s | 1.69 GB | 77.1 s | 3.71 GB |
+| 256 | 5.99 s | 2.73 GB | 77.5 s | 5.45 GB |
+
+With three buffer bands lockstep no longer costs time on the V100, so the
+chunks only save memory there; on the CPU they are also faster. Grids with
+fewer than 64 k-points are one chunk. `band_structure` keeps one batch by
+default; `band_minimum_on_segment` passes 8.
+
+**Symmetry of forces, as of the density.** With three buffer bands the 2b
+test of vanishing forces at the ideal geometry (even grid) measured
+1.1×10⁻¹⁰ Ha/Bohr against its 10⁻¹⁰ (8×10⁻¹⁶ before 2c; it passed with one
+buffer band by luck). Same cause as the H₂ density of the implementation
+entry. With the project lead, the decision taken there is applied here:
+`SYMMETRY_FORCE_ATOL` is 10⁻⁸ Ha/Bohr, the SCF force error at `SCF_TOL`,
+below the odd-grid window (from 10⁻⁸) and the egg-box forces (6×10⁻⁷) the
+tests must tell apart. The H₂ density asymmetry of the 2a validation document grew from
+3×10⁻¹² to 1.2×10⁻¹¹ with three buffer bands, past the 1 % of the tolerance
+asserted there, a fraction set with a margin of 3 on one measurement. With
+the project lead it is now asserted below the run's own final residual
+(1.5×10⁻¹⁰), which is what "within the convergence error" means.
+
+**Tests changed by these decisions**: the 2b and 2c pins of
+`buffer_bands == 1`, the 2c pin of `k_batch_size is None`, the
+independence test's buffer variants (now 0 and 1 against the default 3),
+the best-iterate slack, and `SYMMETRY_FORCE_ATOL`. All 681 tests pass on the
+laptop.

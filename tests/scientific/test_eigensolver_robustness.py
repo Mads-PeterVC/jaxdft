@@ -81,9 +81,13 @@ def test_the_floor_is_reached(name, seed):
 @pytest.mark.slow
 @pytest.mark.parametrize("seed", SEEDS)
 def test_the_best_block_is_returned_past_the_attainable_residual(seed):
+    *_, floor = problem("Si")
     residuals = [solve("Si", seed, tol=0.0, max_iter=m)[0] for m in MAX_ITERS]
+    # Iterates are ranked by LOBPCG's in-loop residual, which drifts from the
+    # true one by ~1.5e-14 on a V100 (measured, aicloud 2c test run; 1e-14 was
+    # too tight). The climbs this test exists for reach ~1e-8.
     for earlier, later in itertools.pairwise(residuals):
-        assert later <= earlier + 1e-14, residuals
+        assert later <= earlier + floor, residuals
 
 
 @pytest.mark.parametrize("seed", SEEDS)

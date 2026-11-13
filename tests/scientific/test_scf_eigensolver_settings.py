@@ -26,7 +26,7 @@ NEW_HISTORY = ("eig_tol", "eig_iters_mean", "refined", "eig_drops", "eig_stagnat
 
 VARIANTS = {
     "no-buffer": {"buffer_bands": 0},
-    "three-buffers": {"buffer_bands": 3},
+    "one-buffer": {"buffer_bands": 1},  # the default is 3
     "fixed-tolerance": {"eigensolver_tol_ratio": 0.0},
     "tenth-ratio": {"eigensolver_tol_ratio": DEFAULT_RATIO / 10},
     "k-chunks-of-3": {"k_batch_size": 3},

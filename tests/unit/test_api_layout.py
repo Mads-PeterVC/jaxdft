@@ -157,8 +157,12 @@ def test_2c_scf_options():
     o = jaxdft.SCFOptions()
     assert o.eigensolver_tol_ratio > 0  # adaptive by default; the value is measured
     assert o.eigensolver_tol_max == 5e-3
-    assert o.k_batch_size is None
-    assert o.buffer_bands == 1
+    # One batch was agreed until measured; 64 cost nothing on the V100, was 14 %
+    # faster on CPUs and cut memory to a third (engineering log, 2c cluster runs).
+    assert o.k_batch_size == 64
+    # 2b left the default to a V100 measurement; 3 was fastest there and costs
+    # nothing on the laptop CPU (engineering log, 2c cluster runs).
+    assert o.buffer_bands == 3
 
 
 def test_2c_floor_constant_replaces_the_absolute_floor():

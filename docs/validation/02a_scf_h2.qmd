@@ -354,7 +354,7 @@ asymmetry = max(
     np.abs(plane - plane[:, mirror]).max(),
     np.abs(rho - rho.transpose(1, 0, 2)).max(),
 )
-assert asymmetry < 1e-2 * SCF_TOL
+assert asymmetry < float(ref.residual)  # within the run's convergence error
 density_df = pd.DataFrame([
     {"x": xs[i], "z": xs[k], "density": plane[i, k]}
     for i in range(n)
@@ -388,8 +388,8 @@ pseudo-density has no nuclear cusp, and the two atomic densities merge into
 one bonding peak. The molecule sits on a grid point, so the reflections
 $x\to-x$ and $z\to-z$ and the exchange $x\leftrightarrow y$ map the grid to
 itself. The density is symmetric under all three to
-`{python} f"{asymmetry:.0e}"`, far below the SCF tolerance of
-`{python} f"{SCF_TOL:.0e}"` (asserted to 1 % of it). Before
+`{python} f"{asymmetry:.0e}"`, below the final SCF residual of this run,
+`{python} f"{float(ref.residual):.0e}"`, which is how it is asserted. Before
 [Milestone 2c](../theory/02c_eigensolver.qmd) it was symmetric to rounding.
 The first SCF steps now solve the eigenproblem loosely, from a random start
 block, and leave an asymmetric remnant that the mixing damps but has not

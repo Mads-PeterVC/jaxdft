@@ -1,0 +1,163 @@
+{
+  "description": "Silicon 8^3 at 12 Ha on a V100: buffer bands, and k-chunks at one buffer band",
+  "generator": "reference/eigensolver_2c/extract.py",
+  "submit_scripts": [
+    "shephex/scripts/aicloud/si_eigensolver_settings_scan.py"
+  ],
+  "experiments": [
+    {
+      "cluster": "aicloud",
+      "id": "6gSCPb9x4MrqMT8GybJiGB-exp",
+      "job": "1168471_0",
+      "buffer_bands": 0,
+      "k_batch_size": 0,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.932159517790911,
+      "n_iter": 11,
+      "first_s": 42.63804799038917,
+      "steady_s": 16.073604458011687,
+      "sum_eig_iters": 257.0,
+      "sum_eig_iters_mean": 66.9921875,
+      "refined_steps": 1,
+      "eig_drops_max": 137,
+      "peak_device_memory_gb": 3.36345856
+    },
+    {
+      "cluster": "aicloud",
+      "id": "F7YUnZ5ufJAAyGew7SpNei-exp",
+      "job": "1168471_1",
+      "buffer_bands": 1,
+      "k_batch_size": 0,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.93215951779091,
+      "n_iter": 11,
+      "first_s": 35.812467370182276,
+      "steady_s": 9.470134126022458,
+      "sum_eig_iters": 124.0,
+      "sum_eig_iters_mean": 52.0546875,
+      "refined_steps": 1,
+      "eig_drops_max": 4,
+      "peak_device_memory_gb": 3.926764288
+    },
+    {
+      "cluster": "aicloud",
+      "id": "ja9d2meoFFz9uUeu38NWW3-exp",
+      "job": "1168471_2",
+      "buffer_bands": 2,
+      "k_batch_size": 0,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.932159517790909,
+      "n_iter": 11,
+      "first_s": 30.838400233071297,
+      "steady_s": 7.755798981990665,
+      "sum_eig_iters": 87.0,
+      "sum_eig_iters_mean": 44.708984375,
+      "refined_steps": 1,
+      "eig_drops_max": 0,
+      "peak_device_memory_gb": 4.49006464
+    },
+    {
+      "cluster": "aicloud",
+      "id": "BxifmWwyYawsANFeCoYCqE-exp",
+      "job": "1168471_3",
+      "buffer_bands": 3,
+      "k_batch_size": 0,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.93215951779091,
+      "n_iter": 11,
+      "first_s": 27.58631328586489,
+      "steady_s": 6.024031186942011,
+      "sum_eig_iters": 57.0,
+      "sum_eig_iters_mean": 39.673828125,
+      "refined_steps": 1,
+      "eig_drops_max": 0,
+      "peak_device_memory_gb": 5.053362944
+    },
+    {
+      "cluster": "aicloud",
+      "id": "Cda8PwJ7NVVCYDyL9YWY7T-exp",
+      "job": "1168471_4",
+      "buffer_bands": 1,
+      "k_batch_size": 64,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.93215951779091,
+      "n_iter": 11,
+      "first_s": 46.659538361243904,
+      "steady_s": 7.95939155202359,
+      "sum_eig_iters": 124.0,
+      "sum_eig_iters_mean": 52.05078125,
+      "refined_steps": 1,
+      "eig_drops_max": 6,
+      "peak_device_memory_gb": 1.570873088
+    },
+    {
+      "cluster": "aicloud",
+      "id": "JBirbu8oB2c8THpSYJL8aA-exp",
+      "job": "1168471_5",
+      "buffer_bands": 1,
+      "k_batch_size": 128,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.932159517790909,
+      "n_iter": 11,
+      "first_s": 42.35921890847385,
+      "steady_s": 8.31208837684244,
+      "sum_eig_iters": 124.0,
+      "sum_eig_iters_mean": 52.05078125,
+      "refined_steps": 1,
+      "eig_drops_max": 7,
+      "peak_device_memory_gb": 1.5708736
+    },
+    {
+      "cluster": "aicloud",
+      "id": "QptmBeMJ48vNLiUUBdXk28-exp",
+      "job": "1168471_6",
+      "buffer_bands": 1,
+      "k_batch_size": 256,
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "n_kpoints": 512,
+      "energy": -7.93215951779091,
+      "n_iter": 11,
+      "first_s": 32.23539583198726,
+      "steady_s": 8.966336315963417,
+      "sum_eig_iters": 124.0,
+      "sum_eig_iters_mean": 52.05078125,
+      "refined_steps": 1,
+      "eig_drops_max": 6,
+      "peak_device_memory_gb": 2.145207552
+    }
+  ]
+}

@@ -61,6 +61,29 @@
           "error": "jaxdft.scf.scf.SCFError: eigensolver not converged (max residual 1.311e-12)"
         }
       ]
+    },
+    {
+      "id": "XPBJgbx8ib4uNKZhpoBiuV-exp",
+      "job": "1168462_0",
+      "commit": "fe43ee5",
+      "devices": [
+        "Tesla V100-SXM3-32GB"
+      ],
+      "backend": "gpu",
+      "returncode": 1,
+      "summary": "================== 1 failed, 680 passed in 1567.70s (0:26:07) ==================",
+      "counts": {
+        "failed": 1,
+        "passed": 680
+      },
+      "elapsed_s": 1597.0662877969444,
+      "problems": [
+        {
+          "outcome": "FAILED",
+          "test": "tests/scientific/test_eigensolver_robustness.py::test_the_best_block_is_returned_past_the_attainable_residual[0]",
+          "error": "AssertionError: [1.9920507596407144e-10, 4.743816127327152e-14, 6.253153688649902e-14, 6.253153688649902e-14, 6.253153688649902e-14, 6.253153688649902e-14]"
+        }
+      ]
     }
   ]
 }

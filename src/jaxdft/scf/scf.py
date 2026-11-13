@@ -100,7 +100,9 @@ class SCFOptions:
     loose step whose density residual is below ``tol`` is re-diagonalised tightly,
     and the tolerance stays tight from then on. ``eigensolver_tol_ratio`` = 0 gives
     a fixed tolerance. ``k_batch_size`` diagonalises the k-points in chunks of that
-    size (``lax.map``), bounding memory; None is one batch."""
+    size (``lax.map``), bounding memory; None is one batch. The defaults of
+    ``buffer_bands`` (3) and ``k_batch_size`` (64) were measured on a V100 and on
+    CPUs (engineering log, 2c cluster runs)."""
 
     tol: float = 1e-9
     max_iter: int = 100
@@ -110,11 +112,11 @@ class SCFOptions:
     preconditioner: Callable | None = diagonal_preconditioner
     min_gap: float = 1e-3
     initial_density: Callable = field(default_factory=AtomicGaussians)
-    buffer_bands: int = 1
+    buffer_bands: int = 3
     degeneracy_tol: float = 1e-6
     eigensolver_tol_ratio: float = 0.4
     eigensolver_tol_max: float = 5e-3
-    k_batch_size: int | None = None
+    k_batch_size: int | None = 64
 
 
 @jax.tree_util.register_dataclass

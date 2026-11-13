@@ -281,7 +281,7 @@ def test_dense_and_lobpcg_give_the_same_scf():
 
 def test_scf_options_defaults():
     o = SCFOptions()
-    assert o.buffer_bands == 1
+    assert o.buffer_bands == 3  # set in Milestone 2c from the V100 measurement
     assert o.degeneracy_tol == 1e-6
 
 

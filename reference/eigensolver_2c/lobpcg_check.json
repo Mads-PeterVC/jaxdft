@@ -1,0 +1,213 @@
+{
+  "description": "Milestone 2c lobpcg on the GPU residual-diagnosis problems, V100 and CPU",
+  "generator": "reference/eigensolver_2c/extract.py",
+  "submit_scripts": [
+    "shephex/scripts/aicloud/lobpcg_check_2c.py"
+  ],
+  "experiments": [
+    {
+      "cluster": "aicloud",
+      "id": "BeEqnTsiVryZwkWU29FSRJ-exp",
+      "job": "1168461_0",
+      "commit": "fe43ee5",
+      "devices": {
+        "cpu": "cpu",
+        "gpu": "Tesla V100-SXM3-32GB"
+      },
+      "runs": {
+        "H2/cpu/floor/0": {
+          "iterations": 47,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 6.384387805577563e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/cpu/floor/1": {
+          "iterations": 51,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 7.28391751999484e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/cpu/floor/2": {
+          "iterations": 49,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 8.322032750885828e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/cpu/unreachable/0": {
+          "iterations": 59,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 2.1586496560349218e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/cpu/unreachable/1": {
+          "iterations": 62,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 2.7985724526475424e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/cpu/unreachable/2": {
+          "iterations": 60,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 1.3977390225026676e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/floor/0": {
+          "iterations": 47,
+          "stagnated": false,
+          "late_drops": 14,
+          "residual": 9.929608294172285e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/floor/1": {
+          "iterations": 50,
+          "stagnated": false,
+          "late_drops": 16,
+          "residual": 1.0785057917891199e-13,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/floor/2": {
+          "iterations": 49,
+          "stagnated": false,
+          "late_drops": 14,
+          "residual": 8.505571965405154e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/unreachable/0": {
+          "iterations": 61,
+          "stagnated": true,
+          "late_drops": 32,
+          "residual": 1.8717393256180412e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/unreachable/1": {
+          "iterations": 64,
+          "stagnated": true,
+          "late_drops": 32,
+          "residual": 2.6204136091738842e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "H2/gpu/unreachable/2": {
+          "iterations": 61,
+          "stagnated": true,
+          "late_drops": 29,
+          "residual": 1.9461893938749163e-14,
+          "floor": 1.0957462050031184e-13,
+          "within_check": true
+        },
+        "Si/cpu/floor/0": {
+          "iterations": 48,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 6.722854693603365e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/cpu/floor/1": {
+          "iterations": 46,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 8.087891604580969e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/cpu/floor/2": {
+          "iterations": 46,
+          "stagnated": false,
+          "late_drops": 0,
+          "residual": 1.3262024371519963e-13,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/cpu/unreachable/0": {
+          "iterations": 56,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 3.516717049067467e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/cpu/unreachable/1": {
+          "iterations": 54,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 4.916668441653504e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/cpu/unreachable/2": {
+          "iterations": 55,
+          "stagnated": true,
+          "late_drops": 0,
+          "residual": 4.107433333474474e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/floor/0": {
+          "iterations": 48,
+          "stagnated": false,
+          "late_drops": 34,
+          "residual": 9.28283519336109e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/floor/1": {
+          "iterations": 46,
+          "stagnated": false,
+          "late_drops": 34,
+          "residual": 5.419820851439466e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/floor/2": {
+          "iterations": 47,
+          "stagnated": false,
+          "late_drops": 43,
+          "residual": 9.277954816558424e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/unreachable/0": {
+          "iterations": 58,
+          "stagnated": true,
+          "late_drops": 74,
+          "residual": 3.2578298069452256e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/unreachable/1": {
+          "iterations": 54,
+          "stagnated": true,
+          "late_drops": 67,
+          "residual": 3.278439925459669e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        },
+        "Si/gpu/unreachable/2": {
+          "iterations": 56,
+          "stagnated": true,
+          "late_drops": 81,
+          "residual": 5.3198559251200503e-14,
+          "floor": 1.3055846735854468e-13,
+          "within_check": true
+        }
+      }
+    }
+  ]
+}
