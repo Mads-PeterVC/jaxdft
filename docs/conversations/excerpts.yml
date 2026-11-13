@@ -38,3 +38,7 @@ excerpts:
   - name: 06_a_guard_or_smearing
     session: b6a9a156-6075-4942-8a53-415d1d8e772d
     lines: [1385, 1528]
+
+  - name: 07_three_explanations_one_measurement
+    session: dd26a7c5-825f-40f2-8872-ec5d7a424fc5
+    lines: [376, 750]

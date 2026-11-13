@@ -1,0 +1,367 @@
+{
+ "name": "07_three_explanations_one_measurement",
+ "session": "dd26a7c5-825f-40f2-8872-ec5d7a424fc5",
+ "lines": [
+  376,
+  750
+ ],
+ "user": "Mads-Peter",
+ "timezone": "Europe/Copenhagen",
+ "events": [
+  {
+   "kind": "user",
+   "time": "2026-11-12T19:34:58.972Z",
+   "text": "Before we move on I would like the post to include direct (as direct as possible) evidence of the believed cause - the situation we're in is: \n\n1. A Claude Code session proposed an explanation based on the cluster CPU/GPU runs. \n2. Another session (you) proposed a different expalanation \n3. Claude Science proposed a third explanation\n\nAtleast this is my reading (which has not been all that thorough at this point). So I think we need to be careful, although I am also not suggesting to spend an undetermined amount of effort."
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:35:15.663Z",
+   "model": "claude-opus-5-5",
+   "text": "You're right that the three explanations haven't been tested against each other. Before designing anything I'll look at what the existing GPU data already says, since the diagnosis runs recorded residuals at growing iteration caps, which is a coarse trajectory."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:35:17.427Z",
+   "name": "Bash",
+   "summary": "Inspect stored GPU LOBPCG diagnosis data"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:35:24.205Z",
+   "name": "Bash",
+   "summary": "Summarise GPU trajectories and dense-step variants"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:35:49.757Z",
+   "name": "Bash",
+   "summary": "Read the rest of the diagnosis script and extractor"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:36:02.580Z",
+   "name": "Skill",
+   "summary": "shephex"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:36:38.004Z",
+   "name": "Write",
+   "summary": "shephex/scripts/aicloud/lobpcg_trajectory.py"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:36:44.171Z",
+   "name": "Bash",
+   "summary": "Run the instrumented LOBPCG diagnosis on the laptop CPU"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:37:09.905Z",
+   "name": "Bash",
+   "summary": "Summarise CPU trajectories per run"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:37:22.012Z",
+   "name": "Bash",
+   "summary": "Show residual trajectories of the slow Si run"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:37:38.033Z",
+   "name": "Bash",
+   "summary": "Dry-run the aicloud submission"
+  },
+  {
+   "kind": "questions",
+   "time": "2026-11-12T19:37:49.913Z",
+   "answered": true,
+   "questions": [
+    {
+     "question": "Submit the single V100 diagnosis job (lobpcg_trajectory.py, 1 task, 45 min limit, ≤0.8 GPU-hours) to aicloud?",
+     "options": [
+      "Submit it",
+      "Not now"
+     ],
+     "answer": "Submit it"
+    }
+   ]
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:38:13.056Z",
+   "name": "Bash",
+   "summary": "Get the confirmation token and check queued jobs"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:38:17.916Z",
+   "model": "claude-opus-5-5",
+   "text": "The dry run asked for no confirmation token, since a single small job is under the strict-mode limits. Submitting:"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:38:18.929Z",
+   "name": "Bash",
+   "summary": "Submit the V100 diagnosis job"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:38:26.287Z",
+   "name": "ToolSearch",
+   "summary": "select:Monitor"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:38:29.170Z",
+   "name": "Bash",
+   "summary": "Check the job's status once"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:40:32.173Z",
+   "model": "claude-opus-5-5",
+   "text": "The status check is pulling from the cluster in the background. I'll wait for it rather than start another."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:40:33.676Z",
+   "name": "Bash",
+   "summary": "Read interim status output"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:40:37.969Z",
+   "name": "ScheduleWakeup",
+   "summary": ""
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:40:40.551Z",
+   "model": "claude-opus-5-5",
+   "text": "I submitted the V100 diagnosis as job 1167888 on aicloud. A status check is pulling from the cluster in the background, and I'll look again in about five minutes. When the results are in, I'll pull them, compare the GPU trajectories with the predictions I wrote down above, and then rewrite the post's sections on the cause."
+  },
+  {
+   "kind": "user",
+   "time": "2026-11-12T19:43:13.413Z",
+   "text": "The run has finished"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:43:17.590Z",
+   "name": "Bash",
+   "summary": "Pull the finished experiment from aicloud"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:43:24.611Z",
+   "name": "Bash",
+   "summary": "Summarise GPU trajectories"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:43:45.959Z",
+   "model": "claude-opus-5-5",
+   "text": "The run completed. The GPU data separates the explanations clearly, and not in the way any of the three predicted. Let me look at the drop pattern per iteration before interpreting it."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:43:49.541Z",
+   "name": "Bash",
+   "summary": "Per-iteration drops, residual and RR error on GPU"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:44:11.762Z",
+   "name": "Bash",
+   "summary": "Check trajectory file size and context keys"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:44:18.130Z",
+   "name": "Bash",
+   "summary": "Read the end of the extractor"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:44:28.952Z",
+   "name": "Bash",
+   "summary": "Extend extractor and write trajectory JSON"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:44:37.846Z",
+   "name": "Bash",
+   "summary": "Aggregate per-variant results from stored data"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:45:06.746Z",
+   "name": "Bash",
+   "summary": "Rerun the laptop diagnosis into the data directory"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:45:27.877Z",
+   "model": "claude-opus-5-5",
+   "text": "It reproduces exactly (186 iterations), so the laptop result is deterministic. I'll store both machines in the reference JSON."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:45:35.316Z",
+   "name": "Bash",
+   "summary": "Add laptop runs to the trajectory reference"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:45:36.917Z",
+   "model": "claude-opus-5-5",
+   "text": "Now the README for the reference data, and a note in the script's docstring about the flawed column."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:45:44.739Z",
+   "name": "Bash",
+   "summary": "Document the third run and lint the new scripts"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:45:47.811Z",
+   "name": "Bash",
+   "summary": "Check whether existing scripts pass ruff check"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:45:51.775Z",
+   "name": "Bash",
+   "summary": "Use math.isnan and regenerate the reference data"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:45:57.644Z",
+   "model": "claude-opus-5-5",
+   "text": "Now the post. I'll replace the sections that argued from indirect evidence with the per-iteration results, and record what each of the three explanations turned out to be."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:03.888Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:06.348Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:14.251Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:36.953Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:38.702Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:42.318Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:44.130Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:46:52.879Z",
+   "model": "claude-opus-5-5",
+   "text": "Before rendering, I'll check two numbers I wrote against the data: the largest residual reached after the best point in the forced CPU runs, and the ranges of max|T| and backward error."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:46:56.534Z",
+   "name": "Bash",
+   "summary": "Verify quoted ranges against the data"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:46:59.151Z",
+   "model": "claude-opus-5-5",
+   "text": "One of my statements is wrong: a forced CPU run climbs to 9.3e-8 after its best point, while I had only looked at final residuals. Let me count the climbs properly."
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:02.104Z",
+   "name": "Bash",
+   "summary": "Find runs that climb after their best residual"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:16.383Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:20.481Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:22.708Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:25.191Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:27.457Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:29.289Z",
+   "name": "Edit",
+   "summary": "docs/theory/02c_eigensolver.qmd"
+  },
+  {
+   "kind": "tool",
+   "time": "2026-11-12T19:47:33.792Z",
+   "name": "Bash",
+   "summary": "Fix a range and render the post"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:47:47.740Z",
+   "model": "claude-opus-5-5",
+   "text": "The post now contains direct, per-iteration evidence for the cause, and it settles the three explanations.\n\n**What I measured.** I wrote an instrumented copy of LOBPCG (`shephex/scripts/aicloud/lobpcg_trajectory.py`). At every iteration it records the residual, the directions dropped, max|T| including the penalty, and the error of the Rayleigh–Ritz `eigh` step. It ran on the V100 and its node's CPU (job 1167888, which completed) and on the laptop:\n- three penalty variants: today's, the interlacing bound, and today's with the `eigh` on the host;\n- three random starts each;\n- stopping at the real tolerance, and forced to 300 iterations.\n\nThe data is in `reference/gpu_lobpcg_floor/lobpcg_trajectory.json`, with the extractor and README extended to cover it.\n\n**Outcome:**\n\n| explanation | verdict |\n|---|---|\n| 1. Today's penalty inflates the Rayleigh–Ritz error on the GPU (cluster session) | **Holds, with the mechanism now visible.** Once the residual is between 1e-8 and 1e-5 (iterations 32–34), the V100 drops 1–6 directions at *every* iteration. Each drop pushes max\\|T\\| to thousands of Ha and the Rayleigh–Ritz error to 2–7e-12. The residual then sits flat at that level for 250 iterations, from all three starts. With the bounded penalty the same drops happen, but the error stays below 7e-15 and every start converges in the CPU's iteration count. |\n| 2. The penalty also causes CPU stalls (my draft) | **Wrong.** The CPU almost never drops directions after the first iteration, and the penalty doesn't change its iteration counts. My scratch \"stall\" was explanation 3, and the bound only changed which path the run happened to take. |\n| 3. Directions drop only at iteration 1; the failure is a blow-up (review) | **Right about the CPU, not the GPU.** Forced past its best residual, silicon on the CPU climbs to 2–9e-8 in 11 of 12 runs, with either penalty. At the real tolerance this bit once in 24 CPU runs. The GPU shows a flat plateau, not a climb. |\n\n**Not explained:** why the GPU drops directions near convergence when the host `eigh` doesn't. The fix doesn't depend on it, and the post says so.\n\n**Corrections from checking my own write-up against the data:**\n- I first wrote that no forced CPU run climbs above 2.4e-13. That came from looking only at final residuals, and it was wrong; the climb section now reports the 11 of 12.\n- The script's `gram_min_rel` column is meaningless because it matches Gram eigenvalues to columns by index. The stored data leaves it out, and the README says why.\n\n**What changed in the milestone:** nothing in what gets built. The bounded penalty is now the established fix for the GPU. The stagnation stop, best-iterate return and ‖H‖-scaled floor stay as protection against the CPU climb. The cluster acceptance check is now to rerun this diagnosis against the implemented `lobpcg`.\n\nThe post renders and the docs format check passes. Nothing is committed: the post, the review, the new script and the reference data are all still uncommitted. Should I commit them on a `milestone-2c` branch and move on to agreeing the API?"
+  },
+  {
+   "kind": "claude",
+   "time": "2026-11-12T19:47:53.103Z",
+   "model": "claude-opus-5-5",
+   "text": "This was the five-minute check I scheduled, and the work it asked for is already done. After you said the run had finished, I pulled job 1167888's results (status completed, V100 and its node's CPU). I summarised them and stored them in `reference/gpu_lobpcg_floor/lobpcg_trajectory.json`, along with the laptop runs. The 2c post's sections on the cause have been rewritten around that evidence.\n\nBriefly, the results show:\n- **V100:** near convergence it drops directions at every iteration, and today's penalty then holds the residual at 1–6e-12. The bounded penalty converges from every start.\n- **CPU:** it almost never drops directions after the first iteration, so the penalty is harmless there.\n- **The review's climb:** it is real on the CPU once a run passes its best residual, but it is not what failed on the GPU.\n\nThe post renders, and nothing is committed yet. The open question is still whether to commit everything on a `milestone-2c` branch and then agree the API."
+  }
+ ]
+}

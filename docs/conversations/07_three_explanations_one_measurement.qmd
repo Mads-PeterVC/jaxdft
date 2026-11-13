@@ -1,0 +1,36 @@
+---
+title: "Three explanations, one measurement"
+date: 2026-11-12
+description: "During Milestone 2c, three sessions have explained a GPU failure three ways. Instead of choosing between them, Mads-Peter asks for direct evidence, and one per-iteration run on a V100 decides."
+---
+
+The first GPU runs of jaxdft had found that LOBPCG stalls near $10^{-12}$ on
+a V100, so every test at the tightest SCF tolerance failed. By the time of
+this exchange, three explanations stood side by side. The session that ran
+the cluster diagnosis blamed the penalty LOBPCG puts on dropped directions.
+The draft of the 2c theory post added that the same happened on the CPU. The
+review of that draft, by Claude Science, argued that directions are only
+dropped at the first iteration, so the penalty could not be the cause, and
+proposed a different failure mode.
+
+Mads-Peter asks for the theory post to carry evidence as direct as possible,
+without spending an open-ended effort on it. Claude first notices what the
+existing data already says, then writes an instrumented copy of LOBPCG that
+records, per iteration, exactly the quantity the explanations disagree about:
+whether directions are dropped after the first iteration. It writes down what
+each outcome would mean before the job runs. One V100 job decides: the GPU
+drops directions at every iteration near convergence, the CPU almost never.
+The cluster diagnosis was right about the GPU, the draft was wrong about the
+CPU, and the review was right about the CPU only. Checking its own write-up
+against the data, Claude also catches and corrects a statement it had just
+made.
+
+What came of it: the section "Evidence: per iteration, on both devices" of
+the [2c theory post](../theory/02c_eigensolver.qmd), the trajectories in
+`reference/gpu_lobpcg_floor/`, and the bounded penalty as the established
+fix, confirmed on the V100 in the
+[validation document](../validation/02c_eigensolver.qmd).
+
+```{=html}
+<div class="transcript" data-excerpt="07_three_explanations_one_measurement"></div><!--/transcript-->
+```

@@ -266,6 +266,12 @@ looks wrong, stop and raise it.
   k-points, bands from the converged density, compared with
   Cohen–Bergstresser and published LDA results; DFTK comparison on the same
   discrete problem.
+- **Milestone 2c:** eigensolver cost, accuracy and memory, from the HPC runs:
+  LOBPCG converges only the needed bands, an adaptive eigensolver tolerance
+  tied to the SCF residual, a Rayleigh–Ritz penalty bounded by interlacing
+  (the cause of the GPU residual floor), stagnation stop and best iterate, a
+  per-k floor scaled with ‖H‖, and chunked dense solves and k-points.
+  Validated on the laptop, biocloud CPUs and an aicloud V100.
 
 Later milestones are defined when we get there.
 

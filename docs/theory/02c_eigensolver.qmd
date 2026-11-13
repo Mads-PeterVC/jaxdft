@@ -6,8 +6,13 @@ bibliography: ../references.bib
 ---
 
 ::: {.callout-note}
-## Status: reviewed, not yet implemented
-Reviewed on 2026-11-12. The review is kept at `reviews/review_02c_eigensolver.md`.
+## Status: reviewed, implemented and validated on CPUs and a V100
+Reviewed on 2026-11-12. The [validation document](../validation/02c_eigensolver.qmd)
+shows the measurements; it lists where the implementation departed from this
+post (a stagnation stop active only near the floor, the fixed tolerance for
+fractional electron counts, symmetry to the convergence error, and defaults
+set by measurement: c = 0.4, three buffer bands, chunks of 64 k-points).
+ The review is kept at `reviews/review_02c_eigensolver.md`.
 It ran jaxdft itself with an instrumented copy of `lobpcg`, not a separate
 NumPy rebuild, because this milestone is about the code's own numerics. It
 reproduced every number in the stopping-test and memory tables exactly, and

@@ -229,3 +229,53 @@ whose occupations the theory post had taken for granted:
 In each case the per-k gaps were tens of mHa. A per-k criterion is blind to
 exactly the indirect-gap situation that silicon is famous for. The guard
 earned its place in its first milestone.
+
+## 2026-11-13: The eigensolver, measured: a design bug, a GPU mechanism, and what speed costs
+
+Milestone 2c changed no physics, and the converged energies of silicon equal
+the 2b ones to 6×10⁻¹⁴ Ha on every grid and device. What it found is about
+how the numerical method behaves, and three findings are worth keeping
+beyond the engineering detail.
+
+**The largest cost was a mismatch between design and code.** The 2b post
+specified buffer bands that are carried, not converged; LOBPCG's stopping
+test converged them anyway. The slowest band in a block is the one closest
+to the first eigenvalue outside it, so the buffer band set the iteration
+count wherever a small gap followed it. Stopping on the needed bands halved
+the eigensolver work on its own. With the adaptive tolerance and three
+buffer bands, the 8³ silicon SCF went from 40 s to 6 s on a V100 and from
+621 s to 70 s on 8 CPU cores. The lesson for later milestones: a stated
+numerical rule needs a test that checks the implementation honours it, not
+only that the end result is right — the 2b energies were right all along.
+
+**Three explanations, one measurement.** The V100 failures at tight
+tolerance were explained three ways, on indirect evidence: by the session
+that ran the cluster diagnosis, by the draft of the 2c post, and by its
+review. A per-iteration record decided between them. Near convergence the
+V100 drops nearly dependent directions in LOBPCG at every iteration and the
+CPU almost never; the 2b penalty on dropped directions then inflated the
+Rayleigh–Ritz matrix a thousandfold and held the residual at 10⁻¹². The
+draft's claim that the same happened on the CPU was wrong, and the review's
+"drops happen only at the first iteration" was right for the CPU only. Why
+the GPU's Rayleigh–Ritz step leads to late drops is still open; with a
+penalty bounded by interlacing they cost nothing. The episode is a case for
+measuring the quantity on which explanations disagree before choosing
+between them.
+
+**Speed is not free, and the costs are now explicit.**
+
+- An inexact fixed-point map takes more SCF steps: 8 → 11 for silicon,
+  8 → 19 for H₂ in a box. Both still gain overall, but a system whose steps
+  are dominated by potentials and densities could lose.
+- Symmetry of the converged density now holds to the convergence error
+  (10⁻¹¹ at tolerance 10⁻⁹), not to rounding: the loose first steps start
+  from a random block without symmetry, and the mixing has not removed all
+  of the remnant when the SCF stops. CLAUDE.md lists symmetry preservation
+  as an invariant; it is now asserted at that level.
+- With a fractional electron count, loose solves split a degenerate frontier
+  level beyond the level grouping, the fractional charge went into one
+  state, and the SCF settled into a symmetry-broken state it could not leave.
+  Fixed occupations of a partly filled degenerate level are fragile, and
+  smearing — the candidate next milestone — will make occupations depend
+  continuously on eigenvalues. Whether the adaptive tolerance then needs the
+  same restriction, or a softer one, is a question for that theory post.
