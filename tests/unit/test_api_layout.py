@@ -162,7 +162,10 @@ def test_2c_scf_options():
 
 
 def test_2c_floor_constant_replaces_the_absolute_floor():
-    import jaxdft.scf.scf as scf_module
+    import importlib
+
+    # The package re-exports the function scf, which shadows the module of that name.
+    scf_module = importlib.import_module("jaxdft.scf.scf")
 
     assert scf_module.EIGEN_FLOOR_FACTOR == 50
     assert not hasattr(scf_module, "EIGEN_FLOOR")

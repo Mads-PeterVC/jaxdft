@@ -28,10 +28,12 @@ def band_minimum_on_segment(
     n_samples: int = 41,
     xtol: float = 1e-6,
     density=None,
+    k_batch_size: int | None = 8,
 ) -> tuple[float, float]:
     """Minimum of band ``band`` (0-based) along k(t) = k_start + t (k_end - k_start),
     t in [0, 1], fractional k. Returns (t, energy in Ha). ``density`` is passed to
-    ``band_structure`` (energy terms evaluated at a fixed density, e.g. an SCF result).
+    ``band_structure`` (energy terms evaluated at a fixed density, e.g. an SCF result),
+    and so is ``k_batch_size``, which bounds the memory of the dense sampling.
 
     Dense vmapped sampling, then golden-section refinement of the bracket around the best
     sample. Golden section needs no derivative, so it tolerates the tiny steps from the
@@ -41,7 +43,9 @@ def band_minimum_on_segment(
     lattice = structure.lattice
     ts = jnp.linspace(0.0, 1.0, n_samples)
     samples = PlaneWaveBasis.build(lattice, k_start + ts[:, None] * (k_end - k_start), ecut)
-    e = band_structure(structure, samples, n_bands=band + 1, terms=terms, density=density).eigenvalues[:, band]
+    e = band_structure(
+        structure, samples, n_bands=band + 1, terms=terms, density=density, k_batch_size=k_batch_size
+    ).eigenvalues[:, band]
     n_pad = samples.n_pad + max(16, samples.n_pad // 20)
 
     def energy(t):

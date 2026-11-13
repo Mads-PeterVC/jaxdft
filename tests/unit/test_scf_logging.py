@@ -24,6 +24,12 @@ HISTORY_KEYS = {
     "gap",
     "eig_residual_max",
     "eig_iters",
+    # Milestone 2c (engineering log, '2026-11-12: Milestone 2c public API')
+    "eig_iters_mean",
+    "eig_tol",
+    "refined",
+    "eig_drops",
+    "eig_stagnated",
 }
 
 

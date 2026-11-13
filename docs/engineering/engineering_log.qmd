@@ -1996,3 +1996,108 @@ Risk for the implementation, noted rather than tested: a stagnation stop
 with factor 0.8 over 5 iterations also fires on a run that converges slowly
 but steadily at about 4.5 % per iteration. Existing tests with unpreconditioned
 synthetic matrices (236 iterations to 10⁻¹⁰) will show whether that happens.
+
+## 2026-11-12: Milestone 2c implementation
+
+Implemented as agreed in the API entry, with two changes of method found on
+the way, a measured default and an explanation of the theory post's one
+unexplained result. All 681 tests pass on the laptop; the suite takes about
+7 minutes, against 11 before.
+
+**Default c = 0.4** (Ha·Bohr^(3/2) per electron), not the 0.8 the API entry
+started from. Silicon at 12 Ha, tol 10⁻⁹, steady wall time on the laptop,
+one buffer band; iterations are Σ max_k I_k / Σ mean_k I_k over the SCF:
+
+| c | 3³: iterations, SCF steps, time | 4³: iterations, SCF steps, time |
+|:--:|:--|:--|
+| 0 | 204 / 159, 8, 3.91 s | 228 / 168, 9, 10.5 s |
+| 0.2 | 99 / 53, 11, 2.06 s | 89 / 54, 11, 4.56 s |
+| 0.4 | 74 / 48, 11, 1.58 s | 91 / 51, 11, 4.81 s |
+| 0.8 | 146 / 51, 12, 2.96 s | 95 / 49, 12, 4.93 s |
+| 1.6 | 111 / 56, 23, 2.49 s | 111 / 53, 19, 6.14 s |
+| 3.2 | 132 / 51, 25, 2.90 s | 119 / 56, 26, 6.71 s |
+
+All rows agree on the energy to 10⁻¹². Against the code before 2c (7.3 s
+and 16.5 s on the same grids, theory post), the defaults are 4.6 and 3.4
+times faster on the laptop; c = 0 shows that stopping on the needed bands
+gives about half of that. The adaptive tolerance costs SCF steps: 8 → 11 for
+silicon, and 8 → 20 for H₂ at its test size (0.20 s → 0.14 s, 147 → 58
+eigensolver iterations). Where the potential and density dominate a step,
+that trade could reverse; the validation document should show it.
+
+**The stagnation stop is active only near the floor.** As agreed, the stop
+is 0.8 over 5 iterations. As a bare rule it ended ordinary runs early: on
+the unpreconditioned synthetic matrices of the 2a LOBPCG tests, the best
+residual can wait up to 23 iterations for a 20 % gain, and 7 with the
+preconditioner, at residuals of 10⁻⁶ down to 1. The stop exists for runs
+past their attainable residual (theory post), so it is now active only once
+the best residual is below 10⁴ ε_mach ‖H‖, with ‖H‖ estimated inside
+`lobpcg` as the largest Rayleigh–Ritz matrix element seen. At the test sizes
+that is about 2×10⁻¹¹; the floor is about 10⁻¹³. The defaults are unchanged.
+
+**The unexplained row of the theory post is the Γ₁₅ triplet.** At c = 0.8 on
+3³ the final refinement took 84 iterations. A recording eigensolver showed
+it is Γ: the 5 needed bands cut through the threefold Γ₁₅ conduction level
+(bands 5–7), the block of 6 holds two of the three, and near 10⁻¹⁰ LOBPCG
+creeps there while dropping a direction about every second iteration (41
+late drops in 82 iterations). With two buffer bands the triplet fits in the
+block, the refinement takes 4 iterations and there are no late drops. The
+review's statement that an exact degeneracy at the edge is harmless holds
+for a degeneracy that straddles the block edge, not for one that straddles
+the edge of the *needed* bands. On the CPU two buffer bands cost 10–12 %
+more wall time at c = 0.4, and the spike did not occur at c = 0.4 with one,
+so `buffer_bands` stays 1 until the V100 measurement the theory post plans.
+
+**Fractional electron counts use the fixed tolerance.** The finite-difference
+stencil of the degenerate-frontier weight derivative (2b) runs silicon with
+λ₀ = 1 − δ, which empties part of the threefold valence-band maximum at Γ
+(Γ₂₅′; the test calls it Γ₁₅, its zincblende name). With the adaptive
+tolerance those SCFs stalled at a residual of 4×10⁻⁴ for 100 steps, also
+after the tolerance had become tight. The loose early solves had split the
+triplet by 2–5×10⁻⁵ Ha, above the 10⁻⁶ Ha within which `grid_occupations`
+groups a level, so the whole hole went into one state (occupations 2, 2,
+1.968 instead of 1.989 three times). The density then loses the symmetry of
+the structure, which CLAUDE.md lists as an invariant, and the occupation
+moves between near-degenerate states from step to step. The adaptive
+tolerance assumes occupations that eigenvalue errors cannot change, which
+holds when N_el/2 is an integer (complete levels at the frontier). Inside
+the traced SCF, c is therefore set to 0 when N_el/2 is not an integer:
+fractional-charge runs and odd electron counts in this spin-unpolarised
+code. Those runs then take 12 steps with the same iteration counts as
+before 2c. A tenfold tightening after a step that did not lower the
+residual was tried first and did not help; it was removed. Smearing, the
+next candidate milestone, makes occupations continuous in the eigenvalues,
+and the question must be revisited there.
+
+**Tests changed beyond the new ones.** The 2a observability test's set of
+history keys gains the five fields of the API entry. The 2c API test of
+`EIGEN_FLOOR_FACTOR` imported `jaxdft.scf.scf` with `import ... as`, which
+fails because the package re-exports a function named `scf`; it now uses
+`importlib.import_module`. Neither changes a criterion.
+
+**Docs.** The 2a validation document said warm starts make the eigensolver
+iteration count fall over the SCF and asserted last < first. With the
+adaptive tolerance the first steps are loose and cheap, so the claim is now
+about the tolerance (non-increasing, ending tight) and a small iteration
+count per step. The performance page's 2b text is put in the past tense.
+
+**Symmetry is now kept to the convergence error, not to rounding.** The 2a
+validation document asserted that the H₂ density is symmetric under its
+grid symmetries to 10⁻¹², and the render failed. Measured on H₂ at its test
+size: with c = 0 the asymmetry is 10⁻¹⁶ at tol 10⁻⁹ and 10⁻¹²; with c = 0.4
+it is 1.7×10⁻¹² (x ↔ y) and 3.1×10⁻¹² (mirror) at tol 10⁻⁹, and 5×10⁻¹⁵ at
+10⁻¹². The loose first steps start from a random block and leave an
+asymmetric remnant that the mixing damps but has not removed when the SCF
+stops; it is a part of the convergence error three orders below the
+tolerance. Decided with the project lead: the invariant is stated relative
+to the tolerance, and the document asserts an asymmetry below 1 % of it.
+The silicon symmetry tests of the suite pass unchanged.
+
+**Cluster scripts.** `gpu_residual_floor.py` and `gpu_lobpcg_dense_steps.py`
+import `EIGEN_FLOOR` and use `return_iterations`; they ran at `acd8ff8`
+(README in `reference/gpu_lobpcg_floor/`) and need that commit to be rerun.
+
+**Open for the milestone.** The validation document, the research log, and
+the cluster runs of the theory post: the test suite and the per-iteration
+diagnosis on the V100, the k-grid scans on both clusters, and the V100
+scan of buffer bands and k-chunk sizes.
