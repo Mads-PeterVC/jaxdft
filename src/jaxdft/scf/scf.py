@@ -50,14 +50,20 @@ from jaxdft.scf.density import AtomicGaussians, clip_and_renormalise, electron_d
 from jaxdft.scf.mixing import Anderson, Mixer
 from jaxdft.scf.occupations import frontier_gap, grid_occupations
 from jaxdft.scf.solve import fixed_point
+from jaxdft.solvers.eigen import EigenInfo
 from jaxdft.solvers.lobpcg import lobpcg
 from jaxdft.structure.structure import Structure
 
-# The eigensolver is asked for residuals of EIGEN_TOL_FRACTION * tol and must reach
-# EIGEN_CHECK_FRACTION * tol; both are floored near rounding (||H|| eps_mach ~ 1e-14).
+# At convergence the eigensolver is asked for residuals of EIGEN_TOL_FRACTION * tol and
+# must reach EIGEN_CHECK_FRACTION * tol. Both are floored per k-point at what LOBPCG
+# can attain, tau_floor(k) = EIGEN_FLOOR_FACTOR eps_mach max diag H_k (about 10 eps ||H||
+# attained, with margin), and the check allows EIGEN_CHECK_FLOOR_MULTIPLE times that
+# (theory post 2c, 'The floor scales with the operator'; engineering log, 2c API).
 EIGEN_TOL_FRACTION = 0.05
 EIGEN_CHECK_FRACTION = 0.1
-EIGEN_FLOOR = 2e-14
+EIGEN_FLOOR_FACTOR = 50
+EIGEN_CHECK_FLOOR_MULTIPLE = 2
+_EPS = float(jnp.finfo(jnp.float64).eps)
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +92,17 @@ class SCFOptions:
     factory ``(Hamiltonian) -> precondition(r, eps)`` (``jaxdft.hamiltonian
     .preconditioners``), or None for none. ``initial_density(structure, basis,
     charges) -> rho`` gives the starting density when ``density0`` is not passed;
-    the default is atomic Gaussians of width 0.8 Bohr."""
+    the default is atomic Gaussians of width 0.8 Bohr.
+
+    The eigensolver tolerance adapts to the SCF residual (theory post 2c): at step i
+    it is min(tau_{i-1}, ``eigensolver_tol_ratio`` r_{i-1} / N_el), clipped to
+    [EIGEN_TOL_FRACTION tol, ``eigensolver_tol_max``] (Ha), starting at the maximum; a
+    loose step whose density residual is below ``tol`` is re-diagonalised tightly,
+    and the tolerance stays tight from then on. ``eigensolver_tol_ratio`` = 0 gives
+    a fixed tolerance. ``k_batch_size`` diagonalises the k-points in chunks of that
+    size (``lax.map``), bounding memory; None is one batch. The defaults of
+    ``buffer_bands`` (3) and ``k_batch_size`` (64) were measured on a V100 and on
+    CPUs (engineering log, 2c cluster runs)."""
 
     tol: float = 1e-9
     max_iter: int = 100
@@ -96,8 +112,11 @@ class SCFOptions:
     preconditioner: Callable | None = diagonal_preconditioner
     min_gap: float = 1e-3
     initial_density: Callable = field(default_factory=AtomicGaussians)
-    buffer_bands: int = 1
+    buffer_bands: int = 3
     degeneracy_tol: float = 1e-6
+    eigensolver_tol_ratio: float = 0.4
+    eigensolver_tol_max: float = 5e-3
+    k_batch_size: int | None = 64
 
 
 @jax.tree_util.register_dataclass
@@ -114,7 +133,11 @@ class SCFResult:
     ``residual`` (||F(rho_i) - rho_i||, the converged quantity), ``projection`` (norm
     of the change clipping and renormalising made to the mixed density), ``homo``,
     ``lumo``, ``gap`` (Ha, over all k), ``eig_residual_max`` and ``eig_iters`` (worst
-    eigensolver residual and iteration count over k)."""
+    eigensolver residual and iteration count over k), ``eig_iters_mean`` (mean count
+    over k), ``eig_tol`` (the step's adaptive tolerance before the per-k floor),
+    ``refined`` (1 if the step was re-diagonalised tightly; the counts include both
+    diagonalisations), ``eig_drops`` (largest late-drop count over k) and
+    ``eig_stagnated`` (1 if any k-point ended by the stagnation stop)."""
 
     density: jax.Array
     orbitals: jax.Array
@@ -191,7 +214,16 @@ _STATIC = (
     "preconditioner",
     "history",
     "live",
+    "k_batch_size",
 )
+
+
+def _map_k(f, xs, k_batch_size):
+    """f mapped over the leading (k-point) axis of the pytree ``xs``: one vmap, or
+    sequential chunks of ``k_batch_size`` vmapped k-points (lax.map)."""
+    if k_batch_size is None:
+        return jax.vmap(f)(xs)
+    return jax.lax.map(f, xs, batch_size=int(k_batch_size))
 
 
 @partial(jax.jit, static_argnames=_STATIC)
@@ -203,6 +235,8 @@ def _scf_core(
     n_el,
     tol,
     min_gap,
+    tol_ratio,
+    tol_max,
     t0,
     *,
     n_bands,
@@ -214,46 +248,92 @@ def _scf_core(
     preconditioner,
     history,
     live,
+    k_batch_size,
 ):
     """The traced SCF. The eigensolver iterates ``n_solve`` = ``n_bands`` + buffer
-    bands; occupations, residual checks and results use the first ``n_bands``."""
+    bands and converges the first ``n_bands``; occupations, residual checks and
+    results use those."""
     volume = structure.lattice.volume
     n_tot = math.prod(basis.fft_shape)
     n_k = basis.miller.shape[0]
-    eig_tol = jnp.maximum(EIGEN_TOL_FRACTION * tol, EIGEN_FLOOR)
+    tight = EIGEN_TOL_FRACTION * tol
+    loosest = jnp.maximum(tol_max, tight)
+    # The adaptive tolerance needs occupations that eigenvalue errors cannot change:
+    # complete levels at the frontier, N_el / 2 an integer. With a fractional count the
+    # remainder goes level by level (grid_occupations, grouped within degeneracy_tol),
+    # and a loose solve that splits a degenerate frontier level puts it into one state,
+    # breaking the symmetry of the density for good (engineering log, 2c
+    # implementation). Such runs use the fixed tolerance.
+    half = n_el / 2
+    ratio = jnp.where(jnp.abs(half - jnp.round(half)) > 1e-9, 0.0, tol_ratio)
+
+    def norm(r):
+        return jnp.sqrt(volume / n_tot * jnp.sum(r**2))
 
     def occupations(eps):
         return grid_occupations(eps[:, :n_bands], basis.kweights, n_el, tol=degeneracy_tol)
 
-    def diagonalise(potential, X_prev):
-        def per_k(basis_k, x0):
+    def diagonalise(potential, X_prev, tau):
+        """Per k-point: vectors, eigenvalues, residuals, EigenInfo and the residual
+        the eig_ok check allows, at tolerance max(tau, floor of k)."""
+
+        def per_k(args):
+            basis_k, x0 = args
             ham = hamiltonian(structure, basis_k, terms, potential=potential)
             precondition = None if preconditioner is None else preconditioner(ham)
+            floor = EIGEN_FLOOR_FACTOR * _EPS * jnp.max(jnp.where(basis_k.mask, ham.diagonal(), 0.0))
 
             def apply(psi):
                 return apply_H(ham, psi)
 
-            eps, vecs, its = eigensolver(
-                apply, basis_k.n_pad, n_solve, x0=x0, preconditioner=precondition, tol=eig_tol, return_iterations=True
+            eps, vecs, info = eigensolver(
+                apply,
+                basis_k.n_pad,
+                n_solve,
+                x0=x0,
+                preconditioner=precondition,
+                tol=jnp.maximum(tau, floor),
+                n_converge=n_bands,
+                return_info=True,
             )
             vecs = jnp.where(basis_k.mask[:, None], vecs, 0)
             res = jnp.linalg.norm(apply(vecs) - vecs * eps[None, :], axis=0)
-            return vecs, eps, res, its
+            check = jnp.maximum(EIGEN_CHECK_FRACTION * tol, EIGEN_CHECK_FLOOR_MULTIPLE * floor)
+            return vecs, eps, res, info, check
 
-        return jax.vmap(per_k)(basis, X_prev)
+        return _map_k(per_k, (basis, X_prev), k_batch_size)
+
+    def density_of(X, eps):
+        occ = occupations(eps)
+        return electron_density(structure.lattice, basis, X[:, :, :n_bands], occ)
 
     def F(rho, aux):
-        X_prev, e_prev = aux[0], aux[4]
+        X_prev, e_prev, tau_prev, r_prev, latched = aux[0], aux[4], aux[6], aux[7], aux[8]
         potential = total_potential(terms, structure, basis, rho)
-        X, eps, res, its = diagonalise(potential, X_prev)
-        occ = occupations(eps)
+        proposed = jnp.where(ratio > 0, ratio * r_prev / n_el, 0.0)
+        tau = jnp.where(latched, tight, jnp.clip(jnp.minimum(tau_prev, proposed), tight, loosest))
+        X, eps, res, info, check = diagonalise(potential, X_prev, tau)
+        rho_out = density_of(X, eps)
+        r = norm(rho_out - rho)
+        refine = (r < tol) & (tau > tight)
+
+        def tighten(_):
+            X2, eps2, res2, info2, check2 = diagonalise(potential, X, tight)
+            info2 = EigenInfo(
+                info.iterations + info2.iterations, info.stagnated | info2.stagnated, info.late_drops + info2.late_drops
+            )
+            rho2 = density_of(X2, eps2)
+            return X2, eps2, res2, info2, check2, rho2, norm(rho2 - rho)
+
+        X, eps, res, info, check, rho_out, r = jax.lax.cond(
+            refine, tighten, lambda _: (X, eps, res, info, check, rho_out, r), None
+        )
         Xn = X[:, :, :n_bands]
-        rho_out = electron_density(structure.lattice, basis, Xn, occ)
-        e = total_energy(structure, basis, terms, Xn, occ)[0] if history else e_prev
-        return rho_out, (X, eps, res, its, e, e - e_prev)
+        e = total_energy(structure, basis, terms, Xn, occupations(eps))[0] if history else e_prev
+        return rho_out, (X, eps, res, info, e, e - e_prev, tau, r, latched | refine, refine, check)
 
     def record(rho, rho_out, aux):
-        _, eps, res, its, e, de = aux
+        _, eps, res, info, e, de, tau, _, _, refined, _ = aux
         vbm, cbm = frontier_gap(eps[:, :n_bands], n_el)
         return {
             "energy": e,
@@ -262,7 +342,12 @@ def _scf_core(
             "lumo": cbm,
             "gap": cbm - vbm,
             "eig_residual_max": jnp.max(res[:, :n_bands]),
-            "eig_iters": jnp.max(its),
+            "eig_iters": jnp.max(info.iterations),
+            "eig_iters_mean": jnp.mean(info.iterations),
+            "eig_tol": tau,
+            "refined": refined,
+            "eig_drops": jnp.max(info.late_drops),
+            "eig_stagnated": jnp.any(info.stagnated),
         }
 
     key = jax.random.PRNGKey(0)
@@ -271,10 +356,20 @@ def _scf_core(
     X0 = jax.random.normal(kr, shape) + 1j * jax.random.normal(ki, shape)
     X0 = jnp.where(basis.mask[..., None], X0, 0)
     nan = jnp.asarray(jnp.nan)
-    aux0 = (X0, jnp.zeros((n_k, n_solve)), jnp.zeros((n_k, n_solve)), jnp.zeros(n_k, dtype=int), nan, nan)
-
-    def norm(r):
-        return jnp.sqrt(volume / n_tot * jnp.sum(r**2))
+    info0 = EigenInfo(jnp.zeros(n_k, dtype=int), jnp.zeros(n_k, dtype=bool), jnp.zeros(n_k, dtype=int))
+    aux0 = (
+        X0,
+        jnp.zeros((n_k, n_solve)),
+        jnp.zeros((n_k, n_solve)),
+        info0,
+        nan,
+        nan,
+        loosest,  # tau_{-1}: the first step uses the loosest tolerance
+        jnp.asarray(jnp.inf),  # r_{-1}
+        jnp.asarray(False),  # latched
+        jnp.asarray(False),  # refined
+        jnp.zeros(n_k),  # residual allowed by the eig_ok check, per k
+    )
 
     def project(rho):
         return clip_and_renormalise(rho, n_el, volume)
@@ -292,11 +387,12 @@ def _scf_core(
         on_step=(lambda it, values: jax.debug.callback(_log_iteration, it, values, t0, ordered=True)) if live else None,
     )
     X, eps, eig_res = res.aux[:3]
+    check = res.aux[10]
     X, eps, eig_res = X[:, :, :n_bands], eps[:, :n_bands], eig_res[:, :n_bands]
 
     vbm, cbm = frontier_gap(eps, n_el)
     gap_ok = jnp.isfinite(cbm) & (cbm - vbm > min_gap)
-    eig_ok = jnp.all(eig_res < jnp.maximum(EIGEN_CHECK_FRACTION * tol, 5 * EIGEN_FLOOR))
+    eig_ok = jnp.all(eig_res < check[:, None])
     return {
         "orbitals": X,
         "eigenvalues": eps,
@@ -333,6 +429,8 @@ def _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, *
         n_el,
         jnp.asarray(options.tol, dtype=jnp.float64),
         jnp.asarray(options.min_gap, dtype=jnp.float64),
+        jnp.asarray(options.eigensolver_tol_ratio, dtype=jnp.float64),
+        jnp.asarray(options.eigensolver_tol_max, dtype=jnp.float64),
         jnp.asarray(0.0),  # t0, replaced at call time when logging live
     )
     static = dict(
@@ -345,6 +443,7 @@ def _core_arguments(structure, basis, terms, options, density0, n_el, n_bands, *
         preconditioner=options.preconditioner,
         history=history,
         live=live,
+        k_batch_size=None if options.k_batch_size is None else int(options.k_batch_size),
     )
     return args, static
 
@@ -391,7 +490,7 @@ def scf(
     )
 
     if live:
-        eig_tol = max(EIGEN_TOL_FRACTION * options.tol, EIGEN_FLOOR)
+        eig_tol = EIGEN_TOL_FRACTION * options.tol
         initial = "density0 argument" if given else report.describe(options.initial_density)
         lines = report.machine_lines(machine_info())
         lines += report.structure_lines(structure)

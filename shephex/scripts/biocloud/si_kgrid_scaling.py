@@ -9,7 +9,11 @@ root:
 
     uv run hex run --dry shephex/scripts/biocloud/si_kgrid_scaling.py
     uv run hex run shephex/scripts/biocloud/si_kgrid_scaling.py
-    uv run hex report -p shephex/data/biocloud/si-kgrid-scaling
+    uv run hex report -p shephex/data/biocloud/si-kgrid-scaling-2c
+
+The 2b runs (reference/si_kgrid_scaling/biocloud.json) went to
+si-kgrid-scaling; Milestone 2c reruns the scan into DIRECTORY with the new
+eigensolver and records the sums of its per-step history as well.
 """
 
 import os
@@ -21,6 +25,7 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import shephex
 from shephex.experiment import ExperimentContext
 
@@ -32,6 +37,7 @@ from jaxdft.pseudo.gth import hgh_lda
 # directory, so submitting from here puts the runs directly under it.
 DATA = Path(__file__).resolve().parents[2] / "data" / "biocloud"
 GRIDS = (1, 2, 3, 4, 5, 6, 7, 8)
+DIRECTORY = "si-kgrid-scaling-2c"
 
 
 def git_commit() -> str:
@@ -111,6 +117,10 @@ def si_scf_timing(n: int, ecut: float, context: ExperimentContext) -> dict:
         "steady_s": steady,
         "ms_per_k_step": 1e3 * steady / kpoints.shape[0] / n_iter,
         "peak_memory_gb": peak_memory_gb(),
+        "sum_eig_iters": float(np.sum(result.history["eig_iters"])),
+        "sum_eig_iters_mean": float(np.sum(result.history["eig_iters_mean"])),
+        "refined_steps": int(np.sum(result.history["refined"])),
+        "eig_drops_max": int(np.max(result.history["eig_drops"])),
     }
     for key, value in summary.items():
         context.add(key, value)
@@ -121,6 +131,6 @@ def si_scf_timing(n: int, ecut: float, context: ExperimentContext) -> dict:
 if __name__ == "__main__":
     os.chdir(DATA)
     experiments = [
-        si_scf_timing(n=n, ecut=12.0, directory="si-kgrid-scaling") for n in GRIDS
+        si_scf_timing(n=n, ecut=12.0, directory=DIRECTORY) for n in GRIDS
     ]
     shephex.slurm_execute(experiments, profile="biocloud-jaxdft-cpu", time="01:00:00")

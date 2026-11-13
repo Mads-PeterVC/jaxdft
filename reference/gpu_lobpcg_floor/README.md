@@ -30,3 +30,27 @@ record it themselves.
 preconditioner and a fixed random start. GPU results vary slightly between
 runs (the stalled residual for silicon was 4.2e-12 in one run and 2.9e-12 in
 the other).
+
+## Third run: per-iteration trajectories (2026-11-12)
+
+The two runs above compared variants by their end state, one run each. Three
+explanations of the failures then stood side by side (theory post 2c), and
+the end state could not separate them. `lobpcg_trajectory.json` holds a
+per-iteration record from an instrumented copy of `lobpcg`
+(`shephex/scripts/aicloud/lobpcg_trajectory.py`, job `1167888`, jaxdft
+`3383ca3` on the aicloud clone): the largest residual, the directions dropped
+in each orthonormalisation pass, max|T| with the penalty, the backward error
+of the Rayleigh–Ritz `eigh` for the selected pairs, and the penalty when one
+is applied.
+
+Same two problems and tolerance as above. Variants: today's penalty
+(`jaxdft`), the interlacing bound of the 2c post (`bound`), and today's
+penalty with the Rayleigh–Ritz `eigh` on the host (`rr_host`, GPU only).
+Each from three random starts (`seed` 0, 1, 2), stopping at the tolerance
+(`stop`) and forced to 300 iterations (`forced`). `runs` is the V100 node
+(GPU and its CPU); `laptop_runs` is the same script on the laptop, CPU only,
+run with `--local`, which reproduced its result exactly when repeated.
+
+**Limits.** One job, one GPU model, two small systems. The script's
+`gram_min_rel` column is not stored: it pairs Gram eigenvalues with column
+norms by index, which does not identify the dropped columns.

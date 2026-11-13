@@ -228,9 +228,12 @@ How to read the log:
   mixed density. A value that stays well above rounding would mean that the
   mixer keeps proposing unphysical densities.
 - `eig res` and `eig it` are the worst LOBPCG residual and iteration count
-  over k-points. Warm starts make the iteration count fall as the SCF
-  converges. If it stays at its cap, the eigensolver, not the mixing, is the
-  bottleneck.
+  over k-points, and `eig tol` the tolerance the step asked for. Since
+  [Milestone 2c](../theory/02c_eigensolver.qmd) the tolerance follows the
+  SCF residual, from loose to tight, and a step marked `*` was solved again
+  at the tight tolerance because it met the SCF tolerance. With warm starts
+  every step then needs only a few iterations. A count at its cap would mean
+  the eigensolver, not the mixing, is the bottleneck.
 - The timing block separates compilation from the SCF itself. In this
   render, compilation took `{python} f"{timing['compile']:.2f}"` s and the
   SCF `{python} f"{timing['SCF']:.2f}"` s, so compilation dominates a
@@ -245,10 +248,13 @@ the log:
 #| echo: false
 hist = {k: np.asarray(v) for k, v in ref.history.items()}
 assert hist["residual"][-1] < SCF_TOL <= hist["residual"][-2]
-# Claims in the text: |dE| below the residual, warm starts cut LOBPCG
-# iterations, and the projection only removes rounding.
+# Claims in the text: |dE| below the residual, a non-increasing eigensolver
+# tolerance that ends tight, few LOBPCG iterations per step, and the
+# projection only removes rounding.
 assert np.all(np.abs(hist["delta_energy"][1:]) < hist["residual"][1:])
-assert hist["eig_iters"][-1] < hist["eig_iters"][0]
+assert np.all(np.diff(hist["eig_tol"]) <= 0)
+assert hist["refined"][-1] == 1 or hist["eig_tol"][-1] == hist["eig_tol"].min()
+assert hist["eig_iters"].max() < 50
 assert hist["projection"].max() < 1e-12
 conv_df = pd.concat([
     pd.DataFrame({
@@ -343,9 +349,12 @@ xs = np.arange(n) * L_TEST / n - L_TEST / 2
 plane = rho[:, n // 2, :]  # the y = L/2 plane, which contains the bond
 mirror = (-np.arange(n)) % n  # reflection through the centre, grid point n/2
 assert np.unravel_index(rho.argmax(), rho.shape) == (n // 2,) * 3
-assert np.abs(plane - plane[mirror, :]).max() < 1e-12
-assert np.abs(plane - plane[:, mirror]).max() < 1e-12
-assert np.abs(rho - rho.transpose(1, 0, 2)).max() < 1e-12
+asymmetry = max(
+    np.abs(plane - plane[mirror, :]).max(),
+    np.abs(plane - plane[:, mirror]).max(),
+    np.abs(rho - rho.transpose(1, 0, 2)).max(),
+)
+assert asymmetry < float(ref.residual)  # within the run's convergence error
 density_df = pd.DataFrame([
     {"x": xs[i], "z": xs[k], "density": plane[i, k]}
     for i in range(n)
@@ -378,8 +387,15 @@ single maximum at the bond centre, not two at the nuclei
 pseudo-density has no nuclear cusp, and the two atomic densities merge into
 one bonding peak. The molecule sits on a grid point, so the reflections
 $x\to-x$ and $z\to-z$ and the exchange $x\leftrightarrow y$ map the grid to
-itself. The density is symmetric under all three to rounding (asserted to
-$10^{-12}$).
+itself. The density is symmetric under all three to
+`{python} f"{asymmetry:.0e}"`, below the final SCF residual of this run,
+`{python} f"{float(ref.residual):.0e}"`, which is how it is asserted. Before
+[Milestone 2c](../theory/02c_eigensolver.qmd) it was symmetric to rounding.
+The first SCF steps now solve the eigenproblem loosely, from a random start
+block, and leave an asymmetric remnant that the mixing damps but has not
+removed when the SCF stops. It is part of the convergence error, not a
+property of the converged state: at a tolerance of $10^{-12}$ it falls to the
+order of $10^{-15}$.
 
 ## Convergence with cutoff
 

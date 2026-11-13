@@ -8,6 +8,9 @@ This script reads each experiment's shephex context and jaxdft log and writes
     uv run python reference/si_kgrid_scaling/extract.py biocloud
     uv run python reference/si_kgrid_scaling/extract.py aicloud
 
+With a second argument ``2c`` it reads the Milestone 2c rerun from
+si-kgrid-scaling-2c/ and writes <cluster>_2c.json.
+
 Every experiment must have completed; the script refuses partial data.
 """
 
@@ -34,7 +37,16 @@ CONTEXT_KEYS = (
     "peak_memory_gb",
 )
 # Recorded only by the GPU runs.
-OPTIONAL_KEYS = ("devices", "backend", "peak_device_memory_gb")
+OPTIONAL_KEYS = (
+    "devices",
+    "backend",
+    "peak_device_memory_gb",
+    # Milestone 2c runs: sums over the SCF history of the first run.
+    "sum_eig_iters",
+    "sum_eig_iters_mean",
+    "refined_steps",
+    "eig_drops_max",
+)
 
 
 def eigensolver_iterations(log: str) -> list[list[int]]:
@@ -78,17 +90,21 @@ def experiment(directory: Path) -> dict:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "2c"):
         sys.exit(__doc__)
     cluster = sys.argv[1]
-    source = ROOT / "shephex" / "data" / cluster / "si-kgrid-scaling"
-    output = HERE / f"{cluster}.json"
+    tag = "-2c" if len(sys.argv) == 3 else ""
+    source = ROOT / "shephex" / "data" / cluster / f"si-kgrid-scaling{tag}"
+    output = HERE / f"{cluster}{tag.replace('-', '_')}.json"
     directories = sorted(source.glob("*-exp"))
     if not directories:
         sys.exit(f"No experiments in {source}; pull them with hex remote pull")
     rows = sorted(map(experiment, directories), key=lambda r: r["n_kpoints"])
     data = {
-        "description": (f"SCF LDA silicon on Γ-centred n³ k-grids, timed on {cluster}"),
+        "description": (
+            f"SCF LDA silicon on Γ-centred n³ k-grids, timed on {cluster}"
+            + (" (Milestone 2c eigensolver)" if tag else "")
+        ),
         "generator": "reference/si_kgrid_scaling/extract.py",
         "submit_script": f"shephex/scripts/{cluster}/si_kgrid_scaling.py",
         "experiments": rows,

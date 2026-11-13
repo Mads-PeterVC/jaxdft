@@ -405,10 +405,11 @@ iterations `{python} f"{eig_growth:.1f}"`-fold. Per eigensolver iteration the
 cost per k-point stays between `{python} f"{per_it.min():.1f}"` and
 `{python} f"{per_it.max():.1f}"` ms, with no trend in the batch size. The
 k-points are one `vmap` batch, so LOBPCG iterates until the slowest k-point
-has converged, and the more k-points, the slower the slowest. Every SCF step
-asks for residuals of
-`{python} f"{100 * EIGEN_TOL_FRACTION:g}"` % of the SCF tolerance, also while the density is
-far from converged. Peak memory grows linearly, to
+has converged, and the more k-points, the slower the slowest. In these runs
+every SCF step asked for residuals of
+`{python} f"{100 * EIGEN_TOL_FRACTION:g}"` % of the SCF tolerance, also while the density was
+far from converged, and LOBPCG converged the buffer band too; Milestone 2c
+([theory post](../theory/02c_eigensolver.qmd)) changes both. Peak memory grows linearly, to
 `{python} f"{last['peak memory (GB)']:.1f}"` GB at
 `{python} last["k-points"]` k-points, and is not the bottleneck.
 

@@ -1,0 +1,637 @@
+---
+title: "Milestone 2c: eigensolver cost, accuracy and memory validation"
+description: "Stopping on the needed bands, the adaptive eigensolver tolerance, the GPU residual floor and its cause, and bounded memory: measured on the laptop and on CPU and V100 clusters, against the 2b code."
+date: 2026-11-13
+bibliography: ../references.bib
+---
+
+```{python}
+#| echo: false
+import json
+import time
+from functools import partial
+from pathlib import Path
+
+import altair as alt
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+
+from jaxdft import (
+    PlaneWaveBasis,
+    SCFOptions,
+    apply_H,
+    dense_eigensolver,
+    diamond,
+    dimer_in_box,
+    hamiltonian,
+    lda_terms,
+    lobpcg,
+    monkhorst_pack,
+    scf,
+)
+from jaxdft.calculations.bands import bind_terms
+from jaxdft.plotting import featured, style
+from jaxdft.pseudo.gth import hgh_lda
+from jaxdft.scf.scf import EIGEN_TOL_FRACTION
+
+style.enable()
+T_START = time.perf_counter()
+REF = Path("../../reference")
+
+A_SI = 10.263  # Bohr
+ECUT = 12.0  # Ha
+SCF_TOL = 1e-9
+si = diamond(A_SI, "Si", unit="Bohr")
+terms = lda_terms({"Si": hgh_lda("Si")})
+DEFAULTS = SCFOptions()
+
+
+def basis(n, ecut=ECUT):
+    k, w = monkhorst_pack((n, n, n))
+    return PlaneWaveBasis.build(si.lattice, k, ecut, kweights=w)
+
+
+def converge_all_bands(apply, dim, n_bands, **kw):
+    """lobpcg with the stopping test over every band, buffer bands included:
+    the stopping rule of the 2b code."""
+    kw["n_converge"] = None
+    return lobpcg(apply, dim, n_bands, **kw)
+
+
+def timed(structure, b, t, options, repeat=2):
+    """SCF result and the best steady wall time (the first call compiles)."""
+    result = scf(structure, b, t, options)
+    times = []
+    for _ in range(repeat):
+        start = time.perf_counter()
+        scf(structure, b, t, options)
+        times.append(time.perf_counter() - start)
+    return result, min(times)
+
+
+def load(path):
+    return json.loads((REF / path).read_text())
+```
+
+## What is validated
+
+The [2c theory post](../theory/02c_eigensolver.qmd) changed how the
+eigenproblems of the SCF are solved, not which problem is solved. The
+validation therefore has two parts: that the converged results are those of
+the 2b code, and that the three problems the HPC runs found are gone, by the
+amounts and for the reasons the post gave. Everything below is computed when
+this page renders, on the machine that renders it, except the cluster runs,
+which are read from `reference/` (cluster runs cannot be repeated at render
+time; each file has a README with how it was made).
+
+The acceptance tests (`tests/scientific/test_eigensolver_*.py`,
+`test_scf_eigensolver_settings.py`, `tests/unit/test_memory.py`) assert the
+same claims on the CPU; the full suite also passes on a V100
+(`reference/aicloud_pytest/`).
+
+## Where the SCF's time went, fix by fix
+
+```{python}
+#| echo: false
+b3 = basis(3)
+steps_cfg = {
+    "2b stopping rule (buffer band converged)": SCFOptions(
+        tol=SCF_TOL,
+        eigensolver=converge_all_bands,
+        eigensolver_tol_ratio=0.0,
+        buffer_bands=1,
+        k_batch_size=None,
+    ),
+    "stop on the needed bands": SCFOptions(
+        tol=SCF_TOL,
+        eigensolver_tol_ratio=0.0,
+        buffer_bands=1,
+        k_batch_size=None,
+    ),
+    "+ adaptive tolerance": SCFOptions(
+        tol=SCF_TOL, buffer_bands=1, k_batch_size=None
+    ),
+    "+ three buffer bands (defaults)": SCFOptions(tol=SCF_TOL),
+}
+fix_rows, fix_results = [], {}
+for label, opts in steps_cfg.items():
+    res, seconds = timed(si, b3, terms, opts)
+    h = res.history
+    fix_results[label] = (res, seconds)
+    fix_rows.append({
+        "configuration": label,
+        "SCF steps": int(res.n_iter),
+        "Σ max_k I_k": int(np.sum(h["eig_iters"])),
+        "Σ mean_k I_k": f"{float(np.sum(h['eig_iters_mean'])):.0f}",
+        "wall time (s)": f"{seconds:.2f}",
+        "E − E(2b rule) (Ha)": float(res.total_energy),
+    })
+e_ref = fix_rows[0]["E − E(2b rule) (Ha)"]
+for row in fix_rows:
+    row["E − E(2b rule) (Ha)"] = f"{row['E − E(2b rule) (Ha)'] - e_ref:+.1e}"
+iters = [int(np.sum(r.history["eig_iters"])) for r, _ in fix_results.values()]
+secs = [s for _, s in fix_results.values()]
+energies = [float(r.total_energy) for r, _ in fix_results.values()]
+# Claims: each step cuts the eigensolver work, none changes the energy.
+assert iters[1] < iters[0] and iters[2] < iters[1] and iters[3] <= iters[2]
+assert np.ptp(energies) < 1e-10
+speedup_3 = secs[0] / secs[3]
+pd.DataFrame(fix_rows).style.hide(axis="index")
+```
+
+Silicon at `{python} f"{ECUT:g}"` Ha on the 3³ grid, at the SCF tolerance
+`{python} f"{SCF_TOL:g}"`, adding the 2c changes one at a time. The first
+row reproduces the 2b stopping rule with today's solver (its stopping test is
+given every band, buffer band included); the last row is the defaults.
+$\sum \max_k I_k$ is the sum over SCF steps of the largest number of LOBPCG
+iterations over the k-points, which is what a batched step costs.
+
+- Stopping on the needed bands alone cuts the eigensolver work from
+  `{python} f"{iters[0]}"` to `{python} f"{iters[1]}"` iterations, the
+  theory post's main finding: the slowest band is the one closest to the
+  first eigenvalue outside the block, usually the buffer band, and the 2b
+  stopping test waited for it.
+- The adaptive tolerance cuts it to `{python} f"{iters[2]}"`, at the cost of
+  more SCF steps (`{python} f"{fix_rows[1]['SCF steps']}"` →
+  `{python} f"{fix_rows[2]['SCF steps']}"`): early steps solve the
+  eigenproblems only as accurately as the density is converged.
+- Three buffer bands cut it to `{python} f"{iters[3]}"`. They cost little
+  per iteration on the CPU and less on the GPU (below).
+
+Altogether the SCF is `{python} f"{speedup_3:.1f}"` times faster here, with
+energies equal to `{python} f"{np.ptp(energies):.0e}"` Ha.
+
+### The tolerance during one SCF
+
+```{python}
+#| column: page-inset
+#| echo: false
+res_def = fix_results["+ three buffer bands (defaults)"][0]
+h = {k: np.asarray(v) for k, v in res_def.history.items()}
+tight = EIGEN_TOL_FRACTION * SCF_TOL
+hist_df = pd.concat([
+    pd.DataFrame({
+        "step": np.arange(len(h["residual"])),
+        "value": h["residual"],
+        "quantity": "SCF residual ‖F(ρ) − ρ‖",
+    }),
+    pd.DataFrame({
+        "step": np.arange(len(h["eig_tol"])),
+        "value": h["eig_tol"],
+        "quantity": "eigensolver tolerance τ (Ha)",
+    }),
+])
+refined_step = int(np.argmax(h["refined"])) if h["refined"].any() else None
+# Claims: tau never increases, starts at the maximum, and the converging step
+# was solved tightly (refined, or already at the tight tolerance).
+assert np.all(np.diff(h["eig_tol"]) <= 0)
+assert h["eig_tol"][0] == DEFAULTS.eigensolver_tol_max
+assert h["refined"][-1] == 1 or h["eig_tol"][-1] == tight
+lines = (
+    alt
+    .Chart(hist_df)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("step:Q", title="SCF step"),
+        y=alt.Y("value:Q", scale=alt.Scale(type="log"), title=None),
+        color=alt.Color("quantity:N", title=None),
+        tooltip=["step", "quantity", alt.Tooltip("value:Q", format=".2e")],
+    )
+)
+rule = (
+    alt
+    .Chart(pd.DataFrame({"y": [tight]}))
+    .mark_rule(strokeDash=[4, 4], color=style.TEXT_SECONDARY)
+    .encode(y="y:Q")
+)
+(lines + rule).properties(width=640, height=300)
+```
+
+The default run above, step by step. The eigensolver tolerance starts at
+`{python} f"{DEFAULTS.eigensolver_tol_max:g}"` Ha and follows
+`{python} f"{DEFAULTS.eigensolver_tol_ratio:g}"` times the previous SCF
+residual per electron, never increasing. The dashed line is the tight
+tolerance of the 2b code, `{python} f"{tight:.0e}"` Ha.
+`{python} "The step that met the SCF tolerance with a loose tolerance was solved again tightly (step " + str(refined_step) + "), so the converged state is that of the tight map." if refined_step is not None else "The last step was already at the tight tolerance."`
+
+### The trade-off: more SCF steps
+
+```{python}
+#| echo: false
+h2 = dimer_in_box("H", bond_length=1.45, box=10.0)
+b_h2 = PlaneWaveBasis.build(h2.lattice, np.zeros((1, 3)), 10.0)
+t_h2 = lda_terms({"H": hgh_lda("H")})
+h2_fixed, h2_fixed_s = timed(
+    h2, b_h2, t_h2, SCFOptions(tol=SCF_TOL, eigensolver_tol_ratio=0.0)
+)
+h2_adapt, h2_adapt_s = timed(h2, b_h2, t_h2, SCFOptions(tol=SCF_TOL))
+assert abs(float(h2_fixed.total_energy) - float(h2_adapt.total_energy)) < 1e-10
+h2_steps = (int(h2_fixed.n_iter), int(h2_adapt.n_iter))
+h2_iters = (
+    int(np.sum(h2_fixed.history["eig_iters"])),
+    int(np.sum(h2_adapt.history["eig_iters"])),
+)
+```
+
+An inexact $F$ costs SCF steps, as the theory post expected. Silicon takes
+`{python} f"{fix_rows[2]['SCF steps'] - fix_rows[1]['SCF steps']}"` more
+above; H₂ in its box (the 2a test size) takes
+`{python} f"{h2_steps[0]}"` steps with the fixed tolerance and
+`{python} f"{h2_steps[1]}"` with the adaptive one, for
+`{python} f"{h2_iters[0]}"` against `{python} f"{h2_iters[1]}"` eigensolver
+iterations and `{python} f"{h2_fixed_s:.2f}"` against
+`{python} f"{h2_adapt_s:.2f}"` s. Both cases gain, but where the potential
+and the density cost more per step than the eigensolver (large cells with
+few bands), the balance can reverse; `eigensolver_tol_ratio=0` restores the
+fixed tolerance.
+
+## The k-point cost on the clusters
+
+```{python}
+#| column: page-inset
+#| echo: false
+scan_rows = []
+for cluster, device in (("biocloud", "8 CPU cores"), ("aicloud", "V100")):
+    for tag, version in (("", "2b"), ("_2c", "2c")):
+        data = load(f"si_kgrid_scaling/{cluster}{tag}.json")
+        for e in data["experiments"]:
+            scan_rows.append({
+                "device": device,
+                "code": version,
+                "k-points": e["n_kpoints"],
+                "steady time (s)": e["steady_s"],
+                "energy": e["energy"],
+            })
+scan = pd.DataFrame(scan_rows)
+wide = scan.pivot_table(
+    index=["device", "k-points"], columns="code", values="steady time (s)"
+)
+e_wide = scan.pivot_table(
+    index=["device", "k-points"], columns="code", values="energy"
+)
+# Claim: the same energies on every grid and device, to rounding.
+assert (e_wide["2c"] - e_wide["2b"]).abs().max() < 1e-12
+speed_8 = (wide["2b"] / wide["2c"]).xs(512, level="k-points")
+scan_chart = (
+    alt
+    .Chart(scan)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("k-points:Q", scale=alt.Scale(type="log"), title="k-points"),
+        y=alt.Y(
+            "steady time (s):Q",
+            scale=alt.Scale(type="log"),
+            title="SCF wall time (s)",
+        ),
+        color=alt.Color("device:N", title=None),
+        strokeDash=alt.StrokeDash("code:N", title="code"),
+        tooltip=[
+            "device",
+            "code",
+            "k-points",
+            alt.Tooltip("steady time (s):Q", format=".2f"),
+        ],
+    )
+    .properties(width=640, height=340)
+)
+scan_chart
+```
+
+The k-grid scans of the HPC runs, repeated with the 2c code (silicon, 12 Ha,
+Γ-centred n³ grids, one buffer band and one batch, as in 2b; steady time of a
+second SCF in the same process). The energies agree with the 2b runs to
+`{python} f"{(e_wide['2c'] - e_wide['2b']).abs().max():.0e}"` Ha on every grid.
+On the 8³ grid the SCF is `{python} f"{speed_8['8 CPU cores']:.1f}"` times
+faster on biocloud's CPUs and `{python} f"{speed_8['V100']:.1f}"` times on the
+V100. The defaults chosen afterwards (three buffer bands, chunks of 64
+k-points) gain more on top, below.
+
+## The GPU residual floor and its cause
+
+```{python}
+#| column: page-inset
+#| echo: false
+traj = load("gpu_lobpcg_floor/lobpcg_trajectory.json")
+names = {
+    "Si/gpu/jaxdft/stop/0": "V100, 2b penalty",
+    "Si/gpu/bound/stop/0": "V100, bounded penalty (2c)",
+    "Si/gpu/rr_host/stop/0": "V100, 2b penalty, Rayleigh–Ritz on host",
+    "Si/cpu/jaxdft/stop/0": "CPU, 2b penalty",
+}
+traj_rows = []
+late_drops = {}
+for label, name in names.items():
+    t = traj["runs"][label]["trace"]
+    late_drops[name] = int(
+        np.nansum(np.asarray(t["drops1"][1:], dtype=float))
+        + np.nansum(np.asarray(t["drops2"][1:], dtype=float))
+    )
+    for i, r in enumerate(t["residual"]):
+        traj_rows.append({"iteration": i + 1, "residual": r, "run": name})
+traj_df = pd.DataFrame(traj_rows)
+plateau = traj_df[traj_df.run == "V100, 2b penalty"].residual.iloc[-100:]
+# Claims: with the 2b penalty the V100 plateaus near 1e-12 for the last 100
+# iterations while dropping directions; the bounded penalty converges.
+assert 5e-13 < plateau.min() and plateau.max() < 2e-11
+assert late_drops["V100, 2b penalty"] > 100
+assert traj["runs"]["Si/gpu/bound/stop/0"]["trace"]["residual"][-1] < 5e-14
+(
+    alt
+    .Chart(traj_df)
+    .mark_line()
+    .encode(
+        x=alt.X("iteration:Q", title="LOBPCG iteration"),
+        y=alt.Y(
+            "residual:Q",
+            scale=alt.Scale(type="log"),
+            title="largest residual (Ha)",
+        ),
+        color=alt.Color("run:N", title=None),
+        tooltip=["run", "iteration", alt.Tooltip("residual:Q", format=".2e")],
+    )
+    .properties(width=640, height=340)
+)
+```
+
+The per-iteration diagnosis that decided between three proposed explanations
+(theory post, 'Evidence: per iteration, on both devices';
+`reference/gpu_lobpcg_floor/lobpcg_trajectory.json`): silicon at one k-point
+of the 2³ grid, from one of three random starts, asked for the SCF's tightest
+eigensolver tolerance. Near convergence the V100 drops nearly dependent
+directions at every iteration
+(`{python} f"{late_drops['V100, 2b penalty']}"` after the first iteration in
+this run, against `{python} f"{late_drops['CPU, 2b penalty']}"` on the CPU).
+With the 2b penalty each drop inflates the Rayleigh–Ritz matrix, and the
+residual stops at the error that causes, for the remaining iterations. With
+the bounded penalty the same drops cost nothing.
+
+```{python}
+#| echo: false
+check = load("eigensolver_2c/lobpcg_check.json")["experiments"][0]
+check_rows = []
+for label, r in check["runs"].items():
+    system, device, mode, seed = label.split("/")
+    check_rows.append({
+        "system": system,
+        "device": device,
+        "tolerance": "floor" if mode == "floor" else "unreachable",
+        "seed": int(seed),
+        **r,
+    })
+check_df = pd.DataFrame(check_rows)
+# Claims: every run of the implemented solver is within the SCF's check;
+# the V100 still drops directions late, the CPU does not; unreachable
+# tolerances end by stagnation.
+assert check_df.within_check.all()
+gpu_drops = check_df[check_df.device == "gpu"].late_drops
+assert (
+    gpu_drops.min() > 0
+    and (check_df[check_df.device == "cpu"].late_drops == 0).all()
+)
+assert check_df[check_df.tolerance == "unreachable"].stagnated.all()
+summary = (
+    check_df
+    .groupby(["system", "device", "tolerance"])
+    .agg(
+        iterations=("iterations", lambda s: f"{s.min()}–{s.max()}"),
+        late_drops=("late_drops", lambda s: f"{s.min()}–{s.max()}"),
+        residual=("residual", lambda s: f"{s.max():.1e}"),
+        floor=("floor", lambda s: f"{s.iloc[0]:.1e}"),
+    )
+    .reset_index()
+)
+summary.columns = [
+    "system",
+    "device",
+    "tolerance",
+    "iterations",
+    "late drops",
+    "worst residual (Ha)",
+    "floor (Ha)",
+]
+summary.style.hide(axis="index")
+```
+
+The implemented solver on the same problems
+(`reference/eigensolver_2c/lobpcg_check.json`, commit
+`{python} check["commit"]`), three starts each, called as the SCF calls it. On
+the V100 every run reaches the per-k floor although it drops
+`{python} f"{gpu_drops.min()}"`–`{python} f"{gpu_drops.max()}"` directions
+late, and an unreachable tolerance ends by the stagnation stop with a block at
+the floor, on both devices.
+
+## Buffer bands and k-chunks
+
+```{python}
+#| echo: false
+settings = load("eigensolver_2c/settings_v100.json")["experiments"]
+chunks = load("eigensolver_2c/k_chunks.json")["experiments"]
+buf = {
+    e["buffer_bands"]: e["steady_s"] for e in settings if e["k_batch_size"] == 0
+}
+chunk_rows = []
+for e in chunks:
+    memory = (
+        e["peak_device_memory_gb"]
+        if e["cluster"] == "aicloud"
+        else e["peak_memory_gb"]
+    )
+    chunk_rows.append({
+        "device": "V100" if e["cluster"] == "aicloud" else "8 CPU cores",
+        "k-points per chunk": e["k_batch_size"] or "all (512)",
+        "wall time (s)": f"{e['steady_s']:.2f}",
+        "peak memory (GB)": f"{memory:.2f}",
+    })
+energies_8 = {round(e["energy"], 11) for e in settings + chunks}
+assert len(energies_8) == 1  # every setting converges to the same state
+assert buf[3] < buf[2] < buf[1] < buf[0]
+v100_final = next(
+    e["steady_s"]
+    for e in chunks
+    if e["cluster"] == "aicloud" and e["k_batch_size"] == 64
+)
+cpu_final = next(
+    e["steady_s"]
+    for e in chunks
+    if e["cluster"] == "biocloud" and e["k_batch_size"] == 64
+)
+old_8 = {
+    d: load(f"si_kgrid_scaling/{c}.json")["experiments"][-1]["steady_s"]
+    for c, d in (("aicloud", "V100"), ("biocloud", "8 CPU cores"))
+}
+pd.DataFrame(chunk_rows).style.hide(axis="index")
+```
+
+On the 8³ grid (512 k-points) on the V100, 0 to 3 buffer bands take
+`{python} ", ".join(f"{buf[b]:.1f}" for b in range(4))` s: on the GPU a wider
+block is cheap per column, and the buffer bands keep the needed ones away
+from the block edge. On the laptop CPU three cost nothing either (engineering
+log, 2c cluster runs), so three is the default. The table shows chunks of
+k-points at three buffer bands: on the V100 they do not change the time and
+cut the memory to about a third; on the CPU they are also faster. Chunks of
+64 are the default. With both, the 8³ SCF takes
+`{python} f"{v100_final:.1f}"` s on the V100 against
+`{python} f"{old_8['V100']:.1f}"` s with the 2b code, and
+`{python} f"{cpu_final:.0f}"` s on biocloud against
+`{python} f"{old_8['8 CPU cores']:.0f}"` s.
+
+## Memory of dense diagonalisation
+
+```{python}
+#| echo: false
+mem_rows = []
+for ecut in (12.0, 20.0):
+    b1 = basis(1, ecut)
+    ham = hamiltonian(
+        si, b1[0], bind_terms(si, terms), density=jnp.full(b1.fft_shape, 0.03)
+    )
+    n = b1.n_pad
+    row = {"E_cut (Ha)": f"{ecut:g}", "plane waves": n}
+    for chunk in (None, 64):
+
+        def solve(h, chunk=chunk):
+            return dense_eigensolver(
+                lambda p: apply_H(h, p), n, 5, column_batch_size=chunk
+            )
+
+        compiled = jax.jit(solve).lower(ham).compile()
+        gib = compiled.memory_analysis().temp_size_in_bytes / 2**30
+        row[
+            "all columns at once (GiB)"
+            if chunk is None
+            else "chunks of 64 (GiB)"
+        ] = gib
+    mem_rows.append(row)
+mem = pd.DataFrame(mem_rows)
+# Claim: chunking bounds the temporaries; at 20 Ha below the acceptance limit.
+assert mem["chunks of 64 (GiB)"].iloc[-1] < 0.25
+assert (mem["chunks of 64 (GiB)"] < mem["all columns at once (GiB)"]).all()
+mem.style.hide(axis="index").format(precision=3)
+```
+
+XLA's own estimate of the peak temporaries of the compiled dense solver, for
+one k-point of silicon (`memory_analysis()`, so measurable without a GPU).
+Applying $H$ to the whole identity at once holds one wavefunction on the FFT
+grid per plane wave; in chunks of 64 columns the temporaries no longer grow
+with the basis. The V100 failure of 2b, 9.4 GiB for a band scan of 41
+k-points, was this pattern for 41 k-points at once; the acceptance test
+`tests/unit/test_memory.py` checks that scan, now chunked over k-points as
+well, below 2 GiB.
+
+## Symmetry, now to the convergence error
+
+```{python}
+#| echo: false
+def asymmetry(rho):
+    rho = np.asarray(rho)
+    n = rho.shape[0]
+    mirror = (-np.arange(n)) % n
+    plane = rho[:, n // 2, :]
+    return max(
+        np.abs(plane - plane[mirror, :]).max(),
+        np.abs(plane - plane[:, mirror]).max(),
+        np.abs(rho - rho.transpose(1, 0, 2)).max(),
+    )
+
+
+asym_fixed = asymmetry(h2_fixed.density)
+asym_adapt = asymmetry(h2_adapt.density)
+assert asym_fixed < 1e-14
+assert asym_adapt < float(h2_adapt.residual)
+```
+
+The loose first steps start from a random block, which has no symmetry, and
+leave an asymmetric part in the density that the mixing damps but has not
+removed when the SCF stops. For H₂ (the 2a grid symmetries) the largest
+asymmetry is `{python} f"{asym_fixed:.0e}"` with the fixed tolerance and
+`{python} f"{asym_adapt:.0e}"` with the adaptive one, below that run's final
+SCF residual of `{python} f"{float(h2_adapt.residual):.0e}"`. It is part of
+the convergence error, not a property of the converged state, and it shrinks
+with the SCF tolerance. Two documents and one test that asserted symmetry to
+rounding now assert it to the convergence error, decided with the project
+lead: the 2a density, the 2b vanishing forces at the ideal geometry
+(`SYMMETRY_FORCE_ATOL` 10⁻⁸ Ha/Bohr), and the 2b validation document's copy
+of the force check.
+
+## Deviations from the theory post
+
+- **The stagnation stop acts only near the floor.** As a bare rule (0.8 over
+  5 iterations) it ended healthy runs, which can wait up to 23 iterations
+  for a 20 % gain; it is active once the best residual is within 10⁴
+  $\epsilon_\text{mach}\lVert H\rVert$.
+- **The unexplained row of the post is the Γ₁₅ triplet.** With one buffer
+  band, five needed bands cut the threefold conduction level at Γ; LOBPCG
+  creeps there near 10⁻¹⁰ while dropping directions, and the final
+  refinement could take 84 iterations. Two or more buffer bands put the
+  whole triplet in the block. The review's "an exact degeneracy at the edge
+  is harmless" holds at the edge of the block, not at the edge of the
+  needed bands.
+- **Fractional electron counts use the fixed tolerance.** Loose solves split
+  the degenerate valence-band maximum at Γ by more than the level grouping
+  allows, the fractional hole went into one state, and the density lost the
+  symmetry of the structure for good. The adaptive rule needs complete
+  levels at the frontier (N_el/2 an integer).
+- **Symmetry to the convergence error**, above.
+- **Defaults set by measurement:** c = 0.4 (not the 0.8 proposed), three
+  buffer bands and chunks of 64 k-points (the API round had one and one
+  batch until measured).
+- **A tolerance fixed after a GPU run:** the best-iterate test's slack was
+  10⁻¹⁴, below the 1.5×10⁻¹⁴ by which the in-loop residual drifts on the
+  V100; it is now the floor, which still fails the climbs to 10⁻⁸ the test
+  is for.
+
+The engineering log entries of 2026-11-12 and 2026-11-13 give the
+measurements behind each.
+
+```{python}
+#| echo: false
+_ = featured.publish(
+    scan_chart,
+    "2c",
+    caption="SCF wall time of silicon against the number of k-points, "
+    "with the 2b code (dashed) and the 2c code (solid), on 8 CPU cores and "
+    "on a V100. Same energies to rounding.",
+    headline=[
+        (
+            "8³ on a V100",
+            f"{old_8['V100']:.0f} s → {v100_final:.1f} s",
+        ),
+        (
+            "8³ on 8 CPU cores",
+            f"{old_8['8 CPU cores']:.0f} s → {cpu_final:.0f} s",
+        ),
+    ],
+)
+```
+
+## Interpretation
+
+The eigensolver now does what the SCF needs and no more. The largest gain
+came from a mismatch between the 2b design and its implementation (buffer
+bands that were meant to be carried, not converged), and the adaptive
+tolerance and the buffer bands removed most of what remained. The cost per
+k-point no longer grows with the grid the way it did, and the converged
+energies are those of the 2b code to rounding on every grid and device.
+
+The GPU failures had a concrete cause that the end-state diagnosis could not
+show: the V100 drops directions in LOBPCG near convergence, the CPU almost
+never, and the 2b penalty turned every drop into a Rayleigh–Ritz error. Why
+the GPU drops directions is still open; with the bounded penalty it no
+longer matters, and the solver reports the count, so a change would be
+visible.
+
+What the speed costs is stated where it shows: more SCF steps, symmetry to
+the convergence error rather than to rounding, and a fixed tolerance for
+fractional electron counts, which the smearing of a later milestone will
+have to revisit, since smeared occupations depend continuously on the
+eigenvalues.
+
+```{python}
+#| echo: false
+RENDER_SECONDS = time.perf_counter() - T_START
+```
+
+*This document took `{python} f"{RENDER_SECONDS / 60:.1f}"` minutes to compute
+on the machine that rendered it.*

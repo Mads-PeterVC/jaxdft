@@ -1834,3 +1834,355 @@ directions above the wanted Ritz values), or removing dropped directions
 from the Rayleigh–Ritz problem. Either changes the eigensolver, and goes
 through the milestone workflow together with the k-point work. The
 acceptance tests are unchanged.
+
+## 2026-11-12: Milestone 2c public API, agreed before implementation
+
+Settled after the [2c theory post](../theory/02c_eigensolver.qmd) was
+reviewed and the cause of the GPU failures measured, before any 2c test or
+code was written. One choice went to the project lead (how eigensolvers
+return diagnostics); the rest were proposed in the same round. The numerics
+are in the theory post; this entry records the shape of the code.
+
+**Eigensolver interface.** Every eigensolver keeps the call
+`solver(apply, dim, n_bands, *, x0=None, preconditioner=None, tol=...)` and
+gains two keywords:
+
+- `n_converge: int | None = None`: the leading bands the stopping test
+  covers; `None` means all `n_bands`. The dense solver accepts and ignores
+  it, as it ignores `tol`.
+- `return_info: bool = False` **replaces** `return_iterations`. With it the
+  solver returns `(eigenvalues, vectors, info)`, where `info` is an
+  `EigenInfo` named tuple (`solvers/eigen.py`) of scalar arrays:
+  `iterations`, `stagnated` (left by the stagnation stop) and `late_drops`
+  (directions dropped by the Gram orthonormalisation after the first
+  iteration, summed over iterations). The dense solver returns zeros and
+  `False`. Future diagnostics add fields. The two API-layout tests that pin
+  `return_iterations` are rewritten for `return_info` as part of this agreed
+  change, not to fit an implementation. Rejected: a second flag next to
+  `return_iterations` (two overlapping flags in every solver, one of them
+  unused), and always returning a result object (changes every caller, from
+  `band_structure` to the concept post, for no gain in this milestone).
+
+**`lobpcg`** gains `stagnation_window: int = 5` and
+`stagnation_factor: float = 0.8`: it stops when the best max-over-converged-
+bands residual has not fallen by the factor over the window. It always
+returns the best iterate it has seen, by that residual. The penalty on
+dropped directions becomes the interlacing bound
+σ = ε_k + (ε_k − ε₁) + 1 Ha and is not a parameter. `max_iter` stays 300.
+
+**`dense_eigensolver`** gains `column_batch_size: int | None = 64`: the
+operator is applied to the identity in column chunks with
+`lax.map(..., batch_size=...)`, so its temporaries do not grow with
+`n_pad`. `None` applies it to all columns at once, as today.
+
+**SCF options.** `SCFOptions` gains
+
+- `eigensolver_tol_ratio: float` (c of the theory post, Ha·Bohr^(3/2) per
+  electron; 0 gives today's fixed tolerance). The default is measured during
+  implementation on the 3³ and 4³ grids, starting from 0.8, the silicon
+  equivalent of the scratch check's 0.1, and recorded in the implementation
+  entry.
+- `eigensolver_tol_max: float = 5e-3` (Ha).
+- `k_batch_size: int | None = None`: k-points per `lax.map` chunk in the
+  diagonalisation; `None` is one batch, as today. Any size is accepted; a
+  size that does not divide n_k compiles a second program for the remainder,
+  which costs compile time only.
+
+`buffer_bands` stays 1 until the V100 measurement of the theory post.
+
+**Tolerances inside the SCF.** The rule of the theory post: τ_i =
+clip(min(τ_{i−1}, c r_{i−1}/N_el), τ_min, τ_max), τ_0 = τ_max, refinement
+inside F when a loose evaluation has a density residual below `tol`, and a
+latch to τ_min after the first refinement. The floor is per k-point,
+τ_floor(k) = κ ε_mach ‖H_k‖_est, with ‖H_k‖_est the largest element of
+`Hamiltonian.diagonal()` over the physical plane waves (the kinetic energy;
+about E_cut) and κ a module constant `EIGEN_FLOOR_FACTOR = 50`. That gives
+1.1×10⁻¹³ for H₂ and 1.3×10⁻¹³ for silicon at the test sizes (largest
+diagonal 9.9 and 11.8 Ha), 2.2 and 2.7 times the worst residual at which a
+run of the per-iteration diagnosis stopped (proposed as 40; 40 gave a margin
+of only 1.8 for H₂). The one run of that diagnosis that climbed (laptop,
+silicon) had reached 1.6×10⁻¹³ first: the stagnation stop would end it there,
+and the check below at 2 τ_floor accepts it. τ_min(k) = max(`EIGEN_TOL_FRACTION`·tol,
+τ_floor(k)), and `eig_ok` requires residuals below
+max(`EIGEN_CHECK_FRACTION`·tol, 2 τ_floor(k)). `EIGEN_FLOOR` is removed.
+
+**History and log.** The SCF history gains `eig_tol` (τ_i before the
+per-k floor), `eig_iters_mean`, `refined` (0 or 1), `eig_drops` (largest
+`late_drops` over k-points) and `eig_stagnated` (any k-point). With
+refinement, `eig_iters` counts both diagonalisations of the step. The live
+log line gains an `eig tol` column; the other new fields are in the history
+only. `energy` runs the same algorithm without a history.
+
+**Band structures.** `band_structure(..., k_batch_size=None)` with the same
+meaning as in the SCF. `band_minimum_on_segment(..., k_batch_size=8)` bounds
+its dense sampling by default; with the column chunking it would also fit
+without.
+
+**Tests**, as failing tests before implementation, one per acceptance
+criterion of the theory post:
+
+- `tests/unit/test_lobpcg.py`: `n_converge`; the stagnation stop and the
+  best iterate on a problem asked for an unreachable tolerance; the floor
+  reached at the H₂ and silicon test sizes.
+- `tests/property/`: dropped directions are never selected, on blocks with
+  forced dependence; σ equals the bound.
+- `tests/unit/test_api_layout.py`: `return_info` and `n_converge` on every
+  eigensolver; the new `SCFOptions` fields; `k_batch_size` on
+  `band_structure`.
+- A new `tests/scientific/test_eigensolver_cost.py`: on the 3³ grid at the
+  default settings, Σ max_k I_k at most 0.6 and Σ mean I at most 0.75 of
+  today's counts (370 and 236; the stopping fix alone gives 0.55 and 0.67);
+  the regression case of the theory post (3³, tol 10⁻¹², c a tenth of the
+  default) within an iteration budget set from its c = 0 run.
+- Silicon on the 2³ grid: energy, density and eigenvalues independent of
+  `buffer_bands` ∈ {0, 1, 3}, c ∈ {0, default/10, default} and
+  `k_batch_size`, within the existing tolerances for comparing converged
+  states; the history at convergence shows τ at τ_min, τ non-increasing and
+  at most one refinement.
+- Memory, via `memory_analysis()` of the compiled programs: with the default
+  column chunk, the dense solver's temporaries for one k-point of silicon at
+  20 Ha are below 0.25 GiB (0.97 GiB unchunked, review §2.9); the band
+  sampling of the failing V100 case stays below 2 GiB; chunked and unchunked
+  results agree to rounding.
+
+## 2026-11-12: Milestone 2c acceptance tests, written before implementation
+
+The 2c tests were written from the theory post and the agreed API, and they
+fail until the implementation exists: four modules fail at collection on
+missing names, and 15 tests in existing modules fail on missing keywords or,
+for the 20 Ha memory test, on today's 1.375 GiB against the 0.25 GiB limit.
+The constants, each with its source, are in the 2c section of
+`tests/support/tolerances.py`.
+
+| file | criterion of the theory post |
+|:--|:--|
+| `tests/unit/test_api_layout.py` | the agreed names, keywords and defaults |
+| `tests/unit/test_lobpcg.py` | 1 (stopping test), 5 (stagnation, diagnostics) |
+| `tests/property/test_lobpcg_properties.py` | 4 (penalty) |
+| `tests/scientific/test_eigensolver_robustness.py` | 5 (floor, best iterate) |
+| `tests/scientific/test_scf_eigensolver_settings.py` | 2, 3 (independence, tolerance history) |
+| `tests/scientific/test_eigensolver_cost.py` | 6, 7 (the unexplained row, cost) |
+| `tests/unit/test_memory.py` | 8 (memory, chunked results) |
+
+Writing them settled details the API round left open:
+
+- **`dropped_penalty(eps)`**, a module-level function in
+  `solvers/lobpcg.py`, not re-exported, returns σ. The API entry made σ "not
+  a parameter"; the property test needs to reach it. It is the only name the
+  tests add.
+- **`_solve(structure, basis, terms, n_bands, solver, density, k_batch_size)`**
+  is the signature of `band_structure`'s jitted core, with `k_batch_size`
+  static. The band-sampling memory test lowers it, because memory can only be
+  measured on a compiled program.
+- **The test of `return_iterations` was replaced** by one of `return_info`,
+  as agreed in the API entry. The dense solver's `EigenInfo` is zeros and
+  `False`.
+- **Iteration counts with refinement.** `eig_iters` counts both
+  diagonalisations of a refined step, so "never reaches the cap" in the
+  regression test is checked as `eig_iters < 300` per step, slightly
+  stronger than the cap of one call.
+- **The stagnation bound is 200 iterations**, not the 150 first written: the
+  synthetic matrix of the unit test, with the diagonal preconditioner, still
+  improves at iteration 120 (measured with today's solver). Without the
+  preconditioner it needs 236 iterations to reach 10⁻¹⁰, so the stagnation
+  test uses it.
+- **The SCF's request** is checked with an eigensolver that records its
+  arguments at trace time: H₂ with two buffer bands must be asked for four
+  bands with `n_converge = 2`.
+- **The cost budgets** are fractions of the counts of the review (370 and
+  236.3 on the 3³ grid); the counts of the implementation go in its entry.
+
+Risk for the implementation, noted rather than tested: a stagnation stop
+with factor 0.8 over 5 iterations also fires on a run that converges slowly
+but steadily at about 4.5 % per iteration. Existing tests with unpreconditioned
+synthetic matrices (236 iterations to 10⁻¹⁰) will show whether that happens.
+
+## 2026-11-12: Milestone 2c implementation
+
+Implemented as agreed in the API entry, with two changes of method found on
+the way, a measured default and an explanation of the theory post's one
+unexplained result. All 681 tests pass on the laptop; the suite takes about
+7 minutes, against 11 before.
+
+**Default c = 0.4** (Ha·Bohr^(3/2) per electron), not the 0.8 the API entry
+started from. Silicon at 12 Ha, tol 10⁻⁹, steady wall time on the laptop,
+one buffer band; iterations are Σ max_k I_k / Σ mean_k I_k over the SCF:
+
+| c | 3³: iterations, SCF steps, time | 4³: iterations, SCF steps, time |
+|:--:|:--|:--|
+| 0 | 204 / 159, 8, 3.91 s | 228 / 168, 9, 10.5 s |
+| 0.2 | 99 / 53, 11, 2.06 s | 89 / 54, 11, 4.56 s |
+| 0.4 | 74 / 48, 11, 1.58 s | 91 / 51, 11, 4.81 s |
+| 0.8 | 146 / 51, 12, 2.96 s | 95 / 49, 12, 4.93 s |
+| 1.6 | 111 / 56, 23, 2.49 s | 111 / 53, 19, 6.14 s |
+| 3.2 | 132 / 51, 25, 2.90 s | 119 / 56, 26, 6.71 s |
+
+All rows agree on the energy to 10⁻¹². Against the code before 2c (7.3 s
+and 16.5 s on the same grids, theory post), the defaults are 4.6 and 3.4
+times faster on the laptop; c = 0 shows that stopping on the needed bands
+gives about half of that. The adaptive tolerance costs SCF steps: 8 → 11 for
+silicon, and 8 → 20 for H₂ at its test size (0.20 s → 0.14 s, 147 → 58
+eigensolver iterations). Where the potential and density dominate a step,
+that trade could reverse; the validation document should show it.
+
+**The stagnation stop is active only near the floor.** As agreed, the stop
+is 0.8 over 5 iterations. As a bare rule it ended ordinary runs early: on
+the unpreconditioned synthetic matrices of the 2a LOBPCG tests, the best
+residual can wait up to 23 iterations for a 20 % gain, and 7 with the
+preconditioner, at residuals of 10⁻⁶ down to 1. The stop exists for runs
+past their attainable residual (theory post), so it is now active only once
+the best residual is below 10⁴ ε_mach ‖H‖, with ‖H‖ estimated inside
+`lobpcg` as the largest Rayleigh–Ritz matrix element seen. At the test sizes
+that is about 2×10⁻¹¹; the floor is about 10⁻¹³. The defaults are unchanged.
+
+**The unexplained row of the theory post is the Γ₁₅ triplet.** At c = 0.8 on
+3³ the final refinement took 84 iterations. A recording eigensolver showed
+it is Γ: the 5 needed bands cut through the threefold Γ₁₅ conduction level
+(bands 5–7), the block of 6 holds two of the three, and near 10⁻¹⁰ LOBPCG
+creeps there while dropping a direction about every second iteration (41
+late drops in 82 iterations). With two buffer bands the triplet fits in the
+block, the refinement takes 4 iterations and there are no late drops. The
+review's statement that an exact degeneracy at the edge is harmless holds
+for a degeneracy that straddles the block edge, not for one that straddles
+the edge of the *needed* bands. On the CPU two buffer bands cost 10–12 %
+more wall time at c = 0.4, and the spike did not occur at c = 0.4 with one,
+so `buffer_bands` stays 1 until the V100 measurement the theory post plans.
+
+**Fractional electron counts use the fixed tolerance.** The finite-difference
+stencil of the degenerate-frontier weight derivative (2b) runs silicon with
+λ₀ = 1 − δ, which empties part of the threefold valence-band maximum at Γ
+(Γ₂₅′; the test calls it Γ₁₅, its zincblende name). With the adaptive
+tolerance those SCFs stalled at a residual of 4×10⁻⁴ for 100 steps, also
+after the tolerance had become tight. The loose early solves had split the
+triplet by 2–5×10⁻⁵ Ha, above the 10⁻⁶ Ha within which `grid_occupations`
+groups a level, so the whole hole went into one state (occupations 2, 2,
+1.968 instead of 1.989 three times). The density then loses the symmetry of
+the structure, which CLAUDE.md lists as an invariant, and the occupation
+moves between near-degenerate states from step to step. The adaptive
+tolerance assumes occupations that eigenvalue errors cannot change, which
+holds when N_el/2 is an integer (complete levels at the frontier). Inside
+the traced SCF, c is therefore set to 0 when N_el/2 is not an integer:
+fractional-charge runs and odd electron counts in this spin-unpolarised
+code. Those runs then take 12 steps with the same iteration counts as
+before 2c. A tenfold tightening after a step that did not lower the
+residual was tried first and did not help; it was removed. Smearing, the
+next candidate milestone, makes occupations continuous in the eigenvalues,
+and the question must be revisited there.
+
+**Tests changed beyond the new ones.** The 2a observability test's set of
+history keys gains the five fields of the API entry. The 2c API test of
+`EIGEN_FLOOR_FACTOR` imported `jaxdft.scf.scf` with `import ... as`, which
+fails because the package re-exports a function named `scf`; it now uses
+`importlib.import_module`. Neither changes a criterion.
+
+**Docs.** The 2a validation document said warm starts make the eigensolver
+iteration count fall over the SCF and asserted last < first. With the
+adaptive tolerance the first steps are loose and cheap, so the claim is now
+about the tolerance (non-increasing, ending tight) and a small iteration
+count per step. The performance page's 2b text is put in the past tense.
+
+**Symmetry is now kept to the convergence error, not to rounding.** The 2a
+validation document asserted that the H₂ density is symmetric under its
+grid symmetries to 10⁻¹², and the render failed. Measured on H₂ at its test
+size: with c = 0 the asymmetry is 10⁻¹⁶ at tol 10⁻⁹ and 10⁻¹²; with c = 0.4
+it is 1.7×10⁻¹² (x ↔ y) and 3.1×10⁻¹² (mirror) at tol 10⁻⁹, and 5×10⁻¹⁵ at
+10⁻¹². The loose first steps start from a random block and leave an
+asymmetric remnant that the mixing damps but has not removed when the SCF
+stops; it is a part of the convergence error three orders below the
+tolerance. Decided with the project lead: the invariant is stated relative
+to the tolerance, and the document asserts an asymmetry below 1 % of it.
+The silicon symmetry tests of the suite pass unchanged.
+
+**Cluster scripts.** `gpu_residual_floor.py` and `gpu_lobpcg_dense_steps.py`
+import `EIGEN_FLOOR` and use `return_iterations`; they ran at `acd8ff8`
+(README in `reference/gpu_lobpcg_floor/`) and need that commit to be rerun.
+
+**Open for the milestone.** The validation document, the research log, and
+the cluster runs of the theory post: the test suite and the per-iteration
+diagnosis on the V100, the k-grid scans on both clusters, and the V100
+scan of buffer bands and k-chunk sizes.
+
+## 2026-11-13: Milestone 2c cluster runs; buffer bands and k-chunks set by measurement
+
+The runs the 2c theory post asks for, on `fe43ee5` (branch `milestone-2c`,
+checked out on both cluster clones), plus a k-chunk scan the project lead
+asked for before choosing that default. Data in `reference/eigensolver_2c/`,
+`reference/si_kgrid_scaling/*_2c.json` and `reference/aicloud_pytest/`.
+
+**The GPU fix, checked directly.** The implemented `lobpcg`, called as the
+SCF calls it, on the two problems of the GPU residual diagnosis, three
+starts each: on the V100 every run reaches the per-k floor (46–50
+iterations) while dropping 14–43 directions late, and an unreachable
+tolerance ends by the stagnation stop after 54–64 iterations at 2–5×10⁻¹⁴.
+The CPU of the same node drops none. Before 2c the same runs on the V100
+held at 1–6×10⁻¹² for 300 iterations.
+
+**Test suite on the V100**: 680 passed, 1 failed, against 634 passed and 8
+failing before 2c; the tight-tolerance failures and the out-of-memory band
+scan are gone. The failure was the best-iterate test of 2c: on the V100 the
+returned residual went 4.7×10⁻¹⁴ (`max_iter=50`) → 6.3×10⁻¹⁴ (60 and
+more), beyond the 10⁻¹⁴ slack it allowed. LOBPCG ranks iterates by its
+in-loop residual, which is updated rather than recomputed, and on the GPU
+it drifts from the true residual by about 1.5×10⁻¹⁴. The slack was a
+guess, not a measurement; with the project lead it became the floor of the
+problem (1.3×10⁻¹³), which still fails the climbs to 10⁻⁸ the test exists
+for. Recomputing A X before ranking was rejected: about +50 % of LOBPCG's
+FFT work.
+
+**k-grid scans** (silicon, 12 Ha, 1³–8³, one buffer band, one batch, as in
+2b): energies equal the 2b runs to 6×10⁻¹⁴ Ha. On biocloud's 8 cores the
+steady time is 3.5–6.9 times shorter from 3³ up (8³: 621 → 90 s), on the
+V100 3–4.2 times (8³: 40 → 9.5 s). The summed per-step maximum of LOBPCG
+iterations stays between 72 and 142 instead of growing to 600–700. The
+lockstep efficiency (mean over max) falls to about 0.4 on large grids,
+because the counts are now small and Γ is slower than the rest.
+
+**Buffer bands: three by default** (2b, decision 2, left this to the V100).
+8³ on the V100, one batch: 0, 1, 2, 3 buffer bands take 16.1, 9.5, 7.8 and
+6.0 s, with 137, 4, 0, 0 late drops. On the laptop CPU (best of three) three
+cost nothing: 1.59 s against 1.57 s on 3³ and 4.31 against 4.64 s on 4³;
+two are the slow case there. Two or more also remove the Γ refinement
+spike of the implementation entry. Decided with the project lead.
+
+**k-chunks: 64 by default.** At one buffer band, chunks of 64 were 16 %
+faster on the V100 and used 60 % less memory; the project lead asked for
+the CPU before deciding. At three buffer bands, 8³:
+
+| k_batch_size | V100 | V100 memory | biocloud CPU | CPU memory |
+|:--:|:--:|:--:|:--:|:--:|
+| one batch | 6.02 s | 5.05 GB | 81.5 s | 8.85 GB |
+| 64 | 6.09 s | 1.60 GB | 70.4 s | 2.85 GB |
+| 128 | 6.02 s | 1.69 GB | 77.1 s | 3.71 GB |
+| 256 | 5.99 s | 2.73 GB | 77.5 s | 5.45 GB |
+
+With three buffer bands lockstep no longer costs time on the V100, so the
+chunks only save memory there; on the CPU they are also faster. Grids with
+fewer than 64 k-points are one chunk. `band_structure` keeps one batch by
+default; `band_minimum_on_segment` passes 8.
+
+**Symmetry of forces, as of the density.** With three buffer bands the 2b
+test of vanishing forces at the ideal geometry (even grid) measured
+1.1×10⁻¹⁰ Ha/Bohr against its 10⁻¹⁰ (8×10⁻¹⁶ before 2c; it passed with one
+buffer band by luck). Same cause as the H₂ density of the implementation
+entry. With the project lead, the decision taken there is applied here:
+`SYMMETRY_FORCE_ATOL` is 10⁻⁸ Ha/Bohr, the SCF force error at `SCF_TOL`,
+below the odd-grid window (from 10⁻⁸) and the egg-box forces (6×10⁻⁷) the
+tests must tell apart. The H₂ density asymmetry of the 2a validation document grew from
+3×10⁻¹² to 1.2×10⁻¹¹ with three buffer bands, past the 1 % of the tolerance
+asserted there, a fraction set with a margin of 3 on one measurement. With
+the project lead it is now asserted below the run's own final residual
+(1.5×10⁻¹⁰), which is what "within the convergence error" means.
+
+**Tests changed by these decisions**: the 2b and 2c pins of
+`buffer_bands == 1`, the 2c pin of `k_batch_size is None`, the
+independence test's buffer variants (now 0 and 1 against the default 3),
+the best-iterate slack, and `SYMMETRY_FORCE_ATOL`. All 681 tests pass on the
+laptop.
+
+## 2026-11-13: The test suite passes on the V100
+
+The full suite at `f5b9c6f`, with the final 2c defaults (three buffer bands,
+k-chunks of 64), on an aicloud V100 (job 1169391,
+`reference/aicloud_pytest/`): 681 passed in 28 minutes. Before 2c it was 634
+passed with 8 failing (`acd8ff8`), and 680 passed with the best-iterate slack
+failing at `fe43ee5`. Laptop and GPU now pass the same suite.

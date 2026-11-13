@@ -47,6 +47,7 @@ def band_structure(
     terms: tuple = (Kinetic(),),
     solver: Callable = dense_eigensolver,
     density=None,
+    k_batch_size: int | None = None,
 ) -> Bands:
     """Lowest ``n_bands`` eigenpairs of H(k) at every k-point of ``basis``.
 
@@ -58,6 +59,9 @@ def band_structure(
     Energy terms (local pseudopotential, Hartree, XC) contribute their potentials at the
     fixed ``density`` on the basis grid (None: zero density), e.g. a converged SCF
     density for non-self-consistent bands.
+
+    ``k_batch_size`` diagonalises the k-points in sequential chunks of that size
+    (``lax.map``; each chunk is vmapped), bounding memory; None is one batch.
     """
     n_bands = int(n_bands)
     min_pw = int(jnp.min(basis.n_pw))
@@ -66,12 +70,13 @@ def band_structure(
     terms = bind_terms(structure, terms)
     if density is not None:
         density = jnp.asarray(density, dtype=jnp.float64)
-    eigenvalues, eigenvectors = _solve(structure, basis, terms, n_bands, solver, density)
+    k_batch_size = None if k_batch_size is None else int(k_batch_size)
+    eigenvalues, eigenvectors = _solve(structure, basis, terms, n_bands, solver, density, k_batch_size)
     return Bands(eigenvalues, eigenvectors, basis.kpoints, basis)
 
 
-@partial(jax.jit, static_argnums=(3, 4))
-def _solve(structure, basis, terms, n_bands, solver, density):
+@partial(jax.jit, static_argnums=(3, 4, 6))
+def _solve(structure, basis, terms, n_bands, solver, density, k_batch_size=None):
     potential = total_potential(terms, structure, basis, density)
 
     def per_k(basis_k):
@@ -79,4 +84,6 @@ def _solve(structure, basis, terms, n_bands, solver, density):
         eps, vecs = solver(lambda psi: apply_H(ham, psi), dim=basis_k.n_pad, n_bands=n_bands)
         return eps, jnp.where(basis_k.mask[:, None], vecs, 0)
 
-    return jax.vmap(per_k)(basis)
+    if k_batch_size is None:
+        return jax.vmap(per_k)(basis)
+    return jax.lax.map(per_k, basis, batch_size=k_batch_size)

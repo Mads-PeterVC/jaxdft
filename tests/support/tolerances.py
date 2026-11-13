@@ -122,7 +122,12 @@ PROJECTOR_RTOL = 1e-10
 # Even FFT grid: forces at the ideal geometry and the space-group invariance of the
 # density are exact identities of the discrete problem, up to SCF error (theory post:
 # 1e-10). Measured 8e-16 (N = 24), review 3.8e-15 (N = 24) and 2.4e-15 (N = 26).
-SYMMETRY_FORCE_ATOL = 1e-10
+# Milestone 2c: the loose first eigensolver steps leave an asymmetric remnant within
+# the convergence error, and the forces became 1.1e-10 (N = 24). As decided with the
+# project lead for the H2 density, symmetry is asserted to the convergence error: the
+# SCF force error at SCF_TOL is O(1e-8) Ha/Bohr (2a comment above). Still below the
+# odd-grid window (from 1e-8) and the egg-box forces it must tell apart (6e-7).
+SYMMETRY_FORCE_ATOL = 1e-8
 # Odd grid (N = 25, 12 Ha): 6e-7 Ha/Bohr (both). A window, so that a silently
 # symmetric odd grid also fails.
 ODD_GRID_FORCE_WINDOW = (1e-8, 5e-6)
@@ -187,3 +192,37 @@ CROSS_CHECK_SI_GRID_GAP_ATOL_EV = 1e-3
 # 0.102076953324 (review). At SCF_TOL the derivative carries ~1e-9 of SCF error.
 CROSS_CHECK_SI_DEDF = 0.102076953
 CROSS_CHECK_SI_DEDF_ATOL = 5e-8
+
+# --- Milestone 2c (theory post 02c, 'Invariants and acceptance criteria';
+# engineering log, '2026-11-12: Milestone 2c public API') ---
+
+# Eigensolver work on the 3^3 silicon grid at 12 Ha, tol 1e-9, default settings,
+# summed over the SCF. Today's counts, reproduced by the review: sum over steps of
+# max_k I_k = 370 and of mean_k I_k = 236.3. Stopping on the needed bands alone gives
+# 203 and 158.9 (0.55 and 0.67); the budgets require at least that gain, with some
+# room, so the adaptive tolerance must not undo it.
+COST_3X3X3_SUM_MAX_ITERS_TODAY = 370
+COST_3X3X3_SUM_MEAN_ITERS_TODAY = 236.3
+COST_MAX_ITERS_FRACTION = 0.6
+COST_MEAN_ITERS_FRACTION = 0.75
+
+# The floor: tau_floor(k) = EIGEN_FLOOR_FACTOR * eps_mach * max diag H_k. LOBPCG must
+# reach it at the test sizes; the eig_ok check allows twice it.
+EIGEN_CHECK_FLOOR_MULTIPLE = 2
+
+# Asked for an unreachable tolerance, the stagnation stop must end the run well
+# before max_iter (300). The per-iteration diagnosis reached its best residual
+# within 50-90 iterations at the H2 and silicon test sizes; the preconditioned
+# synthetic matrix of the unit test still improves at 120 (4e-15). The stop needs
+# 5 more iterations to notice.
+STAGNATION_MAX_ITERS = 200
+
+# Memory of compiled programs (memory_analysis, XLA's own estimate of peak
+# temporaries). One silicon k-point at 20 Ha with the dense solver: 1.375 GiB
+# today, 0.117 GiB measured for a 64-column chunked build of the same matrix.
+DENSE_20HA_TEMP_MAX_GIB = 0.25
+# The band sampling of the failing V100 case (41 k-points, 12 Ha): 9.45 GiB today.
+BAND_SAMPLING_TEMP_MAX_GIB = 2.0
+# Chunked and unchunked computations perform the same operations per column or
+# k-point; only reduction order can differ.
+CHUNKED_ATOL = 1e-12

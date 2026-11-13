@@ -1,0 +1,718 @@
+---
+title: "Milestone 2c: eigensolver cost, accuracy and memory"
+description: "Why the k-point batch costs more than its size, why LOBPCG fails at tight tolerances, and why a band scan runs out of memory: fixes to the eigensolver and its callers, before more physics."
+date: 2026-11-12
+bibliography: ../references.bib
+---
+
+::: {.callout-note}
+## Status: reviewed, implemented and validated on CPUs and a V100
+Reviewed on 2026-11-12. The [validation document](../validation/02c_eigensolver.qmd)
+shows the measurements; it lists where the implementation departed from this
+post (a stagnation stop active only near the floor, the fixed tolerance for
+fractional electron counts, symmetry to the convergence error, and defaults
+set by measurement: c = 0.4, three buffer bands, chunks of 64 k-points).
+ The review is kept at `reviews/review_02c_eigensolver.md`.
+It ran jaxdft itself with an instrumented copy of `lobpcg`, not a separate
+NumPy rebuild, because this milestone is about the code's own numerics. It
+reproduced every number in the stopping-test and memory tables exactly, and
+confirmed the interlacing bound. It changed three things:
+
+- It questioned whether the penalty on dropped directions causes the GPU
+  failures, since on the CPU directions are dropped only at the first
+  iteration of each call.
+- It found a blow-up past the attainable residual. The solver gains a
+  stagnation stop and returns its best iterate.
+- `EIGEN_FLOOR` is below the attainable residual. It becomes a multiple of
+  $\epsilon_\text{mach}\lVert H\rVert$.
+
+It also tightened the adaptive tolerance (non-increasing, per electron, a
+latch after refinement), added column chunking to the dense solver, and
+answered the open questions. The decisions are recorded at the
+[end of this post](#decisions-from-review).
+
+By then three explanations of the GPU failures had been proposed, one each
+by the session that ran the cluster diagnosis, the draft of this post and
+the review, each on indirect evidence. A per-iteration record of LOBPCG on
+the V100 and on two CPUs then decided between them
+([evidence](#evidence-per-iteration-on-both-devices)): the penalty is the
+cause on the GPU, because the GPU drops directions at every iteration near
+convergence. The review's blow-up is real on the CPU once a run goes past
+its attainable residual, independently of the penalty, but it is not what
+failed on the GPU. The draft's claim that the penalty also causes CPU
+stalls was wrong.
+
+The numbers quoted as *scratch checks* come from throwaway copies of
+`lobpcg` and of the SCF core on the laptop (commit `3383ca3`). The
+validation document repeats them with the implementation.
+:::
+
+## Scope
+
+Milestone 2c is a numerical milestone with no new physics. The HPC runs
+recorded in the engineering log on 2026-11-12 found three problems. They
+block larger k-grids, the GPU, and through both of them every later
+milestone (smearing on aluminium, 2D systems):
+
+1. **k-point cost.** The summed eigensolver iterations of an SCF grow with
+   the number of k-points, although the k-points are one `vmap` batch. The
+   batched eigensolver iterates in lockstep until the slowest k-point has
+   converged. On the CPU this makes the time per k-point and SCF step grow
+   5.6 times from 1 to 512 k-points. On the V100 it grows only 1.3 times,
+   because the time per iteration per k-point falls as the batch fills the
+   device.
+2. **Tight tolerances fail.** On the V100, every test at the tightest SCF
+   tolerance fails with eigensolver residuals near $1.5\times10^{-12}$
+   against a requested $5\times10^{-14}$.
+3. **Memory of dense band scans.** `band_minimum_on_segment` diagonalises 41
+   k-points at once with the dense solver. The V100 failed on one allocation
+   of 9.44 GiB.
+
+Preparing the post and reviewing it changed all three:
+
+- Problem 1 is mostly a bug, not a property of lockstep: LOBPCG converges
+  the buffer bands, which the 2b rule says it should not.
+- Problem 2 is the penalty on dropped directions, as the cluster diagnosis
+  proposed, but through a mechanism that diagnosis did not see: near
+  convergence the GPU drops directions at every iteration, the CPU almost
+  never. Separately, the requested residual was below what the solver
+  attains on either device, and on the CPU LOBPCG can climb back up by
+  orders of magnitude once it is past that residual.
+- Problem 3 is not specific to the GPU either (the same 9.45 GiB on the
+  laptop), and it grows with the cutoff as well as with the number of
+  k-points.
+
+Out of scope: reduction of the k-grid by symmetry or time reversal, sharding
+over several devices, other eigensolvers (Davidson, locking of converged
+bands), LOBPCG on band paths, changes to the mixer, and implicit
+differentiation through the SCF. Nothing here may change a converged result
+beyond the tolerances that the 2a and 2b acceptance tests already use.
+
+## Where the time goes
+
+In the SCF each k-point is diagonalised by `lobpcg`, which is a
+`lax.while_loop`. Under `vmap` a while loop runs until the condition is
+false for every member of the batch. Members that have finished keep
+computing, and their results are discarded. One SCF step therefore costs
+
+$$
+C_\text{step} \propto n_k \, n_\text{solve} \, \max_k I_k ,
+$$
+
+where $n_\text{solve}$ is the block width (needed bands plus buffer bands) and
+$I_k$ is the number of iterations that k-point $\mathbf{k}$ needs. Without the
+batch the cost would be the sum $\sum_k I_k$. The ratio
+$\overline{I}/\max_k I_k$ is the *lockstep efficiency*.
+
+The review measured it with a host callback inside the vmapped solver
+(silicon, 12 Ha, SCF tolerance $10^{-9}$, one buffer band, summed over the
+SCF):
+
+| grid | $n_k$ | stopping test | $\sum\max_k I_k$ | $\sum\overline{I}$ | efficiency |
+|:--:|:--:|:--|:--:|:--:|:--:|
+| $2^3$ | 8 | all bands (today) | 193 | 153.6 | 0.80 |
+| $2^3$ | 8 | needed bands | 175 | 148.5 | 0.85 |
+| $3^3$ | 27 | all bands (today) | 370 | 236.3 | 0.64 |
+| $3^3$ | 27 | needed bands | 203 | 158.9 | 0.78 |
+| $4^3$ | 64 | all bands (today) | 344 | 219.3 | 0.64 |
+| $4^3$ | 64 | needed bands | 226 | 168.1 | 0.74 |
+
+The efficiency falls with $n_k$, then levels off. The stopping fix of the
+next section raises it. After that fix, perfect per-k-point stopping would
+save another 22–26 %. That is less than the stopping fix itself saves, so
+lockstep proper is a second-order cost at these sizes. On the GPU, where a
+fuller batch is cheaper per k-point, the gain from either will be smaller
+than on the CPU.
+
+## Stopping on the needed bands
+
+The 2b post set the rule (decision 2 there): convergence is required only
+for the bands the SCF needs, $N_\text{el}/2 + 1$, which include the first
+conduction band. The eigensolver may carry buffer bands above them, which
+are otherwise ignored. The SCF follows the rule in its final check (`eig_ok`
+looks at the first `n_bands` columns). LOBPCG does not. It stops when every
+one of its `n_solve` residuals is below the tolerance, buffer bands
+included.
+
+The standard convergence estimate for block LOBPCG [@knyazev2001] bounds the
+error of Ritz pair $j$ through the separation of $\lambda_j$ from
+$\lambda_{k+1}$, the first eigenvalue outside a block of width $k$. The
+slowest band is therefore the one whose eigenvalue sits closest to
+$\lambda_{k+1}$. That is usually the last band of the block, which is the
+buffer band, and buffer bands exist to put distance between the needed
+bands and $\lambda_{k+1}$. If the stopping test waits for the buffer band,
+that distance buys nothing.
+
+The review resolved this per k-point ($3^3$ grid, converged density, five
+needed bands and one buffer band, cold start):
+
+| $\lambda_7-\lambda_6$ (Ha) | k-points | slowest band | $I_k$, stop on 5 | $I_k$, stop on 6 |
+|:--|:--:|:--:|:--:|:--:|
+| $\approx 0$ | 9 | band 5 (needed) | 40–49 | 40–49 |
+| 0.026 | 12 | band 6 (buffer) | 32–35 | 62–72 |
+| 0.196 | 6 | band 6 (buffer) | 29–32 | 33–36 |
+
+**An exact degeneracy at the block edge is harmless. A small non-zero gap is
+what costs.** When $\lambda_6 = \lambda_7$, the block converges to some basis
+of the degenerate eigenspace and the residual falls without obstruction.
+When the gap is 0.026 Ha, the buffer band has to separate two nearly equal
+eigenvalues and takes twice as long. Γ, where five bands cut through the
+$\Gamma_{15}$ triplet, is the slowest k-point under either test. After the
+fix it alone sets $\max_k I_k$ at this test size.
+
+**Scratch check** (silicon, 12 Ha, SCF tolerance $10^{-9}$, one run each,
+laptop; reproduced exactly by the review):
+
+| grid | buffer bands | stopping test | $\sum \max_k I_k$ | wall time |
+|:--:|:--:|:--:|:--:|:--:|
+| $3^3$ | 1 | all bands (today) | 370 | 7.3 s |
+| $3^3$ | 1 | needed bands | 203 | 4.1 s |
+| $3^3$ | 3 | all bands | 330 | 9.5 s |
+| $3^3$ | 3 | needed bands | 159 | 4.7 s |
+| $4^3$ | 1 | all bands (today) | 344 | 16.5 s |
+| $4^3$ | 1 | needed bands | 226 | 11.0 s |
+| $4^3$ | 3 | all bands | 390 | 31.6 s |
+| $4^3$ | 3 | needed bands | 160 | 14.7 s |
+
+The total energy (to $3\times10^{-14}$ Ha) and the number of SCF steps are
+the same in every row. On the CPU, stopping on the needed bands alone gives
+1.5–2 times less wall time. Three buffer bands cut the iterations further,
+but the wider block costs more per iteration than it saves; on $4^3$ the two
+are close to even. On the GPU a wider block is cheaper per column, so the
+balance there is open. 2b decided to settle it by measuring wall time on the
+GPU, and this milestone does that measurement.
+
+**Fix.** The eigensolver interface gains `n_converge`, the number of leading
+bands that the stopping test covers (default: all, so existing callers are
+unchanged). `lobpcg` honours it. The dense solver accepts and ignores it, as
+it already ignores `tol`. The SCF passes `n_bands`. Buffer bands are then
+what the 2b rule meant: directions that are carried, not converged, and
+discarded.
+
+The buffer columns feed nothing but the next warm start: occupations, the
+gap guard and the returned orbitals all use the first `n_bands` columns. A
+poor start column costs iterations; it cannot cost correctness, provided the
+solver converges at all ([next section but one](#robust-stopping)).
+
+## An adaptive eigensolver tolerance
+
+The SCF asks the eigensolver for residuals of
+$\tau = \max(\texttt{EIGEN\_TOL\_FRACTION}\cdot\varepsilon_\text{SCF},\ \text{floor})$
+with `EIGEN_TOL_FRACTION` $= 0.05$, and requires
+$\texttt{EIGEN\_CHECK\_FRACTION}\cdot\varepsilon_\text{SCF}$ $= 0.1\,\varepsilon_\text{SCF}$
+at convergence (`eig_ok`). By default $\tau \approx 5\times10^{-11}$ Ha, also at
+the first step, where the density error is of order one. An eigensolver
+error far below the density error does not change the next density in any
+way that survives mixing.
+
+**Prior art.** Both reference codes the post was checked against tie the
+diagonalisation tolerance to the SCF error (review, §2.7):
+
+- DFTK (`AdaptiveDiagtol`, `src/scf/scf_callbacks.jl`) multiplies the norm
+  of the density change by a ratio of 0.2, clamps the result to at most
+  0.005, never lets it increase over the history, and treats the first two
+  iterations separately. A comment there records size-dependent ratios
+  that were tried, scaling with $1/N_\text{occ}$.
+- Quantum ESPRESSO (`PW/src/electrons.f90`) sets the threshold to $10^{-2}$
+  Ry at the second iteration, then to the minimum of its previous value and
+  $0.1\,\delta/\max(1, N_\text{el})$, with $\delta$ the estimated SCF energy
+  error in Ry, bounded below by $10^{-13}$. When the SCF error falls below
+  what the threshold supports, it re-diagonalises in the same iteration
+  with a lowered threshold.
+
+Neither norm is ours: DFTK's density norm may differ from ours by the
+volume element, and QE's threshold is on eigenvalues and relates two
+energies. The ratios are not comparable as numbers.
+
+**Rule.** At SCF step $i$, with $r_{i-1} = \lVert F(\rho_{i-1}) - \rho_{i-1}\rVert$
+the residual of the previous step,
+
+$$
+\tau_i = \operatorname{clip}\!\left(\min\!\left(\tau_{i-1},\ \frac{c\, r_{i-1}}{N_\text{el}}\right),\ \tau_\text{min},\ \tau_\text{max}\right),
+\qquad \tau_0 = \tau_\text{max},
+$$
+
+with $\tau_\text{min}$ the fixed tolerance of today (with the floor of the
+[next section](#robust-stopping)) and $\tau_\text{max} = 5\times10^{-3}$ Ha,
+the value both reference codes use. Three properties:
+
+- **Non-increasing.** An Anderson step that overshoots raises $r$, but not
+  $\tau$. Both reference codes do this.
+- **Per electron.** $r$ is a norm over the whole cell and grows with the
+  system; an eigensolver residual is per orbital. Without the $1/N_\text{el}$
+  a default tuned on eight-electron silicon would be too loose by the system
+  size on the aluminium supercells of the next milestone.
+- **Units.** Our density norm is $(\Omega/N \sum r^2)^{1/2}$ in
+  e·Bohr$^{-3/2}$ and residuals are in Ha, so $c$ is in Ha·Bohr$^{3/2}$. It
+  is a setting, not a universal constant.
+
+**Why a ratio rather than a derivation.** To first order, a residual $r$ of
+an occupied orbital moves it out of the occupied subspace by about
+$r/\Delta$, where $\Delta$ is the gap to the unoccupied states. Rotations
+within the occupied subspace leave $\rho$ unchanged. The density error is
+then of order $\sum_n f_n \lVert\psi_n\rVert_\infty\, r/\Delta$, with
+constants that depend on the cell and the system. This justifies the form
+$\tau \propto r$, with a constant that shrinks with the gap. It does not
+give a value of $c$ that is both safe and useful. The default is set by
+measurement, and the acceptance tests check that the converged result does
+not depend on it.
+
+**Convergence is declared on a tight evaluation.** `fixed_point` stops when
+$\lVert F(\rho_i) - \rho_i\rVert < \varepsilon_\text{SCF}$. If that $F$ was
+evaluated with a loose $\tau_i$, the residual itself is uncertain. The
+design, which is the one QE uses:
+
+- **Refine inside $F$.** If the density residual of a loose evaluation is
+  below $\varepsilon_\text{SCF}$, $F$ re-diagonalises at $\tau_\text{min}$,
+  warm-started from the loose orbitals, and returns the refined density.
+  The predicate is a scalar outside the k-point `vmap`, so the `lax.cond`
+  is a real branch; under `vmap` with a batched predicate it would evaluate
+  both branches. `fixed_point` stays generic, and at a converged point $F$
+  is always the tight map, which implicit differentiation will need.
+- **Latch.** Once a step has refined, $\tau = \tau_\text{min}$ for every later
+  step. Without the latch, a loose evaluation can dip below
+  $\varepsilon_\text{SCF}$, refine to a residual above it, and repeat this
+  at the next step.
+
+This also removes a collision the review found: with $c\,r_{i-1}$ near
+$0.1\,\varepsilon_\text{SCF}$, the converging step would sit exactly at the
+`eig_ok` threshold. With refinement the final accuracy is always
+$\tau_\text{min}$, whatever $c$ is.
+
+**Scratch check** (silicon $3^3$, 12 Ha, stopping on the needed bands,
+refinement without latch, $\tau_\text{max} = 10^{-2}$ Ha, no $1/N_\text{el}$, the
+bounded penalty below; not reproduced by the review, which had no
+implementation of the rule):
+
+| $\varepsilon_\text{SCF}$ | $c$ | SCF steps | $\sum \max_k I_k$ | wall time |
+|:--:|:--:|:--:|:--:|:--:|
+| $10^{-9}$ | fixed $\tau$ | 8 | 203 | 4.1 s |
+| $10^{-9}$ | 0.1 | 11 | 124 | 2.7 s |
+| $10^{-9}$ | 0.01 | 11 | 113 | 2.6 s |
+| $10^{-12}$ | 0.1 | 15 | 89 | 2.1 s |
+| $10^{-12}$ | 0.01 | 15 | 229 | 5.8 s |
+
+Energies agree to $10^{-12}$ Ha with the fixed-tolerance runs.
+
+- The inexact $F$ costs SCF steps (8 → 11). Each step also costs a
+  potential, a density and an energy, so wall time gains less than the
+  iterations. On larger grids, where the eigensolver dominates more, the
+  balance should improve; this is to be measured.
+- A refinement costs about 3–4 LOBPCG iterations per decade of residual
+  (review, §2.8, measured directly). Losing the search directions $P$ at the
+  restart costs about one. The 64 iterations of the refinement at
+  $10^{-9}$, $c = 0.1$ are therefore not explained by the restart. The likely
+  explanation is that it fired at more than one step, which the latch
+  prevents and the refinement counter will show.
+- The $c = 0.01$, $10^{-12}$ row is not explained either, and before the
+  penalty change the same run hit the 300-iteration cap three times. Both
+  are consistent with the blow-up of [the next section](#robust-stopping),
+  which this milestone fixes. The implementation must explain this row.
+
+**Defaults.** $\tau_\text{max} = 5\times10^{-3}$ Ha; $c$ is set during
+implementation by measurement on the $3^3$ and $4^3$ grids, starting from the
+silicon equivalent of the scratch check's 0.1 ($c = 0.8$ with the
+$1/N_\text{el}$). Both are `SCFOptions`, and $c = 0$ recovers the fixed
+tolerance.
+
+**What does not change.** `energy` and its gradients use the converged,
+stop-gradiented orbitals, and the rule above ensures those came from a tight
+evaluation. Forces, weight derivatives and the Hellmann–Feynman argument of
+2a are unaffected. `energy` runs without a history, so the new diagnostics
+are not available in force runs. Diagnosing the adaptive tolerance there
+means running `scf` at the same settings.
+
+## Robust stopping
+
+### Near the attainable residual, LOBPCG can climb back
+
+Forced to 200 iterations with an unreachable tolerance, the review tracked
+the largest residual of one k-point: $1.6\times10^{-5}$, $1.3\times10^{-10}$,
+$6.2\times10^{-13}$ at iteration 60, then back up to $6\times10^{-8}$, after
+which it moved over five orders of magnitude. The eigenvalues stayed
+accurate to $3\times10^{-14}$ throughout, as expected from the $r^2/\Delta$
+law. The damage is in the vectors, about $r/\Delta \approx 2\times10^{-6}$, and
+the density is built from the vectors.
+
+The per-iteration record ([below](#evidence-per-iteration-on-both-devices))
+confirms it on the CPU. Forced past its best residual, silicon climbs to
+$2$–$9\times10^{-8}$ in 11 of the 12 forced runs on the laptop and the cluster
+CPU, with either penalty, and mostly without dropping any direction after
+the first iteration, so the penalty plays no part. It then falls back, to
+$4\times10^{-14}$–$2.4\times10^{-13}$ at iteration 300. H₂ does not climb, and
+neither does silicon on the V100 with the bounded penalty.
+
+At the real tolerance the climb matters only when a run's best falls short
+of the tolerance, so that it keeps iterating. That happened once in the 24
+CPU runs: silicon from one start on the laptop reached $4.6\times10^{-13}$ at
+iteration 51, climbed to $7\times10^{-9}$, and needed 186 iterations instead of
+49–51. It reproduces exactly on the laptop, but not on the cluster CPU,
+which follows a different trajectory from the same start. The climb is
+common once a run is past its attainable residual, and rarely reached in
+practice as long as the requested tolerance is attainable. It is not the
+cause of the GPU failures, which plateau instead (next section).
+
+`lobpcg` returns its last iterate, not its best, so a run that reaches
+`max_iter` during such a climb returns something far worse than what it
+had. The SCF then fails loudly, through `eig_ok`, but with a residual that
+says nothing about what the solver could reach.
+
+**Fix** (both standard; @duersch2018 discuss them together with the basis
+problems of the next section):
+
+- **A stagnation stop.** Leave the loop when $\max_j r_j$, over the bands of
+  the stopping test, has not improved by a factor 0.8 over the last 5
+  iterations. The running best is one scalar in the loop state.
+- **Return the best iterate.** Carry the block with the smallest
+  $\max_j r_j$ seen. That is one extra $(n_\text{pad}, n_\text{solve})$ block,
+  negligible against the FFT workspace.
+
+A stagnation stop before the requested tolerance is not a success. The
+caller sees the residuals it got, as now, and the SCF's `eig_ok` decides.
+
+### The floor scales with the operator
+
+`EIGEN_FLOOR` $= 2\times10^{-14}$ was meant as "$\lVert H\rVert\epsilon$". At
+the test size $\lVert H\rVert_2\,\epsilon_\text{mach}$ is $2.6\times10^{-15}$
+(physical plane waves) to $5.3\times10^{-15}$ (with the padding sentinel). The
+smallest max-over-bands residual LOBPCG reaches is $2$–$5\times10^{-14}$, about
+ten times more, from rounding accumulated over the Rayleigh–Ritz, QR and
+inverse steps. The V100, with the penalty changed, reached
+$2.9\times10^{-14}$ (Si) and $3.7\times10^{-14}$ (H₂). So:
+
+- `tol` $= 10^{-12}$ asks for $5\times10^{-14}$, met with a margin of 1–2.5 on
+  either device;
+- any `tol` below $4\times10^{-13}$ asks for $2\times10^{-14}$, which is not
+  attainable, and produces the drift above;
+- $\lVert H\rVert$ grows with the cutoff, so an absolute floor that is
+  attainable at 12 Ha is not at 40 Ha.
+
+**Fix.** The floor becomes a property of each k-point's operator:
+
+$$
+\tau_\text{floor}(\mathbf{k}) = \kappa\,\epsilon_\text{mach}\,\lVert H_\mathbf{k}\rVert_\text{est},
+$$
+
+with $\lVert H_\mathbf{k}\rVert_\text{est}$ an inexpensive upper estimate from
+the operator (the largest diagonal element of the prepared terms, which the
+kinetic energy dominates at any useful cutoff), and $\kappa$ measured: the
+attainable multiple (about 10) with a margin, so that the floor is reached
+with room to spare on both devices. $\tau_\text{min}$ and the `eig_ok` check
+use this floor in place of the constant. At the test size it will lie near
+$10^{-13}$, so the tight-tolerance tests ask the eigensolver for about
+$10^{-13}$ rather than $5\times10^{-14}$. The density error that follows is far
+below anything those tests resolve. The SCF tolerances themselves remain
+absolute.
+
+The review also suggested a relative stopping test,
+$r_j \le \texttt{tol}\,(\lVert H\rVert + |\theta_j|)$ [@duersch2018]. It would
+make every eigensolver tolerance in the code dimensionless, a wider change
+than this milestone needs, and was not adopted.
+
+## The Rayleigh–Ritz penalty
+
+Each LOBPCG iteration orthonormalises the residual directions $W$ and the
+previous directions $P$ against the block $X$ and drops near-dependent
+directions. Shapes are fixed, so a dropped direction becomes a zero column
+of $Q$. The Rayleigh–Ritz matrix on $S = [X, Q]$ is
+
+$$
+T = S^\dagger H S + \operatorname{diag}(\sigma\,\mathbb{1}_\text{dropped}),
+$$
+
+and today $\sigma = 10^3(\max|T| + 1)$. The lowest $k$ eigenpairs of $T$ give
+the new block. A dropped column of $Q$ is exactly zero, so its row and
+column of $S^\dagger H S$ are zero. $T$ is then block diagonal, and the
+dropped part is $\sigma$ times the identity. Choosing $\sigma$ is the same as
+removing the dropped directions, provided $\sigma$ lies above the $k$ lowest
+eigenvalues of the kept part. In fixed shapes, the penalty already *is* the
+removal. Its value is the only question.
+
+**A bound from interlacing.** $X$ holds the current Ritz vectors, with Ritz
+values $\varepsilon_1 \le \dots \le \varepsilon_k$, and
+$X^\dagger H X = \operatorname{diag}(\varepsilon)$ is a principal submatrix of
+the kept part of $T$. By the Cauchy interlacing theorem [@parlett1998], the
+$j$-th smallest eigenvalue of the kept part is at most $\varepsilon_j$. So
+any $\sigma > \varepsilon_k$ keeps dropped directions out. The choice is
+
+$$
+\sigma = \varepsilon_k + (\varepsilon_k - \varepsilon_1) + 1\ \text{Ha}.
+$$
+
+The 1 Ha is dimensionful, which the atomic-units convention makes
+unambiguous; it keeps a margin when the Ritz values coincide, and at $k = 1$
+gives $\sigma = \varepsilon_1 + 1$ Ha. Two sources of rounding are covered by
+the margin by many orders of magnitude:
+
+- The Ritz values are current, not stale: the loop recomputes them from
+  $X^\dagger A X$ after the QR step at the end of each iteration. Their
+  rounding is about $10^{-14}$ Ha.
+- The code solves a standard eigenproblem for $T$, which assumes
+  $S^\dagger S = I$. The non-orthonormality of $[X, Q]$ enters as about
+  $\lVert H\rVert\,\delta_\text{orth} \approx 10^{-12}$ Ha.
+
+**Why its size matters.** A backward-stable `eigh` has absolute errors of
+order $\epsilon_\text{mach}\lVert T\rVert$. With today's $\sigma$, $\lVert T\rVert$
+is thousands of Ha whenever a direction is dropped, against 3–10 Ha with
+the bound. The error of the Ritz pairs we keep grows by the same factor.
+Whether that matters depends on how often directions are dropped, which the
+three explanations disagreed about.
+
+### Evidence: per iteration, on both devices
+
+The earlier GPU diagnosis compared end states, one run per variant: the
+GPU plateaued near $10^{-12}$, and both moving the Rayleigh–Ritz `eigh` to the
+CPU and lowering $\sigma$ removed the plateau. Three explanations fit that:
+
+1. *(cluster diagnosis)* the penalty inflates $\lVert T\rVert$, and the GPU's
+   `eigh` is not accurate enough relative to it;
+2. *(draft of this post)* the same happens on the CPU at tolerances near
+   $10^{-13}$, where the bounded $\sigma$ removed a stall in an SCF scratch
+   check;
+3. *(review)* directions are dropped only at the first iteration, so the
+   penalty is inactive afterwards, and the failures are the climb of the
+   previous section; one run per variant cannot tell a penalty effect from
+   a different trajectory.
+
+They make different predictions for one number: whether directions are
+dropped after the first iteration on the GPU. An instrumented copy of
+`lobpcg` (`shephex/scripts/aicloud/lobpcg_trajectory.py`) records, per
+iteration, the residual, the directions dropped in each orthonormalisation
+pass, $\max|T|$ including the penalty, and the backward error of the
+Rayleigh–Ritz `eigh`, $\max_j\lVert T c_j - \theta_j c_j\rVert$ over the pairs
+kept. It ran on the V100 and the CPU of the same node, and on the laptop,
+from three random starts per variant, on the two problems of the earlier
+diagnosis, at the SCF's tight eigensolver tolerance $5\times10^{-14}$
+(`reference/gpu_lobpcg_floor/lobpcg_trajectory.json`). Ranges over the three
+starts, cluster node, stopping at the tolerance:
+
+| problem | device | penalty | iterations | final residual | drops after iteration 1 |
+|:--|:--|:--|:--:|:--:|:--:|
+| H₂ | CPU | today | 71–77 | 4.0–4.8e-14 | 0–1 |
+| H₂ | CPU | bound | 70–77 | 3.0–4.8e-14 | 0 |
+| H₂ | V100 | today | 300 (cap) | 0.8–1.3e-12 | 744–755 |
+| H₂ | V100 | bound | 69–75 | 3.1–4.2e-14 | 46–58 |
+| H₂ | V100 | today, `eigh` on host | 70–76 | 3.6–4.0e-14 | 0 |
+| Si | CPU | today | 49–51 | 2.5–3.5e-14 | 0 |
+| Si | CPU | bound | 49–50 | 2.6–3.1e-14 | 0 |
+| Si | V100 | today | 300 (cap) | 3.4–6.2e-12 | 1572–1588 |
+| Si | V100 | bound | 50–51 | 2.8–4.8e-14 | 48–60 |
+| Si | V100 | today, `eigh` on host | 49 | 2.5–4.1e-14 | 0 |
+
+The trajectories show the mechanism directly. On the V100, with either
+penalty, the first late drop comes at the same iteration (32–34), once the
+residual is between $10^{-8}$ and $10^{-5}$. From then on 1–6 directions are
+dropped at every iteration. With today's $\sigma$, those iterations have
+$\max|T|$ between 1300 and 7600 Ha and a Rayleigh–Ritz backward error up to
+$2$–$7\times10^{-12}$, against about $10^{-15}$ before. The residual stops at
+that level, $10^{-12}$ for H₂ and $4\times10^{-12}$ for Si, for the remaining 250
+iterations: a plateau, not a climb. With the bound, the same drops happen,
+$\max|T|$ stays below 6 Ha, the backward error at those iterations stays
+below $7\times10^{-15}$, and the runs converge in as many iterations as on the
+CPU. With the `eigh` on the host there are no late drops at all.
+
+So, for each explanation:
+
+1. **Holds on the GPU**, with the mechanism made explicit: the GPU drops
+   directions at every iteration near convergence, each drop activates the
+   penalty, and the residual cannot fall below the Rayleigh–Ritz error the
+   penalty causes.
+2. **Wrong.** On the CPU, late drops are rare (0–1 per run at the real
+   tolerance), and the penalty does not change the iteration count. The
+   scratch-check stall was the climb of the previous section, and the
+   bounded $\sigma$ only changed which trajectory the run followed.
+3. **Right about the CPU, not the GPU.** The review's observation that
+   directions are dropped only at the first iteration holds on the CPU and
+   is the reason the penalty is harmless there. The climb is real and
+   common on the CPU once a run is past its attainable residual, but it is
+   a separate phenomenon from the GPU plateau.
+
+**Not established:** why the GPU's Rayleigh–Ritz `eigh` leads to late drops
+when the host's does not. With the bound the GPU's backward error is about
+$10^{-15}$, as on the host, yet the drops still happen. The fix does not
+depend on the answer, since the drops then cost nothing. Near-dependence of
+$W$ and $P$ near convergence is a known weakness of LOBPCG's basis
+[@duersch2018].
+
+**Limits.** One GPU model, one job, two small problems, three starts each;
+the laptop and the cluster CPU differ in which rare trajectories they
+follow.
+
+**Decision.** The bounded $\sigma$ is adopted as the fix for the GPU
+failures, on this evidence and because it is derived. The stagnation stop
+and best-iterate return of the previous section are kept as protection
+against the climb, which they also cover on the GPU should it occur there.
+
+## Memory of batched k-points
+
+The dense solver builds $H$ by applying it to the identity, so one k-point
+holds $n_\text{pad}$ wavefunctions on the FFT grid in several intermediates.
+Under `vmap` all k-points do so at once. XLA's own estimate of the peak
+temporaries of the compiled program (`memory_analysis()`, so measurable
+without a GPU), for the failing test (LDA silicon at 12 Ha,
+$n_\text{pad} = 548$, FFT grid $24^3$): 0.23 GiB for one k-point, 9.45 GiB for
+the segment's 41.
+
+The per-k-point figure grows with the cutoff, as $n_\text{grid}\,n_\text{pad}$
+(review, one k-point of silicon, dense solver):
+
+| $E_\text{cut}$ (Ha) | $n_\text{pad}$ | FFT grid | temporaries |
+|:--:|:--:|:--:|:--:|
+| 12 | 528 | $24^3$ | 0.22 GiB |
+| 20 | 1174 | $30^3$ | 0.97 GiB |
+| 30 | 2085 | $36^3$ | 2.97 GiB |
+| 40 | 3263 | $45^3$ | 9.04 GiB |
+
+Chunking over k-points alone therefore fixes the band scan only at the test
+cutoff. At 40 Ha, which the 2b convergence table reaches, one k-point is as
+large as the whole failing allocation.
+
+**Fix, at two levels**, both with `jax.lax.map(..., batch_size=...)` (JAX
+0.12), which applies a function to chunks of a batch: within a chunk it is
+`vmap`, and chunks run one after another.
+
+- **Columns in the dense solver.** `dense_eigensolver` applies the operator
+  to the identity in column chunks. Its temporaries are then bounded by the
+  chunk, independently of $n_\text{pad}$ and of $n_k$. Only the
+  $n_\text{pad}\times n_\text{pad}$ matrix itself remains.
+- **k-points.** `band_structure` and the SCF gain an optional
+  `k_batch_size` (default `None`: one batch, as today). k-points remain a
+  batch dimension in the sense of CLAUDE.md: the per-k function is unchanged
+  and still vmapped, and sharding can later split the k-axis across devices
+  with chunking inside each.
+
+Results must not depend on either chunk size beyond rounding. Two details
+for the implementation: `lax.map` with a chunk size that does not divide the
+batch compiles a second program for the remainder, which inside the SCF's
+while loop is a second copy of the whole per-k pipeline, so chunk sizes
+should divide the batch or the batch be padded and masked; and `lax.map`
+maps one pytree, so the two-argument per-k functions need a wrapper.
+
+**The SCF.** Its peak memory grows linearly with $n_k$: on the V100 by
+7.4 MB per k-point, 3.8 GB at $8^3$, which extrapolates to about 13 GB at
+$12^3$ on the same cell. Lockstep is a second-order cost after the stopping
+fix (see [above](#where-the-time-goes)), so the SCF's chunk size is chosen
+for memory and device occupancy, not for lockstep, and stays at one batch by
+default until measured.
+
+**Band scans stay dense.** LOBPCG applies $H$ to $2k$ columns per iteration;
+at 40–50 cold-start iterations and $k = 6$ that is 480–600 applications per
+k-point, no fewer than the dense solver's 548 at 12 Ha. The dense solver
+also returns every eigenvalue and cannot mis-converge. `band_structure`
+passes the solver no start, preconditioner or tolerance, and has no residual
+check, so LOBPCG on band paths is its own design, for a milestone where the
+cutoff makes it pay.
+
+## Observability
+
+The SCF history (2026-11-10, "SCF observability") gains per step:
+
+- `eig_tol`, the tolerance $\tau_i$ used;
+- `eig_iters_mean`, the mean of $I_k$ over k-points, next to the existing
+  maximum `eig_iters`, so the lockstep efficiency is visible in the log and
+  on the performance page;
+- `refined`, whether the step re-diagonalised at $\tau_\text{min}$
+  (`eig_iters` counts both diagonalisations of such a step);
+- `eig_drops`, the largest number of directions dropped by LOBPCG after its
+  first iteration, over k-points and iterations, and `eig_stagnated`,
+  whether any k-point left by the stagnation stop.
+
+`lobpcg` returns the corresponding diagnostics when asked, as it already
+returns its iteration count.
+
+## Invariants and acceptance criteria
+
+The physics invariants of CLAUDE.md are unaffected, and the existing 2a and
+2b acceptance tests must pass unchanged, including the tight-tolerance tests
+at $\varepsilon_\text{SCF} = 10^{-12}$ on the CPU. New tests, to be written as
+failing tests before implementation:
+
+1. **Stopping test.** `lobpcg` with `n_converge = m` returns the first $m$
+   residuals below `tol`; the first $m$ eigenvalues agree with the dense
+   solver within the bound that `tol` implies. With `n_converge` equal to the
+   block width it behaves as today.
+2. **Independence of settings.** The converged SCF energy, density and
+   eigenvalues of silicon on the 2³ test grid do not depend on
+   `buffer_bands` ∈ {0, 1, 3}, on $c$ (including $c = 0$), or on
+   `k_batch_size`, within the tolerances 2b already uses for comparing
+   converged states.
+3. **Tight convergence.** With the adaptive tolerance, every converged SCF
+   has `eig_ok`; the history shows the last step at $\tau_\text{min}$, $\tau$
+   non-increasing, and no refinement after the first.
+4. **Penalty.** Dropped directions are never selected (a property test on
+   blocks with forced dependence, including the first iteration, where
+   $P = 0$), and $\sigma$ is the bound above.
+5. **Robust stopping.** Asked for a tolerance below its floor, `lobpcg`
+   leaves by the stagnation stop well before `max_iter`, and returns a block
+   whose residual is the best it reached. At the test sizes of silicon and
+   H₂, `lobpcg` reaches $\tau_\text{floor}$ on the CPU.
+6. **The unexplained scratch row.** Silicon $3^3$ at
+   $\varepsilon_\text{SCF} = 10^{-12}$ with the smallest tested $c$ converges
+   within an iteration budget set from the $c = 0$ run, not just below the
+   cap.
+7. **Cost.** On the $3^3$ grid, which the force tests already use, the summed
+   $\max_k I_k$ and $\overline{I}$ over the SCF at the default settings are at
+   most stated budgets, measured on the current commit when the tests are
+   written. The $2^3$ grid cannot see the stopping fix (193 → 175).
+8. **Memory.** The compiled temporaries of the dense solver for one k-point
+   are bounded independently of $n_\text{pad}$ (checked at 12 and 20 Ha), the
+   band sampling of `band_minimum_on_segment` for the case that failed on the
+   V100 stays below 2 GiB, and chunked and unchunked results agree to
+   rounding.
+
+**On the clusters** (records in `reference/`, not pass/fail tests, since
+they cannot run at render time):
+
+- the full test suite on the V100 passes, against 634 of 642 today;
+- the per-iteration diagnosis is repeated against the implemented `lobpcg`
+  on the V100, which must converge from every start with late drops
+  present and a Rayleigh–Ritz backward error near $10^{-15}$;
+- the k-grid scan is repeated on biocloud and aicloud; the performance page
+  shows time per k-point and SCF step, $\sum\max_k I_k$, the lockstep
+  efficiency and peak memory against the 2b runs;
+- on the V100, the scan is repeated for `buffer_bands` ∈ {0, 1, 2, 3} and a
+  few chunk sizes, to settle the defaults 2b left open.
+
+## Decisions from review
+
+1. **Stopping on the needed bands: adopted as drafted.** The reasoning is
+   narrowed to "the band closest to $\lambda_{k+1}$ is slowest", and the
+   degeneracy paragraph now says that an exact degeneracy at the edge is
+   harmless and a small gap is what costs.
+2. **The bounded penalty: adopted.** The review accepted the bound but
+   questioned whether it is the cause of the GPU failures. A per-iteration
+   record from three starts per variant, run after the review, showed that
+   it is ([evidence](#evidence-per-iteration-on-both-devices)). The solver
+   reports late drops so that this stays visible.
+3. **Stagnation stop and best-iterate return: added to the milestone.** The
+   review found LOBPCG climbing back from near its attainable residual. The
+   per-iteration record shows it in most forced silicon runs on the CPU,
+   with either penalty, but only once at the real tolerance, and not as the
+   cause of the GPU failures. It is a failure the solver should survive,
+   and the attainable floor of decision 4 keeps runs from reaching it.
+4. **`EIGEN_FLOOR` scales with $\lVert H_\mathbf{k}\rVert$**, with a measured
+   multiple of $\epsilon_\text{mach}$. Of the three options (a larger constant,
+   an operator-scaled floor, a relative stopping test), the scaled floor was
+   chosen with the project lead: it holds at any cutoff and leaves the SCF
+   tolerances absolute.
+5. **The adaptive tolerance** is non-increasing, divided by $N_\text{el}$,
+   capped at $5\times10^{-3}$ Ha, refined inside $F$ (as QE does) with a latch,
+   and its refinements are counted. The default $c$ is measured during
+   implementation.
+6. **Memory: column chunking in the dense solver as well as k-chunking.** The
+   memory criterion is stated per k-point and independent of $n_\text{pad}$.
+7. **Band scans stay on the dense solver** (open question 4).
+8. **The SCF's k-chunk size is chosen for memory, not lockstep, and defaults
+   to one batch** (open question 5), since lockstep proper is second-order
+   after the stopping fix.
+9. **The cost budget is set on the $3^3$ grid** and asserts on the mean
+   iterations as well as the maximum.
+10. **Scope: no physics in disguise** (open question 6). All configurations
+    the review ran agree on the energy to $3\times10^{-14}$ Ha.
+11. **Not verified.** The adaptive-tolerance table was not reproduced by the
+    review, and the reference-code descriptions are the review's reading of
+    DFTK and QE sources, not checked again here. The direction of the GPU
+    gain is a prediction from the scan, to be measured. Why the GPU drops
+    directions near convergence and the CPU does not is open.
+
+## References

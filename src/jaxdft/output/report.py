@@ -141,7 +141,8 @@ def settings_lines(options, n_el: float, n_bands: int, eig_tol: float, initial: 
             ("max iterations", options.max_iter),
             ("mixer", describe(options.mixer)),
             ("eigensolver", describe(options.eigensolver)),
-            ("eigensolver tolerance", f"{eig_tol:.1e} Ha (max |H psi - eps psi|)"),
+            ("eigensolver tolerance", _eigensolver_tolerance(options, eig_tol)),
+            ("k-points per batch", "all" if options.k_batch_size is None else options.k_batch_size),
             ("preconditioner", describe(options.preconditioner)),
             ("min frontier gap", f"{options.min_gap:g} Ha"),
             ("initial density", f"{initial} (integrates to {n_el_initial:.12f})"),
@@ -150,11 +151,21 @@ def settings_lines(options, n_el: float, n_bands: int, eig_tol: float, initial: 
     return lines
 
 
+def _eigensolver_tolerance(options, eig_tol: float) -> str:
+    tight = f"{eig_tol:.1e} Ha (max |H psi - eps psi|, at least the per-k floor)"
+    if options.eigensolver_tol_ratio <= 0:
+        return tight
+    return (
+        f"adaptive, min(previous, {options.eigensolver_tol_ratio:g} |F(rho)-rho| / N_el), "
+        f"from {options.eigensolver_tol_max:.1e} down to {tight}"
+    )
+
+
 # --- iterations ----------------------------------------------------------------------------
 
 ITERATION_HEADER = (
     f"{'iter':>4}  {'E (Ha)':>16}  {'dE (Ha)':>10}  {'|F(rho)-rho|':>12}  {'proj':>8}  "
-    f"{'HOMO (Ha)':>10}  {'gap (Ha)':>9}  {'eig res':>8}  {'eig it':>6}  {'t (s)':>7}"
+    f"{'HOMO (Ha)':>10}  {'gap (Ha)':>9}  {'eig res':>8}  {'eig it':>6}  {'eig tol':>8}  {'t (s)':>7}"
 )
 
 
@@ -162,7 +173,8 @@ def iteration_lines_header(tol: float) -> list[str]:
     lines = section("SCF iterations")
     lines += [
         f"  converged when |F(rho)-rho| < {tol:.1e}. proj: change made by clipping/renormalising",
-        "  the mixed density. eig res/it: worst eigensolver residual and iterations over k.",
+        "  the mixed density. eig res/it: worst eigensolver residual and iterations over k;",
+        "  eig tol: the step's eigensolver tolerance, * if re-diagonalised at the tight one.",
         "  E is the Kohn-Sham energy of the output orbitals; t is wall time since the start.",
         "",
         ITERATION_HEADER,
@@ -176,14 +188,17 @@ def _f(x, fmt, width):
 
 def iteration_line(i: int, values: dict, elapsed=None) -> str:
     """One row: ``values`` holds energy, delta_energy, residual, projection, homo, gap,
-    eig_residual_max and eig_iters (floats; NaN prints as '-')."""
+    eig_residual_max and eig_iters, and optionally eig_tol and refined (floats; NaN
+    or missing prints as '-')."""
     e = float(values["energy"])
     de = float(values["delta_energy"])
+    tol = values.get("eig_tol")
+    tol = _f(None if tol is None else float(tol), '.1e', 7) + ("*" if float(values.get("refined", 0)) else " ")
     return (
         f"{int(i):>4}  {_f(e, '.10f', 16)}  {_f(de, '.2e', 10)}  {_f(float(values['residual']), '.3e', 12)}  "
         f"{_f(float(values['projection']), '.1e', 8)}  {_f(float(values['homo']), '.6f', 10)}  "
         f"{_f(float(values['gap']), '.6f', 9)}  {_f(float(values['eig_residual_max']), '.1e', 8)}  "
-        f"{_f(float(values['eig_iters']), '.0f', 6)}  {_f(elapsed, '.2f', 7)}"
+        f"{_f(float(values['eig_iters']), '.0f', 6)}  {tol}  {_f(elapsed, '.2f', 7)}"
     )
 
 

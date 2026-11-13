@@ -53,3 +53,11 @@
   reached: 2026-11-12T09:55:12+01:00
   theory: theory/02b_scf_silicon.qmd
   validation: validation/02b_scf_silicon.qmd
+
+- id: "2c"
+  title: "Milestone 2c"
+  capability: "An eigensolver that scales with the k-grid and reaches tight tolerances on GPUs: adaptive tolerance, robust LOBPCG, bounded memory."
+  status: done
+  reached: 2026-11-13T11:04:21+01:00
+  theory: theory/02c_eigensolver.qmd
+  validation: validation/02c_eigensolver.qmd
