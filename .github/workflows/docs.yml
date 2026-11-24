@@ -1,14 +1,13 @@
 # Full render of the Quarto site, executing every document against the current
 # code (freeze is off: a document that no longer runs is a failing test).
 #
-# The render is slow, so it runs only on main, where it also deploys the site to
-# GitHub Pages. A pull request renders (without deploying) only when it changes
-# this workflow, so changes to it can be tested before they reach main.
+# The render is slow (about 30 min), so it does not run on every push. Start it
+# by hand (`gh workflow run docs --ref main`); a run on main also deploys the
+# site to GitHub Pages. A pull request renders (without deploying) only when it
+# changes this workflow, so changes to it can be tested before they reach main.
 name: docs
 
 on:
-  push:
-    branches: [main]
   pull_request:
     paths: [.github/workflows/docs.yml]
   workflow_dispatch:
